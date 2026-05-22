@@ -4,7 +4,7 @@
    - 静的アセットは cache-first
    - GAS APIへのアクセスはネットワーク優先（圏外時は即fail→indexのキューが拾う）
    ========================================================================== */
-const VERSION = "v22.0.0-2026-05-05";
+const VERSION = "v25.0.0-2026-05-19";
 const CACHE = "kawashima-" + VERSION;
 const STATIC_ASSETS = [
   "./manifest.json",

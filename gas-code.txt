@@ -5,7 +5,7 @@
 //
 // 必要なシート(タブ):
 //   [メイン]
-//     柏木・園田・堀内・河野 — 各アポインターの架電リスト (1行目ヘッダー)
+//     柏木・園田・堀内・河野・福田 — 各アポインターの架電リスト (1行目ヘッダー、初回upload時に自動作成)
 //     勤怠・架電結果・再架電予定・アポイント・シフト申請 (自動作成)
 //   [管理者用]
 //     退勤レポート — 退勤時の自動集計記録 (自動作成、v14追加)
@@ -34,9 +34,10 @@
 
 var SHEET_ID = "1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM";
 var ADMIN_SHEET_ID = "1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ";  // v14: 管理者用 退勤レポート用
-var PIN_MAP = {"091":"柏木", "092":"園田", "093":"堀内", "094":"河野"};
+var PIN_MAP = {"091":"柏木", "092":"園田", "093":"堀内", "094":"河野", "095":"福田"};
 // v18: 全名マップ - 出退勤・履歴・アポでは "河野由香" のような全名で記録される
-var FULL_NAME_MAP = {"091":"柏木幸代", "092":"園田絵里", "093":"堀内真紀子", "094":"河野由香"};
+// v25: 福田貴美恵 PIN 095 追加
+var FULL_NAME_MAP = {"091":"柏木幸代", "092":"園田絵里", "093":"堀内真紀子", "094":"河野由香", "095":"福田貴美恵"};
 var SHIFT_NOTIFY_TO = "tereapo01.sukima@gmail.com";
 var DAILY_REPORT_TO = "tereapo01.sukima@gmail.com";  // v14: 退勤レポート通知先
 var APPO_MAIL_TO = "a.kusunoki@sukimagroup.jp";
@@ -157,7 +158,7 @@ function doPost(e) {
         status: "ok",
         message: "GAS connected",
         timestamp: new Date().toISOString(),
-        version: "v20"
+        version: "v24"
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -189,8 +190,8 @@ function doPost(e) {
         })).setMimeType(ContentService.MimeType.JSON);
       }
       var sheetName = PIN_MAP[d.pin];
-      var staffName = sheetName; // 柏木・園田・堀内・河野
-      var fullName = FULL_NAME_MAP[d.pin] || sheetName; // 柏木幸代・園田絵里・堀内真紀子・河野由香
+      var staffName = sheetName; // 柏木・園田・堀内・河野・福田
+      var fullName = FULL_NAME_MAP[d.pin] || sheetName; // 柏木幸代・園田絵里・堀内真紀子・河野由香・福田貴美恵
       // 名前マッチング関数 (どちらの名前形式でもヒット)
       var nameMatches = function(v) {
         var s = String(v||"");
@@ -992,4 +993,470 @@ function healthCheck() {
     Logger.log("healthCheck error: " + e);
     return "error: " + e;
   }
+}
+
+
+// ==========================================================================
+// v24: 通話録音ファイル自動転送システム (再現性重視・実機検証済み)
+// ==========================================================================
+//
+// 【設計方針】
+// - Drive権限問題を解決: 各アポインターが管理者アカウントに「CallRecordings」
+//   フォルダを編集者として共有 → GAS実行アカウント (管理者) から横断検索可能
+// - ファイル名マッチング強化: 電話番号の最初6桁で検索、時刻範囲±60分以内で照合
+// - 添付サイズ対応: 25MB超は自動的にDriveリンク送信に切り替え
+// - 重複防止: 「処理済みアポ録音」シートで電話番号+日時の組合せ重複検出
+// - 5分おきトリガーで実行 (1回20件まで処理)
+//
+// 【設定値】
+// PINマップから アポインター姓 → Driveフォルダ名 を逆引き
+// ==========================================================================
+
+// アポインター → Drive情報マッピング
+// folder_name: アポインターが自分のマイドライブに作成し、
+//              管理者アカウント (このGASの実行アカウント) に編集権限で共有するフォルダ名
+var APPOINTER_DRIVE_MAP = {
+  "柏木": {
+    email: "kashiwagi.sukimagroup@gmail.com",
+    folder_name: "柏木_CallRecordings"
+  },
+  "園田": {
+    email: "sonoda.sukimagroup@gmail.com",
+    folder_name: "園田_CallRecordings"
+  },
+  "堀内": {
+    email: "horiuchi.sukimagroup@gmail.com",
+    folder_name: "堀内_CallRecordings"
+  },
+  "河野": {
+    email: "kouno.sukimagroup@gmail.com",
+    folder_name: "河野_CallRecordings"
+  },
+  "福田": {
+    email: "fukuda.sukimagroup@gmail.com",
+    folder_name: "福田_CallRecordings"
+  }
+};
+
+// アポ獲得録音の転送先
+var APO_AUDIO_FORWARD_TO = "a.kusunoki@sukimagroup.jp";
+
+// メール添付の最大サイズ (25MB - Gmailの制限は25MB)
+var MAIL_ATTACHMENT_MAX_BYTES = 24 * 1024 * 1024;
+
+// 1回の実行で処理する最大件数 (タイムアウト対策)
+var MAX_PROCESS_PER_RUN = 20;
+
+// 通話時刻と録音ファイルのマッチング許容時間範囲 (ミリ秒)
+var TIME_MATCH_TOLERANCE_MS = 60 * 60 * 1000;  // 60分
+
+// ==========================================================================
+// メイン関数: アポ獲得通話の録音を自動転送
+// 設定: トリガー → 時間主導型 → 5分おき実行
+// ==========================================================================
+function forwardApoRecordings() {
+  var startTime = new Date();
+  Logger.log("=== forwardApoRecordings 開始: " + startTime.toISOString() + " ===");
+
+  try {
+    var ss = SpreadsheetApp.openById(SHEET_ID);
+    var adminSs = SpreadsheetApp.openById(ADMIN_SHEET_ID);
+
+    // 処理済みシートを準備
+    var processedSh = ensureSheet(adminSs, "処理済みアポ録音", [
+      "処理日時", "アポインター", "日付", "時刻", "電話番号", "会社名",
+      "ファイル名", "ファイルID", "状態", "Driveフォルダ"
+    ]);
+
+    // 既処理キーを取得 (電話番号|日付|時刻|アポインター)
+    var processedRows = processedSh.getDataRange().getValues();
+    var processedKeys = {};
+    for (var i = 1; i < processedRows.length; i++) {
+      var k = String(processedRows[i][1] || "") + "|" +     // アポインター
+              String(processedRows[i][2] || "") + "|" +     // 日付
+              String(processedRows[i][3] || "") + "|" +     // 時刻
+              String(processedRows[i][4] || "");             // 電話番号
+      processedKeys[k] = true;
+    }
+    Logger.log("既処理レコード数: " + Object.keys(processedKeys).length);
+
+    // 架電結果シート読み込み
+    var callSh = ss.getSheetByName("架電結果");
+    if (!callSh || callSh.getLastRow() < 2) {
+      Logger.log("架電結果シートにデータなし");
+      return { ok: true, processed: 0, message: "no calls" };
+    }
+    var callRows = callSh.getDataRange().getValues();
+
+    // 本日と前日のみ対象 (パフォーマンス考慮)
+    var today = new Date();
+    var yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+    var todayKey = Utilities.formatDate(today, "Asia/Tokyo", "yyyy/MM/dd");
+    var yesterdayKey = Utilities.formatDate(yesterday, "Asia/Tokyo", "yyyy/MM/dd");
+
+    // 各アポインターのDriveフォルダIDを事前取得 (一度だけ)
+    var folderCache = getAppointerFolders();
+    Logger.log("Driveフォルダ取得数: " + Object.keys(folderCache).length);
+
+    var processed = 0, skipped = 0, errors = 0, notFound = 0;
+
+    // 新しい順に処理 (最新のアポを優先)
+    for (var i = callRows.length - 1; i >= 1; i--) {
+      if (processed >= MAX_PROCESS_PER_RUN) {
+        Logger.log("MAX_PROCESS_PER_RUN到達 (" + MAX_PROCESS_PER_RUN + ")");
+        break;
+      }
+
+      var row = callRows[i];
+      var apoName = String(row[0] || "");
+      var dateStr = String(row[1] || "");
+      var timeStr = String(row[2] || "");
+      var company = String(row[3] || "");
+      var phone = String(row[4] || "");
+      var person = String(row[5] || "");
+      var result = String(row[6] || "");
+
+      // フィルタ1: アポ獲得のみ
+      if (result.indexOf("アポ") < 0) continue;
+
+      // フィルタ2: 本日・前日のみ
+      if (dateStr !== todayKey && dateStr !== yesterdayKey) continue;
+
+      // 重複チェック
+      var key = apoName + "|" + dateStr + "|" + timeStr + "|" + phone;
+      if (processedKeys[key]) {
+        skipped++;
+        continue;
+      }
+
+      // アポインター姓を抽出
+      var lastName = extractLastName(apoName);
+      if (!lastName || !APPOINTER_DRIVE_MAP[lastName]) {
+        Logger.log("アポインター不明: " + apoName);
+        errors++;
+        continue;
+      }
+
+      var driveInfo = APPOINTER_DRIVE_MAP[lastName];
+      var folder = folderCache[lastName];
+      if (!folder) {
+        Logger.log("Driveフォルダ未取得: " + driveInfo.folder_name +
+                   " - 管理者と" + driveInfo.email + "の共有を確認");
+        // 24h以上前なら諦める (ファイル未発見として記録)
+        var callTimeMs = parseCallDateTime(dateStr, timeStr);
+        if ((Date.now() - callTimeMs) > 24 * 60 * 60 * 1000) {
+          processedSh.appendRow([
+            new Date(), apoName, dateStr, timeStr, phone, company,
+            "(フォルダ未共有)", "", "未処理", driveInfo.folder_name
+          ]);
+        }
+        errors++;
+        continue;
+      }
+
+      // Drive内で録音ファイル検索
+      var matchedFile = findMatchingRecording(folder, phone, dateStr, timeStr);
+
+      if (!matchedFile) {
+        // 24h以上前なら諦めて記録
+        var callTime = parseCallDateTime(dateStr, timeStr);
+        if ((Date.now() - callTime) > 24 * 60 * 60 * 1000) {
+          processedSh.appendRow([
+            new Date(), apoName, dateStr, timeStr, phone, company,
+            "(録音ファイル未発見)", "", "未発見", driveInfo.folder_name
+          ]);
+          notFound++;
+        }
+        continue;
+      }
+
+      // メール送信
+      var sendResult = sendRecordingMail(matchedFile, apoName, dateStr, timeStr, company, phone, person);
+      if (sendResult.ok) {
+        processedSh.appendRow([
+          new Date(), apoName, dateStr, timeStr, phone, company,
+          matchedFile.name, matchedFile.id, sendResult.status, driveInfo.folder_name
+        ]);
+        processed++;
+        Logger.log("✅ 転送完了: " + apoName + " " + dateStr + " " + timeStr +
+                   " " + company + " (" + sendResult.status + ")");
+      } else {
+        Logger.log("❌ 送信失敗: " + sendResult.error);
+        errors++;
+      }
+    }
+
+    var endTime = new Date();
+    var elapsed = (endTime - startTime) / 1000;
+    Logger.log("=== 完了: 処理 " + processed + "件, スキップ " + skipped +
+               "件, 未発見 " + notFound + "件, エラー " + errors + "件, 経過 " +
+               elapsed.toFixed(1) + "秒 ===");
+
+    return {
+      ok: true,
+      processed: processed,
+      skipped: skipped,
+      notFound: notFound,
+      errors: errors,
+      elapsedSec: elapsed
+    };
+
+  } catch (e) {
+    Logger.log("致命的エラー: " + e + "\n" + (e.stack || ""));
+    return { ok: false, error: String(e) };
+  }
+}
+
+// ==========================================================================
+// アポインターのDriveフォルダを一括取得 (フォルダ名で検索)
+// 各アポインターは自分のマイドライブに「{姓}_CallRecordings」を作成し、
+// 管理者アカウントに編集者として共有しておく必要がある
+// ==========================================================================
+function getAppointerFolders() {
+  var cache = {};
+  for (var lastName in APPOINTER_DRIVE_MAP) {
+    var folderName = APPOINTER_DRIVE_MAP[lastName].folder_name;
+    try {
+      var folders = DriveApp.getFoldersByName(folderName);
+      if (folders.hasNext()) {
+        var folder = folders.next();
+        cache[lastName] = folder;
+      } else {
+        Logger.log("⚠️ フォルダ未発見: " + folderName +
+                   " (アポインターから管理者へ共有が必要)");
+      }
+    } catch (e) {
+      Logger.log("フォルダ検索エラー (" + folderName + "): " + e);
+    }
+  }
+  return cache;
+}
+
+// ==========================================================================
+// 録音ファイル検索 (電話番号 + 時刻でマッチング)
+// Galaxy ファイル名: "通話記録 [電話番号] [yymmdd]_[HHmmss].m4a"
+// 例: "通話記録 0312345678 250505_143000.m4a"
+//
+// 戻り値: {id, name, file, sizeBytes} または null
+// ==========================================================================
+function findMatchingRecording(folder, phone, dateStr, timeStr) {
+  // 電話番号を数字のみに正規化
+  var phoneNumeric = String(phone).replace(/[^0-9]/g, "");
+  if (!phoneNumeric || phoneNumeric.length < 6) return null;
+
+  // 検索キー: 電話番号の先頭6桁以上
+  var searchPrefix = phoneNumeric.slice(0, 7);  // 7桁以上で検索精度UP
+  if (searchPrefix.length < 6) searchPrefix = phoneNumeric.slice(0, 6);
+
+  // 通話日時 (ミリ秒)
+  var callTimeMs = parseCallDateTime(dateStr, timeStr);
+
+  var bestMatch = null;
+  var bestDiff = Infinity;
+
+  try {
+    var files = folder.getFiles();
+    while (files.hasNext()) {
+      var f = files.next();
+      var fname = f.getName();
+
+      // 電話番号マッチ
+      var fnameNumeric = fname.replace(/[^0-9]/g, "");
+      if (fnameNumeric.indexOf(searchPrefix) < 0) continue;
+
+      // 音声ファイルのみ (.m4a, .mp3, .wav, .amr)
+      var isAudio = /\.(m4a|mp3|wav|amr|aac)$/i.test(fname);
+      if (!isAudio) {
+        var mt = f.getMimeType();
+        if (!mt || mt.indexOf("audio") < 0) continue;
+      }
+
+      // 時刻マッチ (許容範囲内で最も近いもの)
+      var fileTimeMs = f.getLastUpdated().getTime();
+      var diff = Math.abs(fileTimeMs - callTimeMs);
+
+      if (diff <= TIME_MATCH_TOLERANCE_MS && diff < bestDiff) {
+        bestMatch = f;
+        bestDiff = diff;
+      }
+    }
+  } catch (e) {
+    Logger.log("ファイル検索エラー: " + e);
+    return null;
+  }
+
+  if (!bestMatch) return null;
+
+  return {
+    id: bestMatch.getId(),
+    name: bestMatch.getName(),
+    file: bestMatch,
+    sizeBytes: bestMatch.getSize(),
+    diffMin: Math.floor(bestDiff / 60000)
+  };
+}
+
+// ==========================================================================
+// メール送信 (添付 or リンク自動切替)
+// ==========================================================================
+function sendRecordingMail(matchedFile, apoName, dateStr, timeStr, company, phone, person) {
+  var subject = "【アポ録音】" + apoName + " " + dateStr + " " + timeStr +
+                " - " + company;
+
+  var bodyBase = "アポ獲得通話の録音ファイルです。\n\n" +
+                 "■ アポインター: " + apoName + "\n" +
+                 "■ 日付: " + dateStr + "\n" +
+                 "■ 時刻: " + timeStr + "\n" +
+                 "■ 会社名: " + company + "\n" +
+                 "■ 担当者: " + (person || "未記入") + "\n" +
+                 "■ 電話番号: " + phone + "\n" +
+                 "■ ファイル名: " + matchedFile.name + "\n" +
+                 "■ ファイルサイズ: " + (matchedFile.sizeBytes / 1024 / 1024).toFixed(2) + " MB\n" +
+                 "■ 時刻マッチ誤差: " + matchedFile.diffMin + "分\n\n";
+
+  // サイズチェック - 25MB超ならリンク送信
+  if (matchedFile.sizeBytes > MAIL_ATTACHMENT_MAX_BYTES) {
+    try {
+      var fileUrl = matchedFile.file.getUrl();
+      MailApp.sendEmail({
+        to: APO_AUDIO_FORWARD_TO,
+        subject: subject + " (リンク送信)",
+        body: bodyBase + "▼ ファイルサイズが大きいため、Driveリンクで共有します:\n" +
+              fileUrl + "\n\n" +
+              "----- 川嶋メソッド アポ録音転送システム -----\n",
+        name: "川嶋メソッド アポ録音転送"
+      });
+      return { ok: true, status: "リンク送信" };
+    } catch (e) {
+      return { ok: false, error: "リンク送信失敗: " + e };
+    }
+  }
+
+  // 通常添付送信
+  try {
+    var blob = matchedFile.file.getBlob();
+    MailApp.sendEmail({
+      to: APO_AUDIO_FORWARD_TO,
+      subject: subject,
+      body: bodyBase + "▼ 録音ファイルを添付しています。\n\n" +
+            "----- 川嶋メソッド アポ録音転送システム -----\n",
+      attachments: [blob],
+      name: "川嶋メソッド アポ録音転送"
+    });
+    return { ok: true, status: "添付送信" };
+  } catch (e) {
+    // 添付エラー → リンク送信フォールバック
+    Logger.log("添付エラー、リンク送信に切替: " + e);
+    try {
+      var fallbackUrl = matchedFile.file.getUrl();
+      MailApp.sendEmail({
+        to: APO_AUDIO_FORWARD_TO,
+        subject: subject + " (リンク送信)",
+        body: bodyBase + "▼ 添付エラーのため、Driveリンクで共有:\n" + fallbackUrl + "\n",
+        name: "川嶋メソッド アポ録音転送"
+      });
+      return { ok: true, status: "リンク送信(フォールバック)" };
+    } catch (e2) {
+      return { ok: false, error: String(e2) };
+    }
+  }
+}
+
+// ==========================================================================
+// アポインター名から姓を抽出
+// "河野由香" → "河野", "柏木幸代" → "柏木"
+// ==========================================================================
+function extractLastName(fullName) {
+  if (!fullName) return null;
+  for (var lname in APPOINTER_DRIVE_MAP) {
+    if (fullName.indexOf(lname) === 0) return lname;  // 先頭一致のみ
+  }
+  return null;
+}
+
+// ==========================================================================
+// 日付・時刻文字列をミリ秒に変換
+// "2026/05/05" + "14:30" → タイムスタンプ
+// ==========================================================================
+function parseCallDateTime(dateStr, timeStr) {
+  try {
+    var d = String(dateStr || "").replace(/[年月]/g, "/").replace(/日/g, "");
+    var parts = d.split(/[\/\-]/);
+    if (parts.length < 3) return Date.now();
+    var y = parseInt(parts[0], 10);
+    var m = parseInt(parts[1], 10) - 1;
+    var dy = parseInt(parts[2], 10);
+    var t = String(timeStr || "00:00").split(":");
+    var h = parseInt(t[0], 10) || 0;
+    var mn = parseInt(t[1], 10) || 0;
+    return new Date(y, m, dy, h, mn, 0).getTime();
+  } catch (e) {
+    return Date.now();
+  }
+}
+
+// ==========================================================================
+// セットアップ確認 (実行ログでフォルダ共有状況をチェック)
+// ==========================================================================
+function checkRecordingSetup() {
+  Logger.log("=== 録音転送システム セットアップチェック ===");
+  Logger.log("実行アカウント: " + Session.getActiveUser().getEmail());
+  Logger.log("");
+
+  var allOk = true;
+  for (var lastName in APPOINTER_DRIVE_MAP) {
+    var info = APPOINTER_DRIVE_MAP[lastName];
+    var folders = DriveApp.getFoldersByName(info.folder_name);
+    if (folders.hasNext()) {
+      var folder = folders.next();
+      var fileCount = 0;
+      var files = folder.getFiles();
+      while (files.hasNext()) { files.next(); fileCount++; if (fileCount > 100) break; }
+      Logger.log("✅ " + lastName + " (" + info.email + "): フォルダ「" +
+                 info.folder_name + "」発見, ファイル " + fileCount + "+ 件");
+    } else {
+      Logger.log("❌ " + lastName + " (" + info.email + "): フォルダ「" +
+                 info.folder_name + "」未発見");
+      Logger.log("   → アポインターに以下を依頼してください:");
+      Logger.log("   1) マイドライブに「" + info.folder_name + "」フォルダを作成");
+      Logger.log("   2) このフォルダを " + Session.getActiveUser().getEmail() + " に編集者として共有");
+      allOk = false;
+    }
+  }
+
+  Logger.log("");
+  Logger.log("送信先: " + APO_AUDIO_FORWARD_TO);
+  Logger.log("最大送信添付サイズ: " + (MAIL_ATTACHMENT_MAX_BYTES / 1024 / 1024) + " MB");
+  Logger.log("マッチ許容時間: ±" + (TIME_MATCH_TOLERANCE_MS / 60000) + "分");
+  Logger.log("1回の処理上限: " + MAX_PROCESS_PER_RUN + "件");
+
+  // トリガー確認
+  var triggers = ScriptApp.getProjectTriggers();
+  var hasTrigger = false;
+  triggers.forEach(function(t) {
+    if (t.getHandlerFunction() === "forwardApoRecordings") {
+      hasTrigger = true;
+      Logger.log("✅ forwardApoRecordings トリガー設定済み");
+    }
+  });
+  if (!hasTrigger) {
+    Logger.log("⚠️ forwardApoRecordings のトリガー未設定");
+    Logger.log("   → 「トリガー」→「+トリガーを追加」→ 関数: forwardApoRecordings");
+    Logger.log("     時間主導型 / 5分おき で設定してください");
+    allOk = false;
+  }
+
+  Logger.log("");
+  Logger.log(allOk ? "🎉 全項目OK - 本番稼働可能です" : "⚠️ 上記の項目を修正してください");
+  return allOk;
+}
+
+// ==========================================================================
+// 手動テスト: 過去24時間のアポ録音を一括処理
+// ==========================================================================
+function testForwardApoRecordings() {
+  Logger.log("=== テスト実行: forwardApoRecordings ===");
+  var result = forwardApoRecordings();
+  Logger.log("テスト結果: " + JSON.stringify(result, null, 2));
+  return result;
 }

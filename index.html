@@ -161,7 +161,8 @@ var STAFF=[
   {id:"s091",nm:"柏木幸代",pin:"091",sh:"柏木"},
   {id:"s092",nm:"園田絵里",pin:"092",sh:"園田"},
   {id:"s093",nm:"堀内真紀子",pin:"093",sh:"堀内"},
-  {id:"s094",nm:"河野由香",pin:"094",sh:"河野"}
+  {id:"s094",nm:"河野由香",pin:"094",sh:"河野"},
+  {id:"s095",nm:"福田貴美恵",pin:"095",sh:"福田"}
 ];
 
 /* v19: 5ステップ式 川嶋メソッド */
@@ -1791,7 +1792,7 @@ if(showShiftDay){
 
 /* ========== ログイン ========== */
 if(V==="login"){
-  h+='<div style="min-height:100vh;background:linear-gradient(135deg,#0d1b2a,#1a237e);display:flex;align-items:center;justify-content:center;padding:20px"><div style="background:#fff;border-radius:20px;padding:32px 24px;max-width:340px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.4)"><div style="text-align:center;margin-bottom:20px"><div style="font-size:42px">📞</div><div style="font-size:20px;font-weight:800;color:#1a237e">川嶋メソッド</div><div style="font-size:11px;color:#94a3b8;margin-top:2px">テレアポ管理 v22</div></div><div style="text-align:center;font-size:13px;color:#455a64;margin-bottom:14px">従業員番号を入力</div><div style="display:flex;justify-content:center;gap:8px;margin-bottom:14px">';
+  h+='<div style="min-height:100vh;background:linear-gradient(135deg,#0d1b2a,#1a237e);display:flex;align-items:center;justify-content:center;padding:20px"><div style="background:#fff;border-radius:20px;padding:32px 24px;max-width:340px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.4)"><div style="text-align:center;margin-bottom:20px"><div style="font-size:42px">📞</div><div style="font-size:20px;font-weight:800;color:#1a237e">川嶋メソッド</div><div style="font-size:11px;color:#94a3b8;margin-top:2px">テレアポ管理 v25</div></div><div style="text-align:center;font-size:13px;color:#455a64;margin-bottom:14px">従業員番号を入力</div><div style="display:flex;justify-content:center;gap:8px;margin-bottom:14px">';
   for(var i=0;i<4;i++){var f=pin.length>i;h+='<div style="width:46px;height:54px;border-radius:12px;border:2px solid '+(f?"#1a237e":"#e0e0e0")+';background:'+(f?"#e8eaf6":"#fafafa")+';display:flex;align-items:center;justify-content:center;font-size:24px;color:#1a237e">'+(f?"●":"")+'</div>'}
   h+='</div><div id="pp" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;max-width:240px;margin:0 auto 12px"></div>';
   if(pinErr)h+='<div style="text-align:center;font-size:12px;color:#e53935;font-weight:700;margin-top:6px">'+pinErr+'</div>';

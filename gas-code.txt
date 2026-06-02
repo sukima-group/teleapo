@@ -34,12 +34,15 @@
 
 var SHEET_ID = "1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM";
 var ADMIN_SHEET_ID = "1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ";  // v14: 管理者用 退勤レポート用
-var PIN_MAP = {"091":"柏木", "092":"園田", "093":"堀内", "094":"河野", "095":"福田"};
+var PIN_MAP = {"091":"柏木", "092":"園田", "093":"堀内", "094":"河野", "095":"福田", "097":"藪内"};
 // v18: 全名マップ - 出退勤・履歴・アポでは "河野由香" のような全名で記録される
 // v25: 福田貴美恵 PIN 095 追加
-var FULL_NAME_MAP = {"091":"柏木幸代", "092":"園田絵里", "093":"堀内真紀子", "094":"河野由香", "095":"福田貴美恵"};
+// v26: 藪内亜希 PIN 097 追加 / 発信件数通知 (dial_count_notify) 追加
+var FULL_NAME_MAP = {"091":"柏木幸代", "092":"園田絵里", "093":"堀内真紀子", "094":"河野由香", "095":"福田貴美恵", "097":"藪内亜希"};
 var SHIFT_NOTIFY_TO = "tereapo01.sukima@gmail.com";
 var DAILY_REPORT_TO = "tereapo01.sukima@gmail.com";  // v14: 退勤レポート通知先
+// v26: 発信件数の通知先 (送信元はGAS実行アカウント hr.ashikaga@gmail.com → この宛先へ)
+var DIAL_COUNT_NOTIFY_TO = "tereapo01.sukima@gmail.com";
 var APPO_MAIL_TO = "a.kusunoki@sukimagroup.jp";
 
 // アポインターがログインした時に呼ばれる（架電リスト取得）
@@ -732,6 +735,75 @@ function doPost(e) {
       }
     }
 
+    // ===== 発信件数通知 (v26追加) =====
+    // 退勤時に発信ボタン押下回数を tereapo01.sukima へ通知
+    // 送信元: このGASの実行アカウント (hr.ashikaga@gmail.com)
+    if (d.type === "dial_count_notify") {
+      try {
+        var adminSsD = SpreadsheetApp.openById(ADMIN_SHEET_ID);
+        var dialSh = ensureSheet(adminSsD, "発信件数", [
+          "日付", "アポインター", "PIN", "発信件数", "架電結果数", "アポ数", "実働時間", "送信日時"
+        ]);
+        // upsert: 同じ日付×アポインターがあれば更新
+        var dialData = dialSh.getDataRange().getValues();
+        var dialKey = formatDateKey(d.date);
+        var dialFoundRow = -1;
+        for (var di = 1; di < dialData.length; di++) {
+          if (formatDateKey(dialData[di][0]) === dialKey && String(dialData[di][1]) === String(d.name)) {
+            dialFoundRow = di + 1; break;
+          }
+        }
+        var dialRow = [
+          d.date || "", d.name || "", d.pin || "",
+          d.dialCount || 0, d.totalCalls || 0, d.totalApos || 0,
+          d.workDuration || "", new Date()
+        ];
+        if (dialFoundRow > 0) {
+          dialSh.getRange(dialFoundRow, 1, 1, dialRow.length).setValues([dialRow]);
+        } else {
+          dialSh.appendRow(dialRow);
+        }
+        // メール通知 (送信元=実行アカウント hr.ashikaga, 宛先=tereapo01.sukima)
+        var dialTo = d.to || DIAL_COUNT_NOTIFY_TO;
+        var dialSubject = d.subject || ("【発信件数】" + d.date + " " + d.name + " - " + (d.dialCount || 0) + "件");
+        var dialBody = d.body || (
+          "発信件数通知\n\n" +
+          "アポインター: " + d.name + " (PIN:" + d.pin + ")\n" +
+          "日付: " + d.date + "\n" +
+          "発信件数: " + (d.dialCount || 0) + "件\n" +
+          "架電結果数: " + (d.totalCalls || 0) + "件\n" +
+          "アポ数: " + (d.totalApos || 0) + "件\n"
+        );
+        var dialQuota = -1;
+        try { dialQuota = MailApp.getRemainingDailyQuota(); } catch (e) {}
+        if (dialQuota === 0) {
+          Logger.log("Dial count mail SKIPPED for " + d.name + " - quota exhausted");
+          try {
+            var unsentD = ensureSheet(adminSsD, "未送信メール", ["記録日時", "宛先", "件名", "本文", "理由"]);
+            unsentD.appendRow([new Date(), dialTo, dialSubject, dialBody, "クォータ枯渇(発信件数)"]);
+          } catch (e) {}
+        } else {
+          try {
+            MailApp.sendEmail({to: dialTo, subject: dialSubject, body: dialBody});
+            Logger.log("Dial count mail sent via MailApp to " + dialTo);
+          } catch (de1) {
+            try {
+              GmailApp.sendEmail(dialTo, dialSubject, dialBody);
+              Logger.log("Dial count mail sent via GmailApp to " + dialTo);
+            } catch (de2) {
+              Logger.log("Dial count mail failed (both): " + de1 + " | " + de2);
+              try {
+                var unsentD2 = ensureSheet(adminSsD, "未送信メール", ["記録日時", "宛先", "件名", "本文", "理由"]);
+                unsentD2.appendRow([new Date(), dialTo, dialSubject, dialBody, "送信エラー(発信件数): " + de1]);
+              } catch (e) {}
+            }
+          }
+        }
+      } catch (dialErr) {
+        Logger.log("dial_count_notify error: " + dialErr);
+      }
+    }
+
     return ContentService.createTextOutput(JSON.stringify({status:"ok", type: d.type}))
       .setMimeType(ContentService.MimeType.JSON);
 
@@ -844,6 +916,10 @@ function setupSheets() {
       "架電数", "アポ数", "アポ率(%)", "通話時間",
       "9時", "10時", "11時", "12時", "13時", "14時", "15時", "16時", "17時",
       "更新日時"
+    ]);
+    // v26: 発信件数シート
+    ensureSheet(adminSs, "発信件数", [
+      "日付", "アポインター", "PIN", "発信件数", "架電結果数", "アポ数", "実働時間", "送信日時"
     ]);
     Logger.log("✅ 管理者スプレッドシートのシート初期化完了");
   } catch (e) {
@@ -1035,6 +1111,10 @@ var APPOINTER_DRIVE_MAP = {
   "福田": {
     email: "fukuda.sukimagroup@gmail.com",
     folder_name: "福田_CallRecordings"
+  },
+  "藪内": {
+    email: "yabuuchi.sukimagroup@gmail.com",
+    folder_name: "藪内_CallRecordings"
   }
 };
 

@@ -1,10 +1,11 @@
 /* ==========================================================================
-   川嶋メソッド PWA Service Worker v21
+   川嶋メソッド PWA Service Worker v26
    - HTMLは network-first (古いキャッシュ問題を回避)
-   - 静的アセットは cache-first
-   - GAS APIへのアクセスはネットワーク優先（圏外時は即fail→indexのキューが拾う）
+   - 静的アセットは cache-first (バックグラウンド更新)
+   - install時に全ての旧キャッシュを強制削除
+   - skipWaiting + clients.claim で即座に新SWを適用
    ========================================================================== */
-const VERSION = "v25.0.0-2026-05-19";
+const VERSION = "v26.1.0-2026-06-02";
 const CACHE = "kawashima-" + VERSION;
 const STATIC_ASSETS = [
   "./manifest.json",
@@ -13,15 +14,25 @@ const STATIC_ASSETS = [
 ];
 
 self.addEventListener("install", e => {
-  self.skipWaiting();
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(STATIC_ASSETS)));
+  console.log("[SW] Installing " + VERSION);
+  self.skipWaiting(); /* 即座に新SWを有効化 */
+  e.waitUntil(
+    /* 旧キャッシュを全て削除してからキャッシュ */
+    caches.keys().then(keys => Promise.all(
+      keys.filter(k => k !== CACHE).map(k => {
+        console.log("[SW] Deleting old cache: " + k);
+        return caches.delete(k);
+      })
+    )).then(() => caches.open(CACHE).then(c => c.addAll(STATIC_ASSETS)))
+  );
 });
 
 self.addEventListener("activate", e => {
+  console.log("[SW] Activating " + VERSION);
   e.waitUntil(
     caches.keys().then(keys => Promise.all(
       keys.filter(k => k !== CACHE).map(k => caches.delete(k))
-    )).then(() => self.clients.claim())
+    )).then(() => self.clients.claim()) /* 即座に全タブを制御 */
   );
 });
 
@@ -34,11 +45,10 @@ self.addEventListener("fetch", e => {
     return;
   }
 
-  /* GET 以外（POST 等）はキャッシュ対象外 */
+  /* GET 以外はキャッシュ対象外 */
   if (e.request.method !== "GET") return;
 
   /* HTML (index.html や / へのアクセス) は network-first */
-  /* これにより、新バージョンが即座に反映される */
   const isHTML = e.request.mode === "navigate" ||
                  url.pathname.endsWith("/") ||
                  url.pathname.endsWith(".html");
@@ -56,7 +66,7 @@ self.addEventListener("fetch", e => {
     return;
   }
 
-  /* 静的アセット (画像・JSON) は cache-first */
+  /* 静的アセット (画像・JSON) は cache-first + バックグラウンド更新 */
   e.respondWith(
     caches.match(e.request).then(cached => {
       if (cached) {

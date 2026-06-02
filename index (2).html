@@ -1,0 +1,3098 @@
+﻿<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1a237e">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="format-detection" content="telephone=yes">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>川嶋メソッド</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{overscroll-behavior-y:contain}
+body{font-family:-apple-system,'Hiragino Kaku Gothic ProN','Noto Sans JP',sans-serif;background:#f1f5f9;color:#1e293b;margin:0 auto;min-height:100vh;font-size:14px;padding-bottom:env(safe-area-inset-bottom);max-width:480px}
+button{font-family:inherit;cursor:pointer;border:none;background:none;-webkit-tap-highlight-color:transparent}
+button:active{transform:scale(.98);transition:transform 80ms}
+input,textarea,select{font-family:inherit;font-size:16px;outline:none}
+a{text-decoration:none;-webkit-tap-highlight-color:transparent}
+@keyframes scroll{0%{transform:translateX(100%)}100%{transform:translateX(-200%)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+@keyframes ringBell{0%,100%{transform:rotate(0)}10%,30%{transform:rotate(-12deg)}20%,40%{transform:rotate(12deg)}50%{transform:rotate(0)}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.ticker{background:#fef3c7;padding:8px 0;overflow:hidden;white-space:nowrap;border-bottom:1px solid #f59e0b}
+.ticker span{display:inline-block;padding-left:100%;animation:scroll 25s linear infinite;font-size:13px;font-weight:700;color:#92400e}
+.pulse{animation:pulse 1.4s infinite}
+.bell{display:inline-block;animation:ringBell 1.2s infinite;transform-origin:50% 0}
+.glass{backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+kbd{display:inline-block;padding:1px 6px;border:1px solid #cbd5e1;border-bottom-width:2px;border-radius:4px;background:#f8fafc;font-family:monospace;font-size:10px;color:#475569;vertical-align:middle;line-height:1.4}
+
+/* タブレット (>=768px) */
+@media (min-width:768px){
+  body{max-width:720px;background:#e0e7ff}
+  .bottomSheet{align-items:center !important}
+  .bottomSheet > div{border-radius:18px !important;max-width:560px !important;max-height:88vh !important}
+}
+
+/* PC (>=1024px): 広い画面を活用 */
+@media (min-width:1024px){
+  body{max-width:1280px;padding:0 16px;background:#e0e7ff}
+  .pc-grid{display:grid;grid-template-columns:340px 1fr 320px;gap:14px;align-items:start}
+  .pc-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .pc-grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .pc-only{display:initial !important}
+  .mobile-only{display:none !important}
+  .pc-sticky{position:sticky;top:64px}
+}
+@media (max-width:1023px){
+  .pc-only{display:none !important}
+  .mobile-only{display:initial !important}
+}
+
+/* スクロールバー */
+@media (min-width:1024px){
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:5px}
+  ::-webkit-scrollbar-thumb:hover{background:#94a3b8}
+  ::-webkit-scrollbar-track{background:#f1f5f9}
+}
+
+/* テーブル: PC用 */
+.dataTable{width:100%;border-collapse:collapse;font-size:12px}
+.dataTable th{background:#f8fafc;padding:8px;text-align:left;font-weight:700;color:#475569;border-bottom:2px solid #e2e8f0}
+.dataTable td{padding:7px 8px;border-bottom:1px solid #f1f5f9}
+.dataTable tr:hover{background:#f8fafc}
+
+/* PCホバー */
+@media (hover:hover){
+  button:hover{filter:brightness(1.05)}
+  .row-hover:hover{background:#eff6ff !important;cursor:pointer}
+}
+</style>
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+/* ==========================================================================
+   川嶋メソッド テレアポ管理 PWA  v20 (実機で確実に動く同期 - キュー経由ではなく即時送信)
+   ==========================================================================
+   v20 重要修正 (実機で「Aアカウントでアップロードした → Bアカウントで見えない」問題を根本解決):
+   - リストアップロードを directGasPost (即時送信) に変更 - キュー経由ではない
+   - 200件ずつチャンク分割 (keepalive 64KB制限を回避)
+   - sessionIdでチャンクをグループ化、最初/最後フラグでサーバー側状態管理
+   - LockServiceで同一PIN同時アップロード競合防止
+   - CacheServiceでセッション進捗追跡
+   - クライアントに進捗オーバーレイUI表示 (チャンクN/M)
+   - 完了するまでユーザーに「送信完了」と表示しない
+   - 失敗時はDLQに退避 + 明確な赤いトースト
+   - タイムアウト90秒/チャンク
+   - 自動再同期 (5分おき) は今後の拡張で
+   v19:
+   - 5ステップ式チェックリスト + ボトルネック分析 + アウト詳細シート
+   v18:
+   - 複数アカウント・複数端末でのデータ共有 (loadFromGAS / upload_list)
+   v17:
+   - sv()のQuotaExceededError検出 → hist自動prune (300件)＋ユーザー警告
+   - hist上限1000件 (約500KB) - 無限増加防止
+   - 退勤時 hist 0件 + 勤務2時間以上 → 強い警告ダイアログ
+   - GAS LockService - 4人同時退勤時のシート競合防止
+   - 退勤メールに "0件警告" を追加 (管理者が異常を検知できる)
+   - 集計画面に「💾 容量診断」ボタン (storageStats関数)
+   v16:
+   - SQ_RETRIES localStorage永続化、idempotency (clientReqId+CacheService)
+   - AbortController 30秒タイムアウト、quota確認＋未送信メールシート
+   - resendUnsent/healthCheck トリガー対応関数
+   v15:
+   - 同期キュー: no-cors削除、レスポンス検証、リトライ＋指数バックオフ＋DLQ
+   - GAS doPost: 防御的パース、ping endpoint、ensureSheet列追加
+   - GAS setupSheets() / testDailyReport() で実機テスト可能
+   v14:
+   - 退勤ボタンで管理者用シート (1kYvb86...) に自動書込
+   v13:
+   - PC レスポンシブ: 1024px以上で max-width:1280px、テーブル/グリッドレイアウト
+   - キーボードショートカット: Space/Enter発信、N/P 前後、S スキップ、1-6 結果、? ヘルプ等
+   - リスト検索＆フィルタ: 会社名/電話/担当で全文検索、未架電/架電済/アポ/スキップで絞込
+   - CSV エクスポート: 履歴/アポ/1時間別/リストをBOM付きUTF-8 CSVでダウンロード
+   - 重複検出: インポート時に同一会社名・電話番号を自動検出して件数表示
+   - シフト一括テンプレ: 平日9:30-18:00一括、平日午前のみ、平日午後のみ、全日
+   - シフト申請履歴: 過去10件をローカル保存、画面で振り返り可能
+   - 通話履歴ビュー: 日付指定で時系列ログ、PCで全列表示、CSV出力可
+   - 管理者ヒートマップ: 全員×9-17時の本日架電数を一望
+   - 管理者「として操作」: 各アポインターのアカウントに切替えて操作 (戻るボタン付き)
+   - キーボードヘルプモーダル: ?キーで全ショートカット一覧
+   - PCショートカット表示: 結果ボタンに 1-6 番号バッジ、発信に Space ヒント
+   - 重要: モバイル(Samsung A25)体験は完全に維持
+   v12:
+   - PC対応: Excel/CSV/TSVファイルアップロード(SheetJS) + ドラッグ&ドロップ
+   - リスト永続化: ログインしてもクリアボタンを押すまで保持
+   - リスト読込モーダルにファイル選択UI (会社名・電話番号 必須)
+   - 管理者: 全アポインターのリスト準備＋まとめてクリア
+   - 各アポインターの home & list view から大型「📞 発信」ボタン
+   - PCで番号コピー機能 (📋 コピー → 手動ダイヤル)
+   - シフト: 9:30〜18:00 を 30分刻みで開始/終了時刻を指定 (タップで時間ピッカー)
+   - 1時間ごと集計: 勤務日別 (出勤打刻のある日) の架電数・通話時間・アポ数
+   v11:
+   - PC対応: 横幅レスポンシブ (デスクトップで720px幅)
+   - Excelファイル取込: .xlsx / .xls / .csv (SheetJS lazy-load)
+   - ドラッグ＆ドロップ + クリックでファイル選択 + ペースト の3方式
+   - リスト永続化: アップロード済みリストは再ログインしても保持
+     ↳ 明示的な「クリア」ボタン押下 or 「再取得」ボタンでのみ更新
+   - 管理者: 全アポインターのリストを一括/個別に設定・クリア可能
+   - 発信ボタン: 緑色・大型ボタン + 番号コピー (PCソフトフォン用)
+   v11:
+   - 河野由香 PIN 094、商談日付/時間、音声入力、集計、シフト申請
+   ========================================================================== */
+(function(){
+"use strict";
+
+/* ---------- 設定 ---------- */
+var GAS = "https://script.google.com/macros/s/AKfycbyjNZp3LLHkAl_2NcV7nLhehX3ymxu4x1EhpUdCiPysm84qd7hMY0NumVgi8keE6IKsdg/exec";
+var APPO_MAIL_TO = "a.kusunoki@sukimagroup.jp";
+var SHIFT_NOTIFY_TO = "tereapo01.sukima@gmail.com";
+var DAILY_REPORT_TO = "tereapo01.sukima@gmail.com";  /* v14: 退勤レポート通知先 */
+
+var STAFF=[
+  {id:"s091",nm:"柏木幸代",pin:"091",sh:"柏木"},
+  {id:"s092",nm:"園田絵里",pin:"092",sh:"園田"},
+  {id:"s093",nm:"堀内真紀子",pin:"093",sh:"堀内"},
+  {id:"s094",nm:"河野由香",pin:"094",sh:"河野"},
+  {id:"s095",nm:"福田貴美恵",pin:"095",sh:"福田"},
+  {id:"s097",nm:"藪内亜希",pin:"097",sh:"藪内"}
+];
+
+/* v19: 5ステップ式 川嶋メソッド */
+var CHECKS=[
+  {id:"c1",step:"S1",label:"「ってか、あれですねー 素敵な声ですねー」",note:"ほめる"},
+  {id:"c2",step:"S1",label:"「共感＋その上で＋YES取り」",note:"切り返し"},
+  {id:"c3",step:"S3",label:"「ちなみに何を叶えていきたいです？」",note:"目的を聞く"},
+  {id:"c4",step:"S4",label:"「もし、〇〇のようになったら、メリットになってきそうですか？」",note:"解決できると感じさせる"},
+  {id:"c5",step:"S5",label:"「〇〇のようになったらメリットだ、と、おっしゃている〇〇様に、是非１度お話聞いてみて下さい」",note:"背中を押す"}
+];
+
+var STEPS=[
+  {id:"S1",l:"ステップ1: 相手の不信感払しょく"},
+  {id:"S2",l:"ステップ2"},
+  {id:"S3",l:"ステップ3: 目的を聞く"},
+  {id:"S4",l:"ステップ4: 解決できると感じさせる"},
+  {id:"S5",l:"ステップ5: 背中を押す"}
+];
+
+/* 暴走したステップ (複数選択) */
+var BOUSOU_OPTS=[
+  {id:"none",label:"暴走なし"},
+  {id:"s1",label:"ステップ1で暴走"},
+  {id:"s3",label:"ステップ3で暴走"},
+  {id:"s4",label:"ステップ4で暴走"},
+  {id:"s5",label:"ステップ5で暴走"}
+];
+
+/* 終話したステップ (単一選択) */
+var END_STEP_OPTS=[
+  {id:"S1",label:"ステップ1で終話"},
+  {id:"S2",label:"ステップ2で終話"},
+  {id:"S3",label:"ステップ3で終話"},
+  {id:"S4",label:"ステップ4で終話"},
+  {id:"S5",label:"ステップ5で終話"}
+];
+
+var RESULTS=[
+  {id:"appo",l:"アポ獲得",i:"🎯",c:"#10b981"},
+  {id:"cb",l:"再架電",i:"📞",c:"#f59e0b"},
+  {id:"absent",l:"不在",i:"🚫",c:"#6b7280"},
+  {id:"refused",l:"断り",i:"✋",c:"#ef4444"},
+  {id:"wrong",l:"不通",i:"❌",c:"#9ca3af"},
+  {id:"other",l:"その他",i:"📝",c:"#64748b"}
+];
+
+/* 再架電プリセット */
+var CB_PRESETS=[
+  {l:"30分後",mode:"add",min:30},
+  {l:"1時間後",mode:"add",min:60},
+  {l:"2時間後",mode:"add",min:120},
+  {l:"3時間後",mode:"add",min:180},
+  {l:"明日 10:00",mode:"tomorrow",h:10,m:0},
+  {l:"明日 14:00",mode:"tomorrow",h:14,m:0},
+  {l:"明後日 10:00",mode:"plus",d:2,h:10,m:0}
+];
+
+/* 断りクイックスタンプ */
+var REFUSE_STAMPS=["予算なし","担当不在","他社契約中","興味なし","検討余地なし","資料送付のみ","コール拒否"];
+
+/* ---------- ストレージ ---------- */
+function ld(k){try{return JSON.parse(localStorage.getItem(k))}catch(e){return null}}
+function sv(k,v){
+  try{localStorage.setItem(k,JSON.stringify(v));return true}
+  catch(e){
+    /* v17: QuotaExceededError 時に hist を自動削減して再試行 */
+    if(e&&(e.name==="QuotaExceededError"||e.code===22||String(e).indexOf("quota")>=0)){
+      console.warn("[sv] QuotaExceeded for "+k+" - attempting auto-prune");
+      var pruned=false;
+      /* 各ユーザーのhistを300件に削減 */
+      for(var i=0;i<STAFF.length;i++){
+        var hk="h-"+STAFF[i].id;
+        var h=ld(hk);
+        if(h&&h.length>300){
+          try{localStorage.setItem(hk,JSON.stringify(h.slice(0,300)));pruned=true}catch(e2){}
+        }
+      }
+      /* DLQも50件に */
+      var dlq=ld("sq_dlq");
+      if(dlq&&dlq.length>20){try{localStorage.setItem("sq_dlq",JSON.stringify(dlq.slice(-20)))}catch(e3){}}
+      if(pruned){
+        try{localStorage.setItem(k,JSON.stringify(v));console.log("[sv] retry succeeded after prune");return true}
+        catch(e4){}
+      }
+      /* それでも失敗 → ユーザーに通知 */
+      try{flash("⚠️ ストレージ満杯です。古い履歴を削除しました。集計画面で履歴CSV出力してください")}catch(e5){}
+      return false;
+    }
+    /* その他のエラー (private mode 等) */
+    console.warn("[sv] failed for "+k+": "+e);
+    try{flash("⚠️ データ保存に失敗: "+k)}catch(ee){}
+    return false;
+  }
+}
+function pad(n){return n<10?"0"+n:""+n}
+function now(){var d=new Date();return pad(d.getHours())+":"+pad(d.getMinutes())+":"+pad(d.getSeconds())}
+function dateStr(){var d=new Date();return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate())}
+function dateJP(d){d=d||new Date();return d.getFullYear()+"年"+(d.getMonth()+1)+"月"+d.getDate()+"日"}
+function timerStr(s){return pad(Math.floor(s/60))+":"+pad(s%60)}
+function dtJP(dt){return (dt.getMonth()+1)+"/"+dt.getDate()+" "+pad(dt.getHours())+":"+pad(dt.getMinutes())}
+
+/* ---------- 電話番号 ---------- */
+/* 表示用：日本式に整形 (03-1234-5678 / 080-1234-5678 / +81-3-1234-5678 等) */
+function fmtPhone(s){
+  if(!s)return"";
+  var n=String(s).replace(/[^\d+]/g,"");
+  if(!n)return String(s);
+  if(n.startsWith("+81"))n="0"+n.slice(3);
+  if(n.startsWith("0")){
+    /* 携帯・IP電話 (090/080/070/050) → 0XX-XXXX-XXXX */
+    if(n.length===11&&/^(090|080|070|050)/.test(n))return n.slice(0,3)+"-"+n.slice(3,7)+"-"+n.slice(7);
+    /* 03/06 (東京・大阪) → 0X-XXXX-XXXX */
+    if(n.length===10&&/^0[36]/.test(n))return n.slice(0,2)+"-"+n.slice(2,6)+"-"+n.slice(6);
+    /* その他10桁固定 → 0XX-XXX-XXXX */
+    if(n.length===10)return n.slice(0,3)+"-"+n.slice(3,6)+"-"+n.slice(6);
+    /* 0120/0800 → 0XXX-XXX-XXX */
+    if(n.length===10&&/^(0120|0800)/.test(n))return n.slice(0,4)+"-"+n.slice(4,7)+"-"+n.slice(7);
+  }
+  return n;
+}
+/* tel: 用：数字のみ */
+function telPhone(s){return String(s||"").replace(/[^\d+]/g,"")}
+
+/* ---------- フィードバック ---------- */
+function vib(p){if(navigator.vibrate)try{navigator.vibrate(p)}catch(e){}}
+
+/* ---------- 音声入力 (Web Speech API, v11) ---------- */
+function voiceSupported(){return!!(window.SpeechRecognition||window.webkitSpeechRecognition)}
+function startVoice(targetId){
+  if(!voiceSupported()){flash("⚠️ この端末では音声入力が使えません");return}
+  if(REC){try{REC.stop()}catch(e){}REC=null;RECTGT=null;render();return}
+  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  REC=new SR();REC.lang="ja-JP";REC.continuous=false;REC.interimResults=false;
+  RECTGT=targetId;render();vib(40);
+  REC.onresult=function(ev){
+    var t=ev.results[0][0].transcript;
+    var inp=document.getElementById(targetId);
+    if(inp){var cur=inp.value||"";inp.value=cur?cur+" "+t:t;
+      var key=targetId.replace(/^af_/,""); if(af.hasOwnProperty(key))af[key]=inp.value;
+    }
+    flash("🎤 "+t);vib(30);
+  };
+  REC.onerror=function(ev){flash("⚠️ 音声認識エラー: "+(ev.error||""));REC=null;RECTGT=null;render()};
+  REC.onend=function(){REC=null;RECTGT=null;render()};
+  try{REC.start()}catch(e){flash("⚠️ "+e.message);REC=null;RECTGT=null;render()}
+}
+var WAKE=null;
+function lockScreen(){
+  if("wakeLock"in navigator&&!WAKE){
+    navigator.wakeLock.request("screen").then(function(w){WAKE=w;w.addEventListener("release",function(){WAKE=null})}).catch(function(){})
+  }
+}
+function unlockScreen(){if(WAKE)try{WAKE.release();WAKE=null}catch(e){}}
+document.addEventListener("visibilitychange",function(){
+  if(document.visibilityState==="visible"&&V==="call"&&!WAKE)lockScreen();
+});
+
+/* ---------- 同期キュー（オフライン対応） ---------- */
+var SQ=ld("sq")||[];
+var SQ_SENDING=false;
+var SQ_RETRIES=ld("sq_retries")||{};  /* v16: localStorage永続化 */
+function saveRetries(){sv("sq_retries",SQ_RETRIES)}
+function gasPost(data){
+  /* v16: idempotency keyを発行 (リトライ時の二重送信防止) */
+  var item={_id:Date.now()+"_"+Math.random().toString(36).slice(2,8),clientReqId:Date.now()+"_"+Math.random().toString(36).slice(2,12),...data};
+  SQ.push(item);
+  sv("sq",SQ);
+  flushSQ();
+  updateBadge();
+  return item._id;
+}
+function flushSQ(){
+  if(SQ_SENDING||!navigator.onLine||!SQ.length||!GAS)return;
+  SQ_SENDING=true;
+  var item=SQ[0];
+  var payload={};for(var k in item)if(k!=="_id")payload[k]=item[k];
+  /* v16: AbortController で 30秒タイムアウト */
+  var ctrl=("AbortController" in window)?new AbortController():null;
+  var tmout=ctrl?setTimeout(function(){ctrl.abort()},30000):null;
+  fetch(GAS,{
+    method:"POST",
+    headers:{"Content-Type":"text/plain;charset=utf-8"},
+    body:JSON.stringify(payload),
+    redirect:"follow",
+    keepalive:true,
+    signal:ctrl?ctrl.signal:undefined
+  })
+  .then(function(res){
+    if(tmout)clearTimeout(tmout);
+    if(!res.ok){throw new Error("HTTP "+res.status)}
+    return res.text();
+  })
+  .then(function(text){
+    var ok=false,errMsg="",duplicate=false;
+    if(text==="ok"||text==='"ok"')ok=true;
+    else{
+      try{var j=JSON.parse(text);
+        if(j.status==="ok")ok=true;
+        else if(j.status==="duplicate"){ok=true;duplicate=true}  /* v16: idempotency */
+        else errMsg=j.message||text;
+      }catch(e){
+        if(text.indexOf("error")>=0)errMsg=text;
+        else ok=true;  /* 不明だが2xxなので成功扱い */
+      }
+    }
+    if(ok){
+      SQ.shift();sv("sq",SQ);
+      delete SQ_RETRIES[item._id];saveRetries();
+      SQ_SENDING=false;updateBadge();
+      if(duplicate)console.log("[SQ] duplicate detected, treated as success (idempotent)");
+      if(SQ.length)setTimeout(flushSQ,300);
+    }else{
+      handleSQFailure(item,errMsg||"unknown GAS error");
+    }
+  })
+  .catch(function(err){
+    if(tmout)clearTimeout(tmout);
+    handleSQFailure(item,String(err));
+  });
+}
+function handleSQFailure(item,reason){
+  SQ_RETRIES[item._id]=(SQ_RETRIES[item._id]||0)+1;
+  var n=SQ_RETRIES[item._id];
+  saveRetries();  /* v16: 永続化 */
+  console.warn("[SQ] retry #"+n+" for "+item.type+": "+reason);
+  if(n>=5){
+    var dlq=ld("sq_dlq")||[];
+    dlq.push({...item,_failedAt:Date.now(),_reason:reason,_retries:n});
+    if(dlq.length>50)dlq=dlq.slice(-50);
+    sv("sq_dlq",dlq);
+    SQ.shift();sv("sq",SQ);
+    delete SQ_RETRIES[item._id];saveRetries();
+    flash("⚠️ 送信失敗 ("+item.type+") - DLQに保存");
+    /* v16: 重要なtype なら大きく警告 */
+    if(item.type==="daily_report"||item.type==="appointment"){
+      vib([200,100,200,100,200]);
+    }
+  }
+  SQ_SENDING=false;updateBadge();
+  var delay=Math.min(60000,Math.pow(2,n)*1000);
+  setTimeout(flushSQ,delay);
+}
+function updateBadge(){var b=document.getElementById("syncBadge");if(b){b.textContent=SQ.length?"📤"+SQ.length:"";b.style.display=SQ.length?"inline-block":"none"}}
+window.addEventListener("online",function(){flash("🌐 オンライン復帰 同期します");flushSQ()});
+window.addEventListener("offline",function(){flash("📵 オフライン キュー保存中")});
+setInterval(flushSQ,30000);
+
+/* ---------- 状態 ---------- */
+var U=null;
+var V="login";
+var pin="",pinErr="";
+var rows=[],cm=null,ci=0,skipped={};
+var hist=[],appos=[],att={},cbs=[];
+var ck={},bousou=[],endStep="",selRes=null;  /* v19: bousou=複数選択(配列), endStep=終話ステップ */
+var uploadProgress=null;  /* v20: アップロード進捗 {total, done, sn} or null */
+var tsec=0,tref=null;
+var toast="",ttmr=null;
+var loading=false;
+var showImp=false,impErr="";
+var af={project:"",meetingDate:"",meetingTime:"",company:"",person:"",gender:"男",phone:"",role:"",address:"",datetime:"",email:"",personality:""};
+
+/* シフト管理 (v11) */
+var shiftMonth = (function(){var d=new Date();if(d.getFullYear()<2026||(d.getFullYear()===2026&&d.getMonth()<4))return "2026-05";return d.getFullYear()+"-"+pad(d.getMonth()+1)})();
+var shiftDays = {};
+
+/* シフト時間スロット (v12: 9:30〜18:00 を 30分刻み) */
+var TIME_SLOTS=(function(){var r=[];for(var h=9;h<=18;h++){if(h===9){r.push("09:30")}else{r.push(pad(h)+":00");if(h<18)r.push(pad(h)+":30")}}return r})();
+
+/* シフト日詳細モーダル (v12) */
+var showShiftDay = null;  /* { dateKey, start, end } */
+
+/* 時間別集計の選択日 (v12) */
+var hourStatsDate = null;
+
+/* v13 追加state */
+var listSearch = "";       /* リスト検索クエリ */
+var listFilter = "all";    /* "all" | "uncalled" | "called" | "skipped" | "appo" */
+var historyDate = "";      /* 履歴表示の日付 (空 = 今日) */
+var asAppointer = null;    /* 管理者の "○○として操作" モード時のアポインターオブジェクト */
+var pcKbdHelp = false;     /* キーボードショートカットヘルプ表示 */
+
+/* 音声入力 (v11) */
+var REC=null,RECTGT=null;
+
+/* 通話追跡 (Page Visibility) */
+var CALL_INIT_AT=null;       /* tel: をタップした時刻 (ms) */
+var CALL_PENDING=false;      /* ダイヤラー復帰待ち */
+var CALL_ACT_DUR=0;          /* 復帰で確定した通話時間(秒) */
+/* v26: オートコール(連続発信モード) */
+var AUTO_MODE=false;         /* 連続発信モードのON/OFF */
+var AUTO_NO_ANSWER_SEC=15;   /* この秒数未満で復帰=不発(相手出ない)と判定。TFT/ルーダス基準5-25秒 */
+var autoCallCount=0;         /* 本日の発信回数(オートコール含む、退勤通知用) */
+var autoCallDate="";         /* autoCallCount の対象日 (日付変わりでリセット) */
+
+/* コールバック作成ダイアログ */
+var showCB=false;
+var cbCustomDt="";
+var cbMemo="";
+
+/* 確認ダイアログ */
+var showConfirm=null; /* {title, msg, onYes, onNo} */
+
+/* ---------- ユーザーデータ ロード ---------- */
+function loadUser(id){
+  rows=ld("l-"+id)||[];cm=ld("c-"+id)||null;ci=0;
+  skipped=ld("sk-"+id)||{};
+  hist=ld("h-"+id)||[];appos=ld("a-"+id)||[];att=ld("at-"+id)||{};
+  cbs=ld("cb-"+id)||[];
+  /* v26: オートコール設定と発信件数を復元 */
+  AUTO_MODE=ld("autoMode-"+id)||false;
+  AUTO_NO_ANSWER_SEC=ld("autoSec-"+id)||15;
+  autoCallDate=ld("acDate-"+id)||"";
+  autoCallCount=(autoCallDate===dateStr())?(ld("acCount-"+id)||0):0;
+  shiftDays=ld("sft-"+id+"-"+shiftMonth)||{};
+  /* v11→v12 シフト形式マイグレーション (string→object) */
+  var migrated=false;
+  for(var k in shiftDays){
+    var v=shiftDays[k];
+    if(typeof v==="string"){
+      if(v==="work")shiftDays[k]={start:"09:30",end:"18:00"};
+      else if(v==="morning")shiftDays[k]={start:"09:30",end:"12:30"};
+      else if(v==="afternoon")shiftDays[k]={start:"13:00",end:"18:00"};
+      else if(v==="off")shiftDays[k]="off";
+      else delete shiftDays[k];
+      migrated=true;
+    }
+  }
+  if(migrated)sv("sft-"+id+"-"+shiftMonth,shiftDays);
+}
+function gf(row,f){if(!row||!cm||cm[f]<0)return"";return String(row[cm[f]]||"").trim()}
+function td(){return dateStr()}
+function tdc(){return hist.filter(function(c){return c.d===td()&&c.u===(U&&U!=="admin"?U.id:"")})}
+function called(i){return tdc().some(function(c){return c.i===i})}
+function show(i){return!called(i)&&!skipped[i]}
+function todayAtt(){return att[td()]||{}}
+function flash(m){toast=m;render();clearTimeout(ttmr);ttmr=setTimeout(function(){toast="";render()},2400)}
+function goNext(){for(var i=ci+1;i<rows.length;i++)if(show(i)){ci=i;return}for(var i=0;i<ci;i++)if(show(i)){ci=i;return}}
+
+/* 直近 (3日以内) のアポ */
+function upcomingAppo(){var n=new Date(),r=[];appos.forEach(function(a){if(!a.datetime)return;var dt=new Date(a.datetime);if(isNaN(dt.getTime()))return;var diff=(dt.getTime()-n.getTime())/(1000*60*60*24);if(diff>=0&&diff<=3)r.push(a)});return r}
+
+/* 直近のコールバック (今〜24時間) */
+function upcomingCB(){var n=Date.now(),r=[];cbs.forEach(function(c){if(c.done)return;var t=new Date(c.at).getTime();if(isNaN(t))return;var diff=(t-n)/3600000;if(diff>=-1&&diff<=24)r.push(c)});return r.sort(function(a,b){return new Date(a.at)-new Date(b.at)})}
+
+/* ---------- リスト取得 ---------- */
+function fetchList(staff,cb){
+  if(!GAS||!navigator.onLine){if(cb)cb(false);return}
+  fetch(GAS+"?pin="+staff.pin+"&t="+Date.now(),{redirect:"follow"})
+  .then(function(r){return r.text()})
+  .then(function(t){
+    try{var d=JSON.parse(t);
+    if(d.rows&&d.rows.length>0){
+      rows=d.rows;cm=d.cm||{co:0,ph:1,pe:2,ad:3};ci=0;skipped={};
+      sv("l-"+staff.id,rows);sv("c-"+staff.id,cm);sv("sk-"+staff.id,{});
+      if(cb)cb(true,rows.length)
+    }else{if(cb)cb(false)}}catch(e){if(cb)cb(false)}
+  }).catch(function(){if(cb)cb(false)})
+}
+
+/* ---------- v20: 確実な送信 (キュー経由ではなく直接送信) ---------- */
+/* 重要な操作 (リストアップロード等) はこちらを使う */
+/* 戻り値: Promise → resolve(response data) / reject(error) */
+function directGasPost(payload,timeoutMs){
+  if(!GAS)return Promise.reject(new Error("GAS URL未設定"));
+  if(!navigator.onLine)return Promise.reject(new Error("オフライン"));
+  var ctrl=("AbortController" in window)?new AbortController():null;
+  var to=ctrl?setTimeout(function(){ctrl.abort()},timeoutMs||60000):null;
+  /* clientReqId 付与 (idempotency) */
+  if(!payload.clientReqId)payload.clientReqId=Date.now()+"_"+Math.random().toString(36).slice(2,12);
+  return fetch(GAS,{
+    method:"POST",
+    headers:{"Content-Type":"text/plain;charset=utf-8"},
+    body:JSON.stringify(payload),
+    redirect:"follow",
+    signal:ctrl?ctrl.signal:undefined
+    /* keepalive はナシ (大きいpayloadでは制限あり) */
+  })
+  .then(function(r){
+    if(to)clearTimeout(to);
+    if(!r.ok)throw new Error("HTTP "+r.status+" "+r.statusText);
+    return r.text();
+  })
+  .then(function(t){
+    var d;
+    try{d=JSON.parse(t)}catch(e){throw new Error("Invalid JSON response: "+t.slice(0,200))}
+    if(d.status==="ok"||d.status==="duplicate")return d;
+    throw new Error(d.message||t);
+  })
+  .catch(function(err){
+    if(to)clearTimeout(to);
+    throw err;
+  });
+}
+
+/* v20: チャンク分割アップロード - 200件ずつ送信 */
+function uploadListInChunks(pin,rows,onProgress){
+  var CHUNK_SIZE=200;
+  var total=rows.length;
+  var chunks=[];
+  for(var i=0;i<total;i+=CHUNK_SIZE){
+    chunks.push(rows.slice(i,i+CHUNK_SIZE));
+  }
+  if(chunks.length===0)chunks.push([]);  /* 空でも1回送信 */
+  var sessionId=Date.now()+"_"+Math.random().toString(36).slice(2,8);
+  var idx=0;
+  function next(){
+    if(idx>=chunks.length){
+      return Promise.resolve({status:"ok",total:total,chunks:chunks.length});
+    }
+    var chunk=chunks[idx];
+    var isFirst=idx===0;
+    var isLast=idx===chunks.length-1;
+    if(onProgress)onProgress(idx+1,chunks.length);
+    return directGasPost({
+      type:"upload_list_chunk",
+      pin:pin,
+      sessionId:sessionId,
+      chunkIndex:idx,
+      totalChunks:chunks.length,
+      isFirst:isFirst,
+      isLast:isLast,
+      rows:chunk
+    },90000)
+    .then(function(){idx++;return next()});
+  }
+  return next();
+}
+
+function loadFromGAS(staff,cb){
+  if(!GAS||!navigator.onLine){if(cb)cb(false,"オフライン");return}
+  flash("🔄 サーバーからデータ同期中...");
+  /* AbortController で 30秒タイムアウト */
+  var ctrl=("AbortController" in window)?new AbortController():null;
+  var tmout=ctrl?setTimeout(function(){ctrl.abort()},30000):null;
+  fetch(GAS,{
+    method:"POST",
+    headers:{"Content-Type":"text/plain;charset=utf-8"},
+    body:JSON.stringify({type:"fetch_state",pin:staff.pin}),
+    redirect:"follow",
+    signal:ctrl?ctrl.signal:undefined
+  })
+  .then(function(r){if(tmout)clearTimeout(tmout);if(!r.ok)throw new Error("HTTP "+r.status);return r.text()})
+  .then(function(t){
+    var d;
+    try{d=JSON.parse(t)}catch(e){throw new Error("Invalid JSON: "+t.slice(0,100))}
+    if(d.status!=="ok")throw new Error(d.message||"GAS error");
+    
+    /* 1. 架電リスト (v22: サーバーが正 - 空ならローカルもクリア) */
+    /* 重要: 管理者がリストを削除した場合、GASは空になる。 */
+    /*       その時はローカルも空にしないと、古いリストが残ってしまう。 */
+    if(d.list!==undefined){
+      if(d.list.length>0){
+        rows=d.list;
+        cm={co:0,ph:1,pe:2,ad:3};
+        sv("l-"+staff.id,rows);sv("c-"+staff.id,cm);
+        ci=0;skipped={};sv("sk-"+staff.id,{});
+      }else{
+        /* GAS側が空 = 管理者がまだ未設定または削除した状態 */
+        /* ローカルもクリアして同期 */
+        rows=[];
+        cm=null;
+        ci=0;skipped={};
+        sv("l-"+staff.id,[]);
+        sv("c-"+staff.id,null);
+        sv("sk-"+staff.id,{});
+      }
+    }
+    
+    /* 2. 出退勤 (att) - GAS上のデータをマージ (新しい方を優先) */
+    if(d.att){
+      var localAtt=ld("at-"+staff.id)||{};
+      /* GASにあるがlocalにない、または日付がGASの方が新しい場合は上書き */
+      for(var dk in d.att){
+        var srvA=d.att[dk],locA=localAtt[dk]||{};
+        /* マージ: 各フィールドGASに値があればそれを採用、なければlocal保持 */
+        localAtt[dk]={
+          ci:srvA.ci||locA.ci||"",
+          co:srvA.co||locA.co||"",
+          bs:srvA.bs||locA.bs||"",
+          be:srvA.be||locA.be||""
+        };
+      }
+      att=localAtt;
+      sv("at-"+staff.id,att);
+    }
+    
+    /* 3. 架電履歴 (hist) - GAS上の最近1000件を採用 (localは破棄しない、IDで重複排除) */
+    if(d.hist&&d.hist.length>0){
+      var localHist=ld("h-"+staff.id)||[];
+      var seenKeys={};
+      var merged=[];
+      /* GASのデータを先に追加 (同一の日付+時刻+電話番号で重複判定) */
+      d.hist.forEach(function(h){
+        h.u=staff.id;
+        if(!h.id)h.id=Date.now()+Math.random();
+        var key=(h.d||"")+"|"+(h.tm||"")+"|"+(h.ph||"")+"|"+(h.r||"");
+        if(!seenKeys[key]){seenKeys[key]=true;merged.push(h)}
+      });
+      /* localのみのデータがあれば追加 (同期されていない最新の操作) */
+      localHist.forEach(function(h){
+        var key=(h.d||"")+"|"+(h.tm||"")+"|"+(h.ph||"")+"|"+(h.r||"");
+        if(!seenKeys[key]){seenKeys[key]=true;merged.push(h)}
+      });
+      /* 日付・時刻でソート (新しい順) */
+      merged.sort(function(a,b){
+        var ad=(a.d||"")+"_"+(a.tm||""),bd=(b.d||"")+"_"+(b.tm||"");
+        return bd.localeCompare(ad);
+      });
+      hist=merged.slice(0,1000);
+      sv("h-"+staff.id,hist);
+    }
+    
+    /* 4. アポ (appos) */
+    if(d.appos&&d.appos.length>0){
+      appos=d.appos;
+      sv("a-"+staff.id,appos);
+    }
+    
+    /* 5. 再架電 (cb) */
+    if(d.cb&&d.cb.length>0){
+      var localCb=ld("cb-"+staff.id)||[];
+      /* 会社名+電話番号で重複排除 (シンプル) */
+      var seen={};
+      var mergedCb=[];
+      d.cb.forEach(function(c){
+        if(!c.id)c.id=Date.now()+Math.random();
+        var k=(c.co||"")+"|"+(c.ph||"")+"|"+(c.schedule||"");
+        if(!seen[k]){seen[k]=true;mergedCb.push(c)}
+      });
+      localCb.forEach(function(c){
+        var k=(c.co||"")+"|"+(c.ph||"")+"|"+(c.at||c.schedule||"");
+        if(!seen[k]){seen[k]=true;mergedCb.push(c)}
+      });
+      cbs=mergedCb;
+      sv("cb-"+staff.id,cbs);
+    }
+    
+    if(cb)cb(true,{
+      list:(d.list||[]).length,
+      hist:(d.hist||[]).length,
+      appos:(d.appos||[]).length,
+      cb:(d.cb||[]).length,
+      attDays:Object.keys(d.att||{}).length
+    });
+  })
+  .catch(function(err){
+    if(tmout)clearTimeout(tmout);
+    console.warn("[loadFromGAS] failed:",err.message);
+    if(cb)cb(false,String(err.message||err));
+  });
+}
+
+/* ---------- ログイン (v12: 保存済みリストを上書きしない) ---------- */
+function tryLogin(){
+  if(pin.length===3){
+    var f=null;for(var i=0;i<STAFF.length;i++)if(STAFF[i].pin===pin)f=STAFF[i];
+    if(f){
+      U=f;V="home";pin="";pinErr="";loadUser(f.id);
+      /* v16: ログイン時にDLQをチェックして警告 */
+      var dlq=ld("sq_dlq")||[];
+      if(dlq.length>0){
+        setTimeout(function(){
+          showConfirm={
+            title:"⚠️ 未送信データがあります",
+            msg:"前回までに送信できなかったデータが "+dlq.length+"件 あります。\n\n集計画面の「DLQ再送」から手動で再送できます。\n\n今すぐ再送しますか？",
+            onYes:function(){resendDLQ();showConfirm=null;render()},
+            onNo:function(){showConfirm=null;render()}
+          };
+          render();
+        },800);
+      }
+      var hasInit=ld("init-"+f.id);
+      /* v18: 毎回ログイン時にGASから全データ同期 (複数アカウント・複数端末対応) */
+      loading=true;render();
+      loadFromGAS(f,function(ok,info){
+        loading=false;
+        if(ok){
+          var msg="✅ サーバーから同期: ";
+          var parts=[];
+          if(info.list)parts.push("リスト"+info.list);
+          if(info.hist)parts.push("履歴"+info.hist);
+          if(info.appos)parts.push("アポ"+info.appos);
+          if(info.cb)parts.push("再架電"+info.cb);
+          if(info.attDays)parts.push("勤怠"+info.attDays+"日");
+          msg+=parts.length?parts.join("/"):"データなし";
+          flash(msg);
+        }else{
+          /* オフライン or 初回失敗 → ローカルキャッシュで継続 */
+          if(rows.length){
+            flash("⚠️ サーバー同期失敗 - ローカル保存分で継続 ("+info+")");
+          }else{
+            flash("📋 リストなし - 「リスト読込」でアップロード");
+          }
+        }
+        sv("init-"+f.id,true);
+        render();
+      });
+      return;
+    }
+  }
+  if(pin.length===4){
+    if(pin==="9999"){U="admin";V="admin";pin="";pinErr="";render()}
+    else{pinErr="番号が違います";pin="";vib([60,30,60]);render()}
+  }
+}
+
+/* ---------- 通話開始 (tel:タップ時) ---------- */
+function bumpCallCount(){
+  /* v26: 発信回数カウント (日付が変わったらリセット) */
+  var today=td();
+  if(autoCallDate!==today){autoCallCount=0;autoCallDate=today;sv("acDate-"+U.id,today)}
+  autoCallCount++;
+  sv("acCount-"+U.id,autoCallCount);
+}
+function onPhoneTap(){
+  CALL_INIT_AT=Date.now();
+  CALL_PENDING=true;
+  bumpCallCount();  /* v26: 発信回数を記録 */
+  vib(40);
+  /* 自動でチェックリストを準備しておく */
+  ck={};selRes=null;bousou=[];endStep="";tsec=0;clearInterval(tref);
+  /* tel:リンクは <a href> のデフォルト動作で開く */
+}
+
+/* Page Visibility による通話復帰検出 */
+document.addEventListener("visibilitychange",function(){
+  if(document.visibilityState==="visible"&&CALL_PENDING&&CALL_INIT_AT){
+    var dur=Math.floor((Date.now()-CALL_INIT_AT)/1000);
+    CALL_PENDING=false;
+    if(dur>=4&&(!AUTO_MODE||dur>=AUTO_NO_ANSWER_SEC)){
+      /* 通話が成立したと判定 (通常4秒以上、オートコール時はAUTO_NO_ANSWER_SEC以上) */
+      CALL_ACT_DUR=dur;tsec=dur;
+      clearInterval(tref);
+      tref=setInterval(function(){tsec++;var el=document.getElementById("tmr");if(el)el.textContent=timerStr(tsec)},1000);
+      V="call";lockScreen();vib([30,40,30]);
+      flash("📞 通話完了 "+timerStr(dur)+" → 結果入力");
+      render();
+    }else if(AUTO_MODE){
+      /* v26: オートコール - 不発(相手出ない)→自動で不在記録して次へ */
+      CALL_INIT_AT=null;
+      autoRecordAbsentAndNext(dur);
+    }else{
+      flash("⚠️ 発信されなかったようです");
+      CALL_INIT_AT=null;
+    }
+  }
+});
+
+/* v26: オートコール - 不在として記録し次の番号へ自動前進 */
+function autoRecordAbsentAndNext(dur){
+  var cur=rows[ci]||null;
+  var entry={id:Date.now(),u:U.id,
+    co:cur?gf(cur,"co"):"",pe:cur?gf(cur,"pe"):"",ph:cur?gf(cur,"ph"):"",
+    r:"absent",dur:timerStr(dur||0),ck:"0/"+CHECKS.length,bs:"なし",bsArr:[],
+    endStep:"",out:"",memo:"(オートコール: 応答なし)",
+    d:td(),tm:now().slice(0,5),i:ci,auto:true};
+  hist.unshift(entry);
+  if(hist.length>1000)hist=hist.slice(0,1000);
+  sv("h-"+U.id,hist);
+  /* スプレッドシートにも記録 */
+  gasPost({type:"callResult",name:U.nm,pin:U.pin,sheet:U.sh,
+    date:dateJP(),time:now().slice(0,5),
+    company:entry.co,phone:entry.ph,person:entry.pe,
+    result:"不在",duration:entry.dur,checkedCount:"0/"+CHECKS.length,
+    bousou:"なし",bousouArr:[],endStep:"",outText:"",memo:entry.memo});
+  /* 次へ */
+  var moved=goNext();
+  V="home";
+  if(moved){
+    vib(40);
+    flash("📵 応答なし→次の番号へ ("+autoCallCount+"件目)");
+  }else{
+    AUTO_MODE=false;
+    vib([60,40,60]);
+    flash("✅ リスト完了 - オートコール終了");
+  }
+  render();
+}
+
+/* ---------- 結果保存 ---------- */
+function saveCall(){
+  if(!selRes)return;
+  /* 再架電なら先にコールバック登録ダイアログ */
+  if(selRes==="cb"&&!showCB){showCB=true;cbCustomDt="";cbMemo="";render();return}
+
+  var outEl=document.getElementById("outTA");var outText=outEl?outEl.value:"";
+  var memoEl=document.getElementById("memoTA");var memo=memoEl?memoEl.value:"";
+  var cur=rows[ci]||null;
+  var checked=CHECKS.filter(function(c){return ck[c.id]}).length;
+  var resLabel="";for(var i=0;i<RESULTS.length;i++)if(RESULTS[i].id===selRes)resLabel=RESULTS[i].l;
+  /* v19: bousou は配列 - "なし" or "ステップ1,ステップ3" 形式の文字列に変換 */
+  var bLabel=bousou.length===0?"なし":bousou.map(function(id){
+    var n=id.replace("s","");return"ステップ"+n;
+  }).join(",");
+  var endStepLabel=endStep||"";
+
+  var entry={id:Date.now(),u:U.id,co:cur?gf(cur,"co"):"",pe:cur?gf(cur,"pe"):"",ph:cur?gf(cur,"ph"):"",
+    r:selRes,dur:timerStr(tsec),ck:checked+"/"+CHECKS.length,bs:bLabel,
+    bsArr:bousou.slice(),  /* v19: 配列も保存(集計用) */
+    endStep:endStepLabel,
+    out:outText,memo:memo,
+    d:td(),tm:now().slice(0,5),i:ci};
+  hist.unshift(entry);
+  /* v17: hist 上限 1000件 (約500KB) */
+  if(hist.length>1000)hist=hist.slice(0,1000);
+  sv("h-"+U.id,hist);
+
+  /* スプレッドシートへ送信 (キュー経由) */
+  gasPost({type:"callResult",name:U.nm,pin:U.pin,sheet:U.sh,
+    date:dateJP(),time:now().slice(0,5),
+    company:cur?gf(cur,"co"):"",phone:cur?gf(cur,"ph"):"",person:cur?gf(cur,"pe"):"",
+    result:resLabel,duration:timerStr(tsec),checkedCount:checked+"/"+CHECKS.length,
+    bousou:bLabel,bousouArr:bousou.slice(),endStep:endStepLabel,
+    outText:outText,memo:memo});
+
+  clearInterval(tref);unlockScreen();
+  CALL_INIT_AT=null;CALL_PENDING=false;CALL_ACT_DUR=0;tsec=0;
+  ck={};selRes=null;bousou=[];endStep="";
+
+  if(entry.r==="appo"){
+    af={project:"",meetingDate:"",meetingTime:"",company:cur?gf(cur,"co"):"",person:cur?gf(cur,"pe"):"",gender:"男",phone:cur?gf(cur,"ph"):"",role:"",address:cur?gf(cur,"ad"):"",datetime:"",email:"",personality:""};
+    V="appo";vib([50,40,50,40,80]);render()
+  }else{
+    goNext();V="home";vib(60);
+    /* v26: オートコールモードなら次の発信を促す */
+    if(AUTO_MODE){flash("✅ 保存→次へ ("+autoCallCount+"件発信済)")}
+    else{flash("✅ 保存→次へ")}
+    render()
+  }
+}
+
+/* コールバック確定 */
+function confirmCB(preset){
+  var d=new Date();
+  if(preset.mode==="add"){d=new Date(Date.now()+preset.min*60000)}
+  else if(preset.mode==="tomorrow"){d=new Date();d.setDate(d.getDate()+1);d.setHours(preset.h,preset.m,0,0)}
+  else if(preset.mode==="plus"){d=new Date();d.setDate(d.getDate()+preset.d);d.setHours(preset.h,preset.m,0,0)}
+  else if(preset.mode==="custom"){
+    if(!cbCustomDt){flash("⚠️ 日時を入力");return}
+    d=new Date(cbCustomDt);if(isNaN(d.getTime())){flash("⚠️ 不正な日時");return}
+  }
+  var cur=rows[ci]||null;
+  var entry={id:Date.now(),at:d.toISOString(),
+    co:cur?gf(cur,"co"):"",pe:cur?gf(cur,"pe"):"",ph:cur?gf(cur,"ph"):"",
+    memo:cbMemo,createdAt:new Date().toISOString(),done:false,rowIdx:ci};
+  cbs.unshift(entry);sv("cb-"+U.id,cbs);
+  gasPost({type:"callback",name:U.nm,pin:U.pin,sheet:U.sh,scheduledAt:dtJP(d),company:entry.co,person:entry.pe,phone:entry.ph,memo:entry.memo});
+  showCB=false;
+  /* そのまま結果保存も進める */
+  selRes="cb";saveCall();
+}
+
+/* ---------- 勤怠 ---------- */
+function punch(type){
+  if(type==="co"){
+    /* 退勤前に本日の集計プレビュー */
+    var prev=summarizeDaily();
+    /* v17: 出勤からそれなりに時間経過しているのにhistが空 → データ消失の可能性を警告 */
+    var ciTime=att[td()]&&att[td()].ci;
+    var hoursWorked=0;
+    if(ciTime){
+      var nowMin=new Date().getHours()*60+new Date().getMinutes();
+      var p=ciTime.split(":");var ciMin=(parseInt(p[0])||0)*60+(parseInt(p[1])||0);
+      hoursWorked=Math.max(0,(nowMin-ciMin)/60);
+    }
+    var warnPrefix="";
+    if(hoursWorked>=2&&prev.totalCalls===0){
+      warnPrefix="⚠️ "+hoursWorked.toFixed(1)+"時間勤務中ですが架電履歴が0件です。\nデータが消失している可能性があります。\n本当に退勤しますか？\n\n";
+    }
+    /* v19: ボトルネック分析を含める */
+    var btlPrefix="";
+    if(prev.totalCalls>0){
+      btlPrefix+="\n\n📈 ボトルネック分析:\n";
+      if(prev.bousouMaxCount>0){
+        var sNum=prev.bousouMax.replace("s","");
+        btlPrefix+="・暴走最多: ステップ"+sNum+" ("+prev.bousouMaxCount+"件)\n";
+      }
+      if(prev.endStepMaxCount>0){
+        var eNum=prev.endStepMax.replace("S","");
+        btlPrefix+="・終話最多: ステップ"+eNum+" ("+prev.endStepMaxCount+"件)\n";
+      }
+      if(prev.outTexts.length>0){
+        btlPrefix+="・切り返しできなかったアウト: "+prev.outTexts.length+"件";
+      }
+    }
+    var msg=warnPrefix+"本日の業務終了として記録します。\n管理者へ自動通知されます。\n\n📊 本日の集計プレビュー\n発信: "+autoCallCount+"件 / 架電結果: "+prev.totalCalls+"件 / アポ: "+prev.totalApos+"件 / 通話時間: "+fmtSec(prev.totalSec)+btlPrefix;
+    showConfirm={title:"退勤しますか？",msg:msg,onYes:function(){doPunch("co")},onNo:function(){showConfirm=null;render()}};
+    render();return;
+  }
+  doPunch(type);
+}
+function doPunch(type){
+  showConfirm=null;
+  var t=now(),d=td();if(!att[d])att[d]={};att[d][type]=t;sv("at-"+U.id,att);
+  var lb={ci:"出勤",co:"退勤",bs:"休憩開始",be:"休憩終了"};
+  vib(type==="ci"?[80,50,80]:50);
+  flash("✅ "+lb[type]+" "+t.slice(0,5));
+  var a=att[d];
+  gasPost({type:"attendance",name:U.nm,pin:U.pin,date:dateJP(),clockIn:a.ci||"",clockOut:a.co||"",breakStart:a.bs||"",breakEnd:a.be||""});
+  /* v14: 退勤時に管理者用日次レポート送信 */
+  if(type==="co"){
+    var rep=summarizeDaily();
+    /* 勤務時間 (出勤〜退勤、休憩を引く) */
+    function toMin(hms){if(!hms)return 0;var p=hms.split(":");return(parseInt(p[0])||0)*60+(parseInt(p[1])||0)}
+    var ciM=toMin(a.ci),coM=toMin(a.co),bsM=toMin(a.bs),beM=toMin(a.be);
+    var workMin=Math.max(0,coM-ciM);
+    var breakMin=(bsM&&beM&&beM>bsM)?(beM-bsM):0;
+    var netMin=Math.max(0,workMin-breakMin);
+    var workH=Math.floor(netMin/60),workM=netMin%60;
+    var workStr=workH+"時間"+(workM?pad(workM)+"分":"00分");
+    /* 1時間ごと内訳 */
+    var hr=statsByHour(d);
+    var hourMap={};hr.forEach(function(b){hourMap["h"+b.hour]=b.count});
+    /* 各時間のアポ数も */
+    var hourApoMap={};hr.forEach(function(b){hourApoMap["a"+b.hour]=b.apo});
+    var rate=rep.totalCalls>0?Math.round(rep.totalApos*1000/rep.totalCalls)/10:0;
+    /* 平均1時間あたり (稼働時間ベース) */
+    var activeHours=hr.filter(function(b){return b.count>0}).length;
+    var avgPerHr=activeHours>0?Math.round(rep.totalCalls*10/activeHours)/10:0;
+    var bodyDetail="";
+    hr.forEach(function(b){bodyDetail+=b.label+": "+b.count+"件"+(b.sec?" ("+fmtSec(b.sec)+")":"")+(b.apo?" 🎯"+b.apo:"")+"\n"});
+    var subject="【退勤通知】"+dateJP()+" "+U.nm+" - 架電"+rep.totalCalls+"件 / アポ"+rep.totalApos+"件";
+    /* v17: hist 0件で勤務時間が長い場合の警告バナー */
+    var emptyWarning="";
+    if(rep.totalCalls===0&&netMin>=60){
+      emptyWarning="\n⚠️ 警告: 勤務時間 "+workStr+" あり、しかし架電履歴が 0件 です。\n      アポインター端末でデータが消失した可能性があります。\n      本人に確認してください。\n";
+    }
+    var body=
+      "==========================\n"+
+      " 退勤通知 / 日次レポート\n"+
+      "==========================\n"+emptyWarning+"\n"+
+      "■ アポインター: "+U.nm+" (PIN:"+U.pin+")\n"+
+      "■ 日付: "+dateJP()+"\n"+
+      "■ 出勤: "+(a.ci?a.ci.slice(0,5):"—")+"\n"+
+      "■ 退勤: "+(a.co?a.co.slice(0,5):"—")+"\n"+
+      "■ 休憩: "+(a.bs?a.bs.slice(0,5):"—")+"〜"+(a.be?a.be.slice(0,5):"—")+(breakMin?" ("+breakMin+"分)":"")+"\n"+
+      "■ 実働時間: "+workStr+"\n\n"+
+      "----- 本日の架電実績 -----\n"+
+      "架電数: "+rep.totalCalls+"件\n"+
+      "アポ獲得: "+rep.totalApos+"件\n"+
+      "アポ率: "+rate+"%\n"+
+      "通話時間合計: "+fmtSec(rep.totalSec)+"\n"+
+      "稼働時間あたり平均: "+avgPerHr+"件/時\n\n"+
+      "----- 1時間ごと内訳 -----\n"+
+      bodyDetail+"\n"+
+      "----- 結果別内訳 -----\n"+
+      "アポ獲得: "+rep.byResult.appo+"件\n"+
+      "再架電: "+rep.byResult.cb+"件\n"+
+      "不在: "+rep.byResult.absent+"件\n"+
+      "断り: "+rep.byResult.refused+"件\n"+
+      "不通: "+rep.byResult.wrong+"件\n"+
+      "その他: "+rep.byResult.other+"件\n\n"+
+      "----- 📈 ボトルネック分析 -----\n"+
+      "▼ 暴走したステップ (件数順):\n"+
+      (function(){
+        var lines=[];
+        var keys=Object.keys(rep.bousouCount).sort(function(a,b){return rep.bousouCount[b]-rep.bousouCount[a]});
+        keys.forEach(function(k){
+          var n=k.replace("s","");
+          lines.push("  ステップ"+n+": "+rep.bousouCount[k]+"件");
+        });
+        if(rep.bousouMaxCount>0){
+          var maxN=rep.bousouMax.replace("s","");
+          lines.push("  → 改善ポイント: ステップ"+maxN+"の暴走を意識する");
+        }else{
+          lines.push("  暴走なし - 良好");
+        }
+        return lines.join("\n");
+      })()+"\n\n"+
+      "▼ 終話したステップ (件数順):\n"+
+      (function(){
+        var lines=[];
+        var keys=Object.keys(rep.endStepCount).sort(function(a,b){return rep.endStepCount[b]-rep.endStepCount[a]});
+        keys.forEach(function(k){
+          var n=k.replace("S","");
+          lines.push("  ステップ"+n+": "+rep.endStepCount[k]+"件");
+        });
+        if(rep.endStepMaxCount>0){
+          var maxN=rep.endStepMax.replace("S","");
+          lines.push("  → 改善ポイント: ステップ"+maxN+"で終話せず、次のステップへ進む練習");
+        }
+        return lines.join("\n");
+      })()+"\n\n"+
+      "▼ 切り返しできなかったアウト ("+rep.outTexts.length+"件):\n"+
+      (function(){
+        if(rep.outTexts.length===0)return "  なし";
+        return rep.outTexts.map(function(o,i){
+          return "  "+(i+1)+". ["+o.tm+" "+(o.co||"会社不明")+"]\n     "+o.text;
+        }).join("\n\n");
+      })()+"\n\n"+
+      "送信日時: "+dateJP()+" "+now().slice(0,5)+"\n";
+    /* v16: sanity check - 異常な値ならログに警告 */
+    var sanityWarnings=[];
+    if(rep.totalCalls<0||rep.totalCalls>500)sanityWarnings.push("架電数が異常: "+rep.totalCalls);
+    if(rep.totalApos>rep.totalCalls)sanityWarnings.push("アポ数>架電数: "+rep.totalApos+">"+rep.totalCalls);
+    if(rep.totalSec<0||rep.totalSec>43200)sanityWarnings.push("通話時間が異常: "+rep.totalSec+"秒");
+    if(netMin<0||netMin>1440)sanityWarnings.push("実働時間が異常: "+netMin+"分");
+    if(sanityWarnings.length){
+      console.warn("[退勤レポート] sanity check warnings:",sanityWarnings);
+      flash("⚠️ データに異常値: "+sanityWarnings[0]);
+      vib([100,60,100,60,100]);
+      /* それでも送信は続ける (管理者が判断できるように) */
+    }
+    gasPost({
+      type:"daily_report",
+      name:U.nm,pin:U.pin,sheet:U.sh,
+      date:dateJP(),dateKey:d,
+      clockIn:a.ci||"",clockOut:a.co||"",
+      breakStart:a.bs||"",breakEnd:a.be||"",
+      workDuration:workStr,workMinutes:netMin,
+      breakMinutes:breakMin,
+      totalCalls:rep.totalCalls,
+      totalApos:rep.totalApos,
+      apoRate:rate,
+      dialCount:autoCallCount,  /* v26: 発信ボタンを押した回数 */
+      totalCallTime:fmtSec(rep.totalSec),
+      totalCallSec:rep.totalSec,
+      avgPerHour:avgPerHr,
+      h9:hourMap.h9||0,h10:hourMap.h10||0,h11:hourMap.h11||0,
+      h12:hourMap.h12||0,h13:hourMap.h13||0,h14:hourMap.h14||0,
+      h15:hourMap.h15||0,h16:hourMap.h16||0,h17:hourMap.h17||0,
+      a9:hourApoMap.a9||0,a10:hourApoMap.a10||0,a11:hourApoMap.a11||0,
+      a12:hourApoMap.a12||0,a13:hourApoMap.a13||0,a14:hourApoMap.a14||0,
+      a15:hourApoMap.a15||0,a16:hourApoMap.a16||0,a17:hourApoMap.a17||0,
+      byResultAppo:rep.byResult.appo,byResultCb:rep.byResult.cb,
+      byResultAbsent:rep.byResult.absent,byResultRefused:rep.byResult.refused,
+      byResultWrong:rep.byResult.wrong,byResultOther:rep.byResult.other,
+      /* v19: ボトルネック分析データ */
+      bousouS1:rep.bousouCount.s1,bousouS3:rep.bousouCount.s3,
+      bousouS4:rep.bousouCount.s4,bousouS5:rep.bousouCount.s5,
+      bousouMax:rep.bousouMax,bousouMaxCount:rep.bousouMaxCount,
+      endStep1:rep.endStepCount.S1,endStep2:rep.endStepCount.S2,
+      endStep3:rep.endStepCount.S3,endStep4:rep.endStepCount.S4,endStep5:rep.endStepCount.S5,
+      endStepMax:rep.endStepMax,endStepMaxCount:rep.endStepMaxCount,
+      outsCount:rep.outTexts.length,
+      outsList:rep.outTexts.slice(0,30),  /* 最大30件まで送信 */
+      subject:subject,body:body,to:DAILY_REPORT_TO
+    });
+    /* v26: 発信件数の別途通知 (hr.ashikaga@gmail.com → tereapo01.sukima@gmail.com) */
+    var dialSubject="【発信件数】"+dateJP()+" "+U.nm+" - "+autoCallCount+"件発信";
+    var dialBody=
+      "==========================\n"+
+      " 本日の発信件数 通知\n"+
+      "==========================\n\n"+
+      "■ アポインター: "+U.nm+" (PIN:"+U.pin+")\n"+
+      "■ 日付: "+dateJP()+"\n"+
+      "■ 発信件数(発信ボタン押下回数): "+autoCallCount+"件\n"+
+      "■ 架電結果記録数: "+rep.totalCalls+"件\n"+
+      "■ アポ獲得: "+rep.totalApos+"件\n"+
+      "■ 実働時間: "+workStr+"\n\n"+
+      "※ この通知は発信件数の集計用です。\n"+
+      "送信日時: "+dateJP()+" "+now().slice(0,5)+"\n";
+    gasPost({
+      type:"dial_count_notify",
+      name:U.nm,pin:U.pin,
+      date:dateJP(),dateKey:d,
+      dialCount:autoCallCount,
+      totalCalls:rep.totalCalls,
+      totalApos:rep.totalApos,
+      workDuration:workStr,
+      subject:dialSubject,body:dialBody
+    });
+    /* v15: 送信状態を退勤画面で表示するために記録 */
+    sv("lastDailyReport-"+U.id,{
+      ts:Date.now(),
+      date:dateJP(),
+      totalCalls:rep.totalCalls,
+      totalApos:rep.totalApos,
+      totalCallTime:fmtSec(rep.totalSec),
+      workDuration:workStr,
+      status:"sending"
+    });
+    flash("📊 退勤レポート送信中... (キュー追加済み)");
+    /* 5秒後に状態確認 */
+    setTimeout(function(){
+      var rec=ld("lastDailyReport-"+U.id);
+      if(rec){
+        if(SQ.length===0){rec.status="sent";flash("✅ 退勤レポート送信完了")}
+        else{rec.status="queued";flash("📤 ネットワーク状況により後ほど送信されます (📤"+SQ.length+")")}
+        sv("lastDailyReport-"+U.id,rec);
+      }
+    },5000);
+  }
+}
+
+/* v14: 本日の集計サマリー (退勤レポート用) */
+function summarizeDaily(){
+  var calls=tdc();
+  var totalSec=0;calls.forEach(function(c){totalSec+=durSec(c.dur||"")});
+  var totalApos=calls.filter(function(c){return c.r==="appo"}).length;
+  var byResult={appo:0,cb:0,absent:0,refused:0,wrong:0,other:0};
+  calls.forEach(function(c){if(byResult.hasOwnProperty(c.r))byResult[c.r]++});
+  /* v19: ボトルネック分析 */
+  var bousouCount={s1:0,s3:0,s4:0,s5:0};
+  var endStepCount={S1:0,S2:0,S3:0,S4:0,S5:0};
+  var outTexts=[];
+  calls.forEach(function(c){
+    /* 暴走 - bsArr (新形式) または bs 文字列 (旧形式) */
+    if(c.bsArr&&c.bsArr.length){
+      c.bsArr.forEach(function(id){if(bousouCount.hasOwnProperty(id))bousouCount[id]++});
+    }else if(c.bs&&c.bs!=="なし"){
+      /* "ステップ1,ステップ3" → s1, s3 */
+      String(c.bs).split(",").forEach(function(part){
+        var m=part.match(/ステップ(\d)/);
+        if(m){var key="s"+m[1];if(bousouCount.hasOwnProperty(key))bousouCount[key]++}
+      });
+    }
+    /* 終話ステップ */
+    if(c.endStep&&endStepCount.hasOwnProperty(c.endStep))endStepCount[c.endStep]++;
+    /* アウト */
+    if(c.out&&String(c.out).trim())outTexts.push({
+      d:c.d,tm:c.tm,co:c.co||"",text:String(c.out).trim()
+    });
+  });
+  /* 最多ステップ算出 */
+  var bousouMax="",bousouMaxCount=0;
+  for(var k in bousouCount){if(bousouCount[k]>bousouMaxCount){bousouMaxCount=bousouCount[k];bousouMax=k}}
+  var endStepMax="",endStepMaxCount=0;
+  for(var k in endStepCount){if(endStepCount[k]>endStepMaxCount){endStepMaxCount=endStepCount[k];endStepMax=k}}
+  return{
+    totalCalls:calls.length,totalApos:totalApos,totalSec:totalSec,byResult:byResult,
+    bousouCount:bousouCount,bousouMax:bousouMax,bousouMaxCount:bousouMaxCount,
+    endStepCount:endStepCount,endStepMax:endStepMax,endStepMaxCount:endStepMaxCount,
+    outTexts:outTexts
+  };
+}
+
+/* ---------- アポメール送信 (v11) ---------- */
+function sendAppo(){
+  ["project","meetingDate","meetingTime","company","person","phone","role","address","email","personality"].forEach(function(f){
+    var el=document.getElementById("af_"+f);if(el)af[f]=el.value
+  });
+  /* datetime を構築（後方互換のため） */
+  if(af.meetingDate&&af.meetingTime)af.datetime=af.meetingDate+"T"+af.meetingTime;
+  else if(af.meetingDate)af.datetime=af.meetingDate;
+  var a=af;
+  if(!a.company||!a.person||!a.meetingDate||!a.meetingTime){flash("⚠️ 法人名/担当者名/商談日付/商談時間 必須");vib([100,60,100]);return}
+  var body="アポイント報告\n\n"+
+    "案件名: "+a.project+"\n"+
+    "商談日付: "+a.meetingDate+"\n"+
+    "商談時間: "+a.meetingTime+"\n"+
+    "法人名: "+a.company+"\n"+
+    "電話番号: "+a.phone+"\n"+
+    "担当者: "+a.person+"（"+a.gender+"）\n"+
+    "役職: "+a.role+"\n"+
+    "メール: "+a.email+"\n"+
+    "住所: "+a.address+"\n"+
+    "人柄: "+a.personality+"\n\n"+
+    "報告者: "+U.nm;
+  var subj="【アポ報告】"+a.company+" "+a.person+"様 - "+U.nm;
+  appos.unshift({...a,id:Date.now(),reporter:U.nm,date:td()});
+  sv("a-"+U.id,appos);
+  gasPost({type:"appointment",name:U.nm,pin:U.pin,sheet:U.sh,
+    project:a.project,meetingDate:a.meetingDate,meetingTime:a.meetingTime,
+    company:a.company,person:a.person,gender:a.gender,phone:a.phone,role:a.role,address:a.address,
+    datetime:a.datetime,email:a.email,personality:a.personality,reporter:U.nm,date:dateJP()});
+  vib([60,40,60,40,120]);
+  window.location.href="mailto:"+APPO_MAIL_TO+"?subject="+encodeURIComponent(subj)+"&body="+encodeURIComponent(body);
+  setTimeout(function(){af={project:"",meetingDate:"",meetingTime:"",company:"",person:"",gender:"男",phone:"",role:"",address:"",datetime:"",email:"",personality:""};goNext();V="home";flash("✅ 送信完了");render()},1500)
+}
+
+/* ---------- インポート (v12 リファクタ) ---------- */
+/* テキストを2次元配列にパース */
+function parseTextRows(text){
+  text=text.replace(/^\uFEFF/,"").replace(/\r\n/g,"\n").replace(/\r/g,"\n");
+  var lines=text.split("\n").filter(function(l){return l.trim()});
+  if(!lines.length)return[];
+  var sep="\t";if(lines[0].indexOf("\t")<0)sep=lines[0].indexOf(",")>=0?",":"SP";
+  function sp(l){
+    if(sep==="\t")return l.split("\t").map(function(c){return String(c||"").trim()});
+    if(sep===","){var r=[],cur="",q=false;for(var i=0;i<l.length;i++){var ch=l[i];if(ch==='"')q=!q;else if(ch===","&&!q){r.push(cur.trim());cur=""}else cur+=ch}r.push(cur.trim());return r}
+    return l.split(/\s{2,}/).map(function(c){return String(c||"").trim()})
+  }
+  return lines.map(sp);
+}
+
+/* 2次元配列を保存可能な形に整え localStorage へ保存 */
+function processImportRows(all){
+  if(!all||!all.length){impErr="データなし";render();return false}
+  /* セルを文字列化＋trim */
+  all=all.map(function(r){return r.map(function(c){return String(c==null?"":c).trim()})});
+  /* 全セル空の行を除去 */
+  all=all.filter(function(r){return r.some(function(c){return c&&c.length>0})});
+  if(!all.length){impErr="空データ";render();return false}
+  var fl=all[0].join("").toLowerCase();
+  var isH=["施設","会社","電話","tel","番号","担当","住所","法人","名称","名前","company","name","phone"].some(function(k){return fl.indexOf(k)>=0});
+  if(all[0].some(function(c){return/^\d{2,4}[\-\d\(\)\s]{4,}/.test(c)}))isH=false;
+  var data,newCm;
+  if(isH&&all.length>=2){
+    data=all.slice(1);
+    var hl=all[0].map(function(h){return(h||"").toLowerCase()});
+    /* パターン優先順 (具体的→一般的) で先に全列を走査 */
+    function fc(ps){for(var j=0;j<ps.length;j++)for(var i=0;i<hl.length;i++)if(hl[i].indexOf(ps[j])>=0)return i;return-1}
+    newCm={
+      co:fc(["会社名","法人名","施設名","事業所名","店舗名","会社","法人","施設","名称","顧客名","顧客","団体","名前","company","name"]),
+      ph:fc(["電話番号","携帯番号","tel番号","電話","tel","phone","連絡先","番号"]),
+      pe:fc(["担当者","担当","氏名","施設長","代表者","代表","責任者","contact"]),
+      ad:fc(["住所","所在地","所在"])
+    };
+  }else{
+    data=all;
+    var nc=all[0].length;
+    newCm=nc<=1?{co:0,ph:-1,pe:-1,ad:-1}:nc===2?{co:0,ph:1,pe:-1,ad:-1}:nc===3?{co:0,ph:1,pe:2,ad:-1}:{co:0,ph:1,pe:2,ad:3};
+  }
+  data=data.filter(function(r){return r.some(function(c){return c&&c.length>0})});
+  if(!data.length){impErr="データ0件";render();return false}
+  /* 検証: 会社名 or 電話番号 のいずれかが必須 */
+  if(newCm.co<0&&newCm.ph<0){impErr="会社名・電話番号 のどちらも検出できません。ヘッダー行を確認するか、列を 会社名→電話番号 の順に並べてください。";render();return false}
+  var uid=U==="admin"?(document.getElementById("tgtSel")?document.getElementById("tgtSel").value:""):U.id;
+  if(!uid){impErr="ユーザー未選択";render();return false}
+  sv("l-"+uid,data);sv("c-"+uid,newCm);sv("sk-"+uid,{});sv("init-"+uid,true);
+  if(U!=="admin"&&U.id===uid){rows=data;cm=newCm;ci=0;skipped={}}
+  showImp=false;impErr="";
+  var sn="";STAFF.forEach(function(s){if(s.id===uid)sn=s.nm});
+  /* v20: GASスプレッドシートに確実にアップロード (チャンク分割 + 完了確認) */
+  /* 4列形式に正規化: [会社名, 電話番号, 担当者, 住所] */
+  var normalizedRows=data.map(function(r){
+    return [
+      newCm.co>=0?(r[newCm.co]||""):"",
+      newCm.ph>=0?(r[newCm.ph]||""):"",
+      newCm.pe>=0?(r[newCm.pe]||""):"",
+      newCm.ad>=0?(r[newCm.ad]||""):""
+    ];
+  });
+  /* PIN取得 */
+  var targetPin="";STAFF.forEach(function(s){if(s.id===uid)targetPin=s.pin});
+  /* v13: 重複検出 */
+  var dups=detectDuplicates(data,newCm.co,newCm.ph);
+  vib(80);
+  /* v20: ローカル保存はすぐ完了表示、サーバー送信は別フィードバック */
+  if(dups.length){
+    flash("✅ "+sn+" に "+data.length+"件読込 ("+dups.length+"件重複) - サーバー送信中...");
+  }else{
+    flash("✅ "+sn+" に "+data.length+"件 読込 - サーバー送信中...");
+  }
+  /* サーバー送信 (チャンク分割 + プログレス表示) */
+  if(targetPin&&navigator.onLine){
+    /* 進捗表示用 state */
+    uploadProgress={total:Math.ceil(normalizedRows.length/200),done:0,sn:sn};
+    render();
+    uploadListInChunks(targetPin,normalizedRows,function(done,total){
+      uploadProgress={total:total,done:done,sn:sn};
+      render();
+    })
+    .then(function(){
+      uploadProgress=null;
+      flash("✅ "+sn+" "+data.length+"件 サーバー送信完了 (他端末からも見えます)");
+      vib([60,40,60,40,80]);
+      render();
+    })
+    .catch(function(err){
+      uploadProgress=null;
+      console.error("[upload_list] failed:",err);
+      flash("❌ サーバー送信失敗: "+(err.message||err)+" - ローカルには保存済み");
+      vib([200,100,200,100,200]);
+      /* DLQに退避 (後で再送可能) */
+      var dlq=ld("sq_dlq")||[];
+      dlq.push({type:"upload_list_pending",pin:targetPin,rows:normalizedRows,_failedAt:Date.now(),_reason:String(err.message||err)});
+      if(dlq.length>50)dlq=dlq.slice(-50);
+      sv("sq_dlq",dlq);
+      render();
+    });
+  }else if(!navigator.onLine){
+    flash("📵 オフライン - 「リスト再送」ボタンで後で送信してください");
+  }
+  render();return true
+}
+
+/* ペーストインポート */
+function doImport(){
+  var ta=document.getElementById("impTA");
+  if(!ta||!ta.value.trim()){impErr="テキストが空です";render();return}
+  var rows2=parseTextRows(ta.value);
+  if(!rows2.length){impErr="解析失敗";render();return}
+  processImportRows(rows2);
+}
+
+/* SheetJS (xlsx) 遅延ロード */
+function loadXLSX(callback){
+  if(typeof XLSX!=="undefined")return callback(true);
+  if(!navigator.onLine){callback(false,"オフライン");return}
+  flash("📡 Excelライブラリ読込中...");
+  var s=document.createElement("script");
+  s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+  s.onload=function(){callback(true)};
+  s.onerror=function(){callback(false,"CDN到達失敗")};
+  document.head.appendChild(s);
+}
+
+/* Excel/CSVファイル取込 (v12) */
+function handleExcelFile(file){
+  if(!file)return;
+  var name=(file.name||"").toLowerCase();
+  if(!/\.(xlsx|xls|csv|tsv|txt)$/.test(name)){
+    impErr="対応形式: .xlsx / .xls / .csv / .tsv / .txt";render();return
+  }
+  flash("📂 "+file.name+" 読込中...");
+  loadXLSX(function(ok,reason){
+    if(!ok){
+      impErr="⚠️ Excelライブラリ読込失敗"+(reason?"("+reason+")":"")+"。コピペは引き続き使えます。";
+      render();return
+    }
+    var reader=new FileReader();
+    reader.onload=function(e){
+      try{
+        var data=new Uint8Array(e.target.result);
+        var wb=XLSX.read(data,{type:"array",cellDates:false,cellNF:false,cellText:true});
+        var sheetName=wb.SheetNames[0];
+        if(!sheetName){impErr="シートが見つかりません";render();return}
+        var sheet=wb.Sheets[sheetName];
+        var arr=XLSX.utils.sheet_to_json(sheet,{header:1,defval:"",raw:false,blankrows:false});
+        if(!arr.length){impErr="シート「"+sheetName+"」にデータがありません";render();return}
+        processImportRows(arr);
+      }catch(err){impErr="ファイル解析エラー: "+err.message;render()}
+    };
+    reader.onerror=function(){impErr="ファイル読込失敗";render()};
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+/* リストクリア (v12) */
+function clearList(uid){
+  if(!uid)return;
+  var sn="",isAll=uid==="all";
+  if(isAll)sn="全アポインター";
+  else STAFF.forEach(function(s){if(s.id===uid)sn=s.nm});
+  showConfirm={
+    title:sn+" のリストをクリア？",
+    msg:"保存済みの架電リストとスキップ情報がリセットされます。\nアポ・履歴・勤怠は残ります。\n\n⚠️ サーバー側からも削除されます (全端末・全アカウントから消えます)",
+    onYes:function(){
+      /* v22: ローカル削除 */
+      if(isAll){
+        STAFF.forEach(function(s){sv("l-"+s.id,[]);sv("c-"+s.id,null);sv("sk-"+s.id,{})});
+      }else{
+        sv("l-"+uid,[]);sv("c-"+uid,null);sv("sk-"+uid,{});
+      }
+      if(U!=="admin"&&(isAll||U.id===uid)){rows=[];cm=null;ci=0;skipped={}}
+      /* v22: GAS側も削除 (空のチャンクアップロード = サーバーシートをクリア) */
+      var pinsToDelete=[];
+      if(isAll){
+        STAFF.forEach(function(s){pinsToDelete.push({pin:s.pin,nm:s.nm})});
+      }else{
+        STAFF.forEach(function(s){if(s.id===uid)pinsToDelete.push({pin:s.pin,nm:s.nm})});
+      }
+      if(pinsToDelete.length>0&&navigator.onLine){
+        flash("🔄 サーバーからも削除中...");
+        uploadProgress={total:pinsToDelete.length,done:0,sn:sn+" 削除"};
+        render();
+        var idx=0;
+        function deleteNext(){
+          if(idx>=pinsToDelete.length){
+            uploadProgress=null;
+            flash("✅ "+sn+" のリスト削除完了 (サーバー含む)");
+            vib([60,40,60,40,80]);
+            showConfirm=null;render();
+            return;
+          }
+          var p=pinsToDelete[idx];
+          uploadProgress={total:pinsToDelete.length,done:idx+1,sn:p.nm+" 削除"};
+          render();
+          /* 空配列をアップロード = サーバーシートをクリア */
+          uploadListInChunks(p.pin,[],function(){})
+          .then(function(){idx++;deleteNext()})
+          .catch(function(err){
+            console.warn("[clearList] failed for pin "+p.pin+":",err);
+            idx++;deleteNext();  /* 1つ失敗しても続ける */
+          });
+        }
+        deleteNext();
+      }else{
+        if(!navigator.onLine){
+          flash("⚠️ オフライン - ローカルのみ削除 (サーバーは次回オンライン時)");
+        }else{
+          flash("🗑 "+sn+" のリストをクリアしました");
+        }
+        vib([60,30,60]);
+        showConfirm=null;render();
+      }
+    },
+    onNo:function(){showConfirm=null;render()}
+  };
+  render();
+}
+
+/* 番号をクリップボードへコピー (PC用) */
+function copyPhoneNum(num){
+  if(!num)return;
+  var raw=telPhone(num);
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(raw).then(function(){flash("📋 コピー: "+fmtPhone(raw));vib(20)}).catch(function(){flash("⚠️ コピー失敗")});
+  }else{
+    /* フォールバック */
+    try{var ta=document.createElement("textarea");ta.value=raw;document.body.appendChild(ta);ta.select();document.execCommand("copy");document.body.removeChild(ta);flash("📋 コピー: "+fmtPhone(raw));vib(20)}catch(e){flash("⚠️ コピー失敗")}
+  }
+}
+
+/* ===========================================================
+   集計 (v11)
+   =========================================================== */
+function durSec(s){if(!s)return 0;var p=String(s).split(":");if(p.length!==2)return 0;return(parseInt(p[0])||0)*60+(parseInt(p[1])||0)}
+function fmtSec(s){if(!s)return"0秒";var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),ss=s%60;if(h>0)return h+"時間"+pad(m)+"分";if(m>0)return m+"分"+pad(ss)+"秒";return ss+"秒"}
+function statsFor(period){
+  var now=new Date(),from;
+  if(period==="today"){from=new Date(now.getFullYear(),now.getMonth(),now.getDate())}
+  else if(period==="week"){var dow=now.getDay()||7;from=new Date(now.getFullYear(),now.getMonth(),now.getDate()-(dow-1))}
+  else if(period==="month"){from=new Date(now.getFullYear(),now.getMonth(),1)}
+  else{from=new Date(2000,0,1)}
+  var calls=hist.filter(function(c){if(!c.d)return false;var d=new Date(c.d+"T00:00:00");return d>=from});
+  var totalSec=0;calls.forEach(function(c){totalSec+=durSec(c.dur)});
+  var apos=calls.filter(function(c){return c.r==="appo"}).length;
+  return{count:calls.length,totalSec:totalSec,apo:apos,rate:calls.length?Math.round(apos*1000/calls.length)/10:0,avgSec:calls.length?Math.round(totalSec/calls.length):0}
+}
+function statsByDay(days){
+  var r=[];for(var i=days-1;i>=0;i--){
+    var d=new Date();d.setDate(d.getDate()-i);
+    var k=d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate());
+    var calls=hist.filter(function(c){return c.d===k});
+    var sec=0;calls.forEach(function(c){sec+=durSec(c.dur)});
+    r.push({date:k,label:(d.getMonth()+1)+"/"+d.getDate(),count:calls.length,sec:sec,apo:calls.filter(function(c){return c.r==="appo"}).length})
+  }return r
+}
+
+/* 時間別集計 (v12: 9〜17時の各バケット) */
+function statsByHour(dateKey){
+  var calls=hist.filter(function(c){return c.d===dateKey&&c.tm});
+  var bucket={};for(var h=9;h<=17;h++)bucket[h]={count:0,sec:0,apo:0};
+  calls.forEach(function(c){
+    var hr=parseInt(String(c.tm).slice(0,2));
+    if(isNaN(hr))return;
+    if(hr<9)hr=9;if(hr>17)hr=17;
+    bucket[hr].count++;
+    bucket[hr].sec+=durSec(c.dur);
+    if(c.r==="appo")bucket[hr].apo++;
+  });
+  var result=[];for(var h=9;h<=17;h++)result.push({hour:h,label:h+"時",count:bucket[h].count,sec:bucket[h].sec,apo:bucket[h].apo});
+  return result;
+}
+
+/* 出勤日のリスト取得 (att データから) */
+function workDays(){
+  var days=Object.keys(att).filter(function(k){return att[k]&&att[k].ci}).sort().reverse();
+  return days.slice(0,30);  /* 直近30日まで */
+}
+
+/* ===========================================================
+   CSV エクスポート (v13)
+   =========================================================== */
+function csvEscape(v){
+  v=String(v==null?"":v);
+  if(v.indexOf(",")>=0||v.indexOf('"')>=0||v.indexOf("\n")>=0)return'"'+v.replace(/"/g,'""')+'"';
+  return v;
+}
+function csvDownload(filename,headers,rows){
+  /* BOM付きUTF-8 (Excel で文字化けしない) */
+  var bom="\uFEFF";
+  var lines=[headers.map(csvEscape).join(",")];
+  rows.forEach(function(r){lines.push(r.map(csvEscape).join(","))});
+  var blob=new Blob([bom+lines.join("\n")],{type:"text/csv;charset=utf-8"});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement("a");
+  a.href=url;a.download=filename;document.body.appendChild(a);a.click();
+  setTimeout(function(){document.body.removeChild(a);URL.revokeObjectURL(url)},100);
+  flash("📥 ダウンロード: "+filename);vib(40);
+}
+function exportHistoryCSV(){
+  if(!hist.length){flash("⚠️ 履歴なし");return}
+  var hd=["日付","時刻","会社名","電話番号","担当者","結果","通話時間","チェック数","暴走","切り返しアウト","メモ"];
+  var rs=hist.map(function(c){return[c.d||"",c.tm||"",c.co||"",c.ph||"",c.pe||"",
+    (function(){for(var i=0;i<RESULTS.length;i++)if(RESULTS[i].id===c.r)return RESULTS[i].l;return c.r})(),
+    c.dur||"",c.ck||"",c.bs||"",c.out||"",c.memo||""]});
+  var fn="架電履歴_"+(U&&U.nm?U.nm:"")+"_"+td()+".csv";
+  csvDownload(fn,hd,rs);
+}
+function exportApposCSV(){
+  if(!appos.length){flash("⚠️ アポなし");return}
+  var hd=["登録日","案件名","商談日付","商談時間","法人名","電話番号","担当者","性別","役職","メール","住所","人柄","報告者"];
+  var rs=appos.map(function(a){return[a.date||"",a.project||"",a.meetingDate||"",a.meetingTime||"",a.company||"",a.phone||"",a.person||"",a.gender||"",a.role||"",a.email||"",a.address||"",a.personality||"",a.reporter||""]});
+  var fn="アポ一覧_"+(U&&U.nm?U.nm:"")+"_"+td()+".csv";
+  csvDownload(fn,hd,rs);
+}
+function exportHourStatsCSV(){
+  if(!hourStatsDate){flash("⚠️ 勤務日を選択してください");return}
+  var hr=statsByHour(hourStatsDate);
+  var hd=["時間帯","架電数","通話時間(秒)","通話時間(表記)","アポ数","アポ率(%)"];
+  var rs=hr.map(function(b){return[b.label,b.count,b.sec,fmtSec(b.sec),b.apo,b.count?Math.round(b.apo*1000/b.count)/10:0]});
+  var totC=0,totS=0,totA=0;hr.forEach(function(b){totC+=b.count;totS+=b.sec;totA+=b.apo});
+  rs.push(["合計",totC,totS,fmtSec(totS),totA,totC?Math.round(totA*1000/totC)/10:0]);
+  csvDownload("1時間別集計_"+hourStatsDate+"_"+(U&&U.nm?U.nm:"")+".csv",hd,rs);
+}
+
+/* ===========================================================
+   ストレージ診断 (v17)
+   =========================================================== */
+function storageStats(){
+  var total=0,details=[];
+  try{
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i);
+      var v=localStorage.getItem(k)||"";
+      var size=k.length+v.length;
+      total+=size;
+      details.push({key:k,size:size});
+    }
+  }catch(e){return null}
+  details.sort(function(a,b){return b.size-a.size});
+  return{totalBytes:total,details:details.slice(0,10)};
+}
+function showStorageDiag(){
+  var s=storageStats();
+  if(!s){flash("ストレージ診断失敗");return}
+  var mb=(s.totalBytes/1024/1024).toFixed(2);
+  var top3=s.details.slice(0,3).map(function(d){return d.key+":"+(d.size/1024).toFixed(1)+"KB"}).join(" / ");
+  flash("💾 使用量: "+mb+"MB / Top3: "+top3);
+  console.log("[ストレージ詳細]",s.details);
+}
+
+/* ===========================================================
+   GAS 接続テスト + DLQ管理 (v15)
+   =========================================================== */
+function testGasConnection(){
+  flash("🌐 GAS接続テスト中...");
+  if(!navigator.onLine){flash("⚠️ オフライン");vib([100,60,100]);return}
+  if(!GAS){flash("⚠️ GAS URL未設定");return}
+  fetch(GAS,{
+    method:"POST",
+    headers:{"Content-Type":"text/plain;charset=utf-8"},
+    body:JSON.stringify({type:"ping",name:"connection_test",ts:Date.now()}),
+    redirect:"follow"
+  })
+  .then(function(r){return r.text()})
+  .then(function(t){
+    flash("✅ GAS接続OK: "+t.slice(0,80));
+    vib([60,40,60]);
+  })
+  .catch(function(e){
+    flash("❌ GAS接続失敗: "+e.message);
+    vib([100,60,100]);
+  });
+}
+function resendDLQ(){
+  var dlq=ld("sq_dlq")||[];
+  if(!dlq.length){flash("DLQは空です");return}
+  /* DLQの中身を SQ の末尾に戻す */
+  dlq.forEach(function(item){
+    delete item._failedAt;delete item._reason;
+    SQ.push(item);
+  });
+  sv("sq",SQ);sv("sq_dlq",[]);
+  flash("📤 "+dlq.length+"件をキューに戻しました");
+  updateBadge();flushSQ();
+}
+
+function exportListCSV(){
+  if(!rows.length){flash("⚠️ リスト未設定");return}
+  var hd=["No","会社名","電話番号","担当者","住所","状態"];
+  var tc=tdc();
+  var rs=rows.map(function(r,i){
+    var st="未架電";
+    if(skipped[i])st="スキップ";
+    else if(called(i)){var m=tc.filter(function(c){return c.i===i});if(m.length){var rid=m[0].r;for(var j=0;j<RESULTS.length;j++)if(RESULTS[j].id===rid)st=RESULTS[j].l}else st="架電済"}
+    return[i+1,gf(r,"co"),gf(r,"ph"),gf(r,"pe"),gf(r,"ad"),st];
+  });
+  csvDownload("架電リスト_"+(U&&U.nm?U.nm:"")+"_"+td()+".csv",hd,rs);
+}
+
+/* ===========================================================
+   重複検出 (v13)
+   =========================================================== */
+function detectDuplicates(data,coIdx,phIdx){
+  var phMap={},coMap={},dups=[];
+  data.forEach(function(r,i){
+    var ph=phIdx>=0?String(r[phIdx]||"").replace(/[^\d]/g,""):"";
+    var co=coIdx>=0?String(r[coIdx]||"").trim():"";
+    if(ph){if(phMap[ph]!=null)dups.push({i:i,type:"phone",val:ph,first:phMap[ph]});else phMap[ph]=i}
+    if(co){if(coMap[co]!=null)dups.push({i:i,type:"company",val:co,first:coMap[co]});else coMap[co]=i}
+  });
+  return dups;
+}
+
+/* ===========================================================
+   キーボードショートカット (v13)
+   =========================================================== */
+function setupKbd(){
+  if(window._kbdSetup)return;window._kbdSetup=true;
+  document.addEventListener("keydown",function(ev){
+    /* テキスト入力中はスキップ */
+    var tag=ev.target&&ev.target.tagName;
+    if(tag==="INPUT"||tag==="TEXTAREA"||tag==="SELECT")return;
+    if(ev.ctrlKey||ev.metaKey||ev.altKey)return;
+    if(!U||U==="admin")return;
+    /* グローバル */
+    if(ev.key==="?"){pcKbdHelp=!pcKbdHelp;render();return}
+    if(ev.key==="Escape"){if(pcKbdHelp){pcKbdHelp=false;render();return}if(showCB||showShiftDay||showImp||showConfirm){showCB=false;showShiftDay=null;showImp=false;showConfirm=null;render();return}if(V!=="home"){V="home";render();return}}
+    /* ホーム画面 */
+    if(V==="home"){
+      if(ev.key==="n"||ev.key==="N"||ev.key==="ArrowRight"){if(ci<rows.length-1){ci++;render()}}
+      else if(ev.key==="p"||ev.key==="P"||ev.key==="ArrowLeft"){if(ci>0){ci--;render()}}
+      else if(ev.key==="s"||ev.key==="S"){if(rows[ci]){skipped[ci]=true;sv("sk-"+U.id,skipped);flash("⏭ スキップ");goNext();render()}}
+      else if(ev.key===" "||ev.key==="Enter"){ev.preventDefault();var ph=rows[ci]&&gf(rows[ci],"ph");if(ph){onPhoneTap();window.location.href="tel:"+telPhone(ph)}}
+      else if(ev.key==="c"||ev.key==="C"){V="call";ck={};tsec=0;selRes=null;bousou=[];endStep="";clearInterval(tref);tref=setInterval(function(){tsec++;var el=document.getElementById("tmr");if(el)el.textContent=timerStr(tsec)},1000);lockScreen();render()}
+      else if(ev.key==="l"||ev.key==="L"){V="list";render()}
+      else if(ev.key==="/"){ev.preventDefault();V="list";listSearch="";render();setTimeout(function(){var el=document.getElementById("listSearch");if(el)el.focus()},100)}
+      else if(ev.key==="u"||ev.key==="U"){if(U==="admin"){showImp=true;render()}else{flash("⚠️ リスト読込は管理者のみ可能です")}}
+      return;
+    }
+    /* 通話画面 */
+    if(V==="call"){
+      var n=parseInt(ev.key);
+      if(n>=1&&n<=6){selRes=RESULTS[n-1].id;render();return}
+      if(ev.key==="Enter"){ev.preventDefault();if(selRes)saveCall();return}
+    }
+  });
+}
+
+/* ===========================================================
+   シフト送信 (v11)
+   =========================================================== */
+/* ===========================================================
+   シフト一括テンプレ (v13)
+   =========================================================== */
+function applyShiftTemplate(template){
+  if(!U||U==="admin")return;
+  var p=shiftMonth.split("-"),year=+p[0],month=+p[1];
+  var lastDay=new Date(year,month,0).getDate();
+  var changed=0;
+  for(var d=1;d<=lastDay;d++){
+    var key=year+"-"+pad(month)+"-"+pad(d);
+    var dow=new Date(year,month-1,d).getDay();
+    var isWeekend=(dow===0||dow===6);
+    if(template==="weekday_full"){
+      if(!isWeekend){shiftDays[key]={start:"09:30",end:"18:00"};changed++}
+      else{shiftDays[key]="off";changed++}
+    }else if(template==="all_full"){
+      shiftDays[key]={start:"09:30",end:"18:00"};changed++;
+    }else if(template==="weekday_morning"){
+      if(!isWeekend){shiftDays[key]={start:"09:30",end:"12:30"};changed++}
+      else{shiftDays[key]="off";changed++}
+    }else if(template==="weekday_afternoon"){
+      if(!isWeekend){shiftDays[key]={start:"13:00",end:"18:00"};changed++}
+      else{shiftDays[key]="off";changed++}
+    }else if(template==="clear"){
+      delete shiftDays[key];changed++;
+    }
+  }
+  sv("sft-"+U.id+"-"+shiftMonth,shiftDays);
+  vib([40,30,40]);flash("📋 一括設定: "+changed+"日 更新");render();
+}
+
+function submitShift(mode){
+  if(U==="admin"){flash("⚠️ 管理者はシフト申請できません");return}
+  var keys=Object.keys(shiftDays).sort();
+  if(!keys.length){flash("⚠️ 1日も入力されていません");vib([100,60,100]);return}
+  var dows=["日","月","火","水","木","金","土"];
+  /* v12: 時間範囲を含む詳細フォーマット */
+  function fmtShift(v){
+    if(v==="off")return"休み";
+    if(typeof v==="object"&&v&&v.start&&v.end){
+      /* 勤務時間(分)を計算 */
+      var sm=parseInt(v.start.slice(0,2))*60+parseInt(v.start.slice(3,5));
+      var em=parseInt(v.end.slice(0,2))*60+parseInt(v.end.slice(3,5));
+      var mins=em-sm;var h=Math.floor(mins/60),m=mins%60;
+      var dur=h+"h"+(m?m+"m":"");
+      return v.start+"〜"+v.end+" ("+dur+")";
+    }
+    return"未設定";
+  }
+  var lines=keys.map(function(k){var d=new Date(k+"T00:00:00");return k+"("+dows[d.getDay()]+"): "+fmtShift(shiftDays[k])});
+  var workCount=keys.filter(function(k){var v=shiftDays[k];return v&&v!=="off"&&typeof v==="object"&&v.start}).length;
+  var offCount=keys.filter(function(k){return shiftDays[k]==="off"}).length;
+  /* 合計勤務時間(分) */
+  var totalMins=0;
+  keys.forEach(function(k){var v=shiftDays[k];if(v&&typeof v==="object"&&v.start&&v.end){var sm=parseInt(v.start.slice(0,2))*60+parseInt(v.start.slice(3,5));var em=parseInt(v.end.slice(0,2))*60+parseInt(v.end.slice(3,5));totalMins+=Math.max(0,em-sm)}});
+  var ttlH=Math.floor(totalMins/60),ttlM=totalMins%60;
+  var ym=shiftMonth.replace("-","年")+"月";
+  var subj=(mode==="apply"?"【シフト申請】":"【シフト修正申請】")+ym+" "+U.nm;
+  var body=(mode==="apply"?"シフト申請":"シフト修正申請")+
+    "\n\n申請者: "+U.nm+" (PIN:"+U.pin+")"+
+    "\n対象月: "+ym+
+    "\n出勤予定: "+workCount+"日 / 休み: "+offCount+"日"+
+    "\n合計勤務時間: "+ttlH+"時間"+(ttlM?ttlM+"分":"")+
+    "\n\n--- 詳細 ---\n"+lines.join("\n")+
+    "\n\n申請日時: "+dateJP()+" "+now().slice(0,5);
+  gasPost({type:mode==="apply"?"shift_apply":"shift_modify",name:U.nm,pin:U.pin,sheet:U.sh,month:shiftMonth,workCount:workCount,offCount:offCount,totalMins:totalMins,days:shiftDays,subject:subj,body:body,to:SHIFT_NOTIFY_TO});
+  /* v13: ローカルにも申請履歴を残す */
+  var hist=ld("shHist-"+U.id)||[];
+  hist.unshift({ts:Date.now(),mode:mode,month:shiftMonth,workCount:workCount,offCount:offCount,totalMins:totalMins,days:JSON.parse(JSON.stringify(shiftDays))});
+  if(hist.length>50)hist=hist.slice(0,50);
+  sv("shHist-"+U.id,hist);
+  setTimeout(function(){window.location.href="mailto:"+SHIFT_NOTIFY_TO+"?subject="+encodeURIComponent(subj)+"&body="+encodeURIComponent(body)},300);
+  vib([60,40,60,40,120]);
+  flash("📩 シフト"+(mode==="apply"?"申請":"修正")+"を送信しました");
+}
+
+/* ===========================================================
+   レンダリング
+   =========================================================== */
+function render(){
+try{
+var root=document.getElementById("root"),h="",isA=U==="admin",cur=rows[ci]||null;
+
+/* v20: アップロード進捗オーバーレイ */
+if(uploadProgress){
+  var pct=Math.floor((uploadProgress.done/uploadProgress.total)*100);
+  h+='<div style="position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:400;display:flex;align-items:center;justify-content:center;padding:20px"><div style="background:#fff;border-radius:18px;padding:24px;max-width:340px;width:100%;text-align:center">';
+  h+='<div style="font-size:42px;margin-bottom:8px">📤</div>';
+  h+='<div style="font-size:16px;font-weight:800;color:#1a237e;margin-bottom:4px">サーバーへ送信中</div>';
+  h+='<div style="font-size:12px;color:#64748b;margin-bottom:16px">'+uploadProgress.sn+' のリストをアップロード中</div>';
+  h+='<div style="background:#e2e8f0;border-radius:10px;overflow:hidden;height:14px;margin-bottom:8px"><div style="background:#10b981;height:100%;width:'+pct+'%;transition:width .3s"></div></div>';
+  h+='<div style="font-size:13px;color:#475569;font-weight:700">'+uploadProgress.done+' / '+uploadProgress.total+' チャンク ('+pct+'%)</div>';
+  h+='<div style="font-size:10px;color:#94a3b8;margin-top:10px">画面を閉じずにお待ちください</div>';
+  h+='</div></div>';
+}
+
+/* トースト */
+if(toast)h+='<div style="position:fixed;top:14px;left:50%;transform:translateX(-50%);background:#0f172a;color:#fff;padding:12px 22px;border-radius:14px;font-size:14px;font-weight:700;z-index:999;box-shadow:0 10px 30px rgba(0,0,0,.3);max-width:90vw;text-align:center">'+toast+'</div>';
+
+/* 確認ダイアログ */
+if(showConfirm){
+  h+='<div style="position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:300;display:flex;align-items:center;justify-content:center;padding:20px" class="glass"><div style="background:#fff;border-radius:18px;padding:22px;max-width:340px;width:100%">';
+  h+='<div style="font-size:17px;font-weight:800;color:#1a237e;margin-bottom:6px">'+showConfirm.title+'</div>';
+  h+='<div style="font-size:13px;color:#64748b;margin-bottom:18px;white-space:pre-line;line-height:1.7">'+String(showConfirm.msg||"").replace(/&/g,"&amp;").replace(/</g,"&lt;")+'</div>';
+  h+='<div style="display:flex;gap:8px"><button id="cfNo" style="flex:1;padding:14px;border:1.5px solid #cbd5e1;border-radius:10px;background:#fff;color:#475569;font-size:14px;font-weight:700">キャンセル</button>';
+  h+='<button id="cfYes" style="flex:1;padding:14px;border:none;border-radius:10px;background:#1a237e;color:#fff;font-size:14px;font-weight:700">はい</button></div></div></div>';
+}
+
+/* コールバックダイアログ */
+if(showCB){
+  h+='<div class="bottomSheet" style="position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:280;display:flex;align-items:flex-end;justify-content:center"><div class="glass" style="background:#fff;border-radius:20px 20px 0 0;width:100%;max-width:480px;max-height:85vh;overflow-y:auto" onclick="event.stopPropagation()">';
+  h+='<div style="padding:14px 16px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center"><b style="color:#f59e0b;font-size:16px">📞 再架電をいつにしますか？</b><button id="cbClose" style="font-size:22px;color:#94a3b8;background:none;border:none;width:32px;height:32px">✕</button></div>';
+  h+='<div style="padding:14px 16px">';
+  h+='<div style="font-size:11px;color:#64748b;margin-bottom:6px">⚡ クイック設定</div>';
+  h+='<div id="cbPresets" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:14px"></div>';
+  h+='<div style="font-size:11px;color:#64748b;margin-bottom:4px">📅 カスタム日時</div>';
+  h+='<input id="cbCustom" type="datetime-local" value="'+(cbCustomDt||"")+'" style="width:100%;padding:12px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:15px;box-sizing:border-box;margin-bottom:6px">';
+  h+='<button id="cbSubmit" style="width:100%;padding:12px;border:none;border-radius:10px;background:#f59e0b;color:#fff;font-weight:800;font-size:14px;margin-bottom:14px">📞 この日時で登録</button>';
+  h+='<div style="font-size:11px;color:#64748b;margin-bottom:4px">📝 メモ（任意：相手の状況、伝言内容など）</div>';
+  h+='<textarea id="cbMemo" style="width:100%;padding:10px;border:1.5px solid #e2e8f0;border-radius:10px;background:#f8fafc;font-size:13px;box-sizing:border-box;resize:vertical" rows="2" placeholder="例：13時以降に再架電 / 担当が会議中">'+(cbMemo||"")+'</textarea>';
+  h+='</div></div></div>';
+}
+
+/* キーボードヘルプダイアログ (v13) */
+if(pcKbdHelp){
+  h+='<div class="bottomSheet" style="position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:295;display:flex;align-items:center;justify-content:center;padding:20px"><div class="glass" style="background:#fff;border-radius:18px;max-width:520px;width:100%;max-height:85vh;overflow-y:auto;animation:fadeIn .2s ease-out">';
+  h+='<div style="padding:14px 18px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center"><b style="color:#1a237e;font-size:16px">⌨️ キーボードショートカット</b><button id="kbdClose" style="font-size:22px;color:#94a3b8;background:none;border:none;width:32px;height:32px">✕</button></div>';
+  h+='<div style="padding:14px 18px"><div style="font-size:12px;font-weight:800;color:#1a237e;margin-bottom:8px">📋 ホーム画面</div>';
+  [["Space / Enter","現在の番号に発信"],["C","通話画面（チェックリスト）を開く"],["N / →","次の架電先"],["P / ←","前の架電先"],["S","現在をスキップ"],["L","リスト一覧を開く"],["/","リスト検索"],["U","リスト読込モーダルを開く"]].forEach(function(p){
+    h+='<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:12px"><span><kbd>'+p[0]+'</kbd></span><span style="color:#475569">'+p[1]+'</span></div>';
+  });
+  h+='<div style="font-size:12px;font-weight:800;color:#1a237e;margin:14px 0 8px">📞 通話画面</div>';
+  [["1〜6","結果選択 (アポ/再架電/不在/断り/不通/その他)"],["Enter","結果を保存"]].forEach(function(p){
+    h+='<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:12px"><span><kbd>'+p[0]+'</kbd></span><span style="color:#475569">'+p[1]+'</span></div>';
+  });
+  h+='<div style="font-size:12px;font-weight:800;color:#1a237e;margin:14px 0 8px">🌐 グローバル</div>';
+  [["?","このヘルプを表示/非表示"],["Esc","モーダル閉じる / ホームへ戻る"]].forEach(function(p){
+    h+='<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:12px"><span><kbd>'+p[0]+'</kbd></span><span style="color:#475569">'+p[1]+'</span></div>';
+  });
+  h+='<div style="margin-top:14px;padding:10px;background:#fef3c7;border-radius:8px;font-size:11px;color:#92400e;line-height:1.6">💡 入力欄にフォーカスがあるときはショートカットは無効になります</div>';
+  h+='</div></div></div>';
+}
+
+/* シフト日時間ダイアログ (v12) */
+if(showShiftDay){
+  var sdkey=showShiftDay.dateKey;
+  var sdd=new Date(sdkey+"T00:00:00");
+  var sddow=["日","月","火","水","木","金","土"][sdd.getDay()];
+  var sdcur=shiftDays[sdkey];
+  h+='<div class="bottomSheet" style="position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:290;display:flex;align-items:flex-end;justify-content:center"><div class="glass" style="background:#fff;border-radius:20px 20px 0 0;width:100%;max-width:480px;max-height:88vh;overflow-y:auto" onclick="event.stopPropagation()">';
+  h+='<div style="padding:14px 16px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:#fff;z-index:1"><b style="color:#1a237e;font-size:16px">📅 '+(sdd.getMonth()+1)+'/'+sdd.getDate()+' ('+sddow+') シフト</b><button id="sdClose" style="font-size:22px;color:#94a3b8;background:none;border:none;width:32px;height:32px">✕</button></div>';
+  h+='<div style="padding:14px 16px">';
+  /* 現在の状態表示 */
+  h+='<div style="background:#f8fafc;border-radius:10px;padding:10px;margin-bottom:14px;font-size:12px;color:#64748b">';
+  if(sdcur==="off")h+='現在の設定: <b style="color:#94a3b8">休み</b>';
+  else if(sdcur&&typeof sdcur==="object")h+='現在の設定: <b style="color:#10b981">'+sdcur.start+'〜'+sdcur.end+'</b>';
+  else h+='現在の設定: <span style="color:#94a3b8">未設定</span>';
+  h+='</div>';
+  /* クイックプリセット */
+  h+='<div style="font-size:11px;font-weight:800;color:#1a237e;margin-bottom:6px">⚡ クイック設定</div>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px">';
+  [["full","終日 9:30〜18:00","09:30","18:00","#10b981"],["am","午前 9:30〜12:30","09:30","12:30","#f59e0b"],["pm","午後 13:00〜18:00","13:00","18:00","#3b82f6"],["short","午前短 9:30〜13:00","09:30","13:00","#8b5cf6"]].forEach(function(p){
+    h+='<button data-sdpre="'+p[2]+'|'+p[3]+'" style="padding:11px 6px;border:1.5px solid '+p[4]+';border-radius:10px;background:'+p[4]+'15;color:'+p[4]+';font-weight:700;font-size:12px;font-family:inherit">'+p[1]+'</button>';
+  });
+  h+='</div>';
+  /* 開始/終了選択 */
+  h+='<div style="font-size:11px;font-weight:800;color:#1a237e;margin-bottom:6px">🕘 時間を指定</div>';
+  h+='<div style="display:grid;grid-template-columns:1fr auto 1fr;gap:6px;align-items:center;margin-bottom:6px">';
+  h+='<div><div style="font-size:10px;color:#64748b;margin-bottom:2px">開始時刻</div><select id="sdStart" style="width:100%;padding:11px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:15px;font-family:inherit;background:#fff">';
+  TIME_SLOTS.forEach(function(t){if(t==="18:00")return;h+='<option value="'+t+'"'+(showShiftDay.start===t?" selected":"")+'>'+t+'</option>'});
+  h+='</select></div>';
+  h+='<div style="font-size:18px;color:#94a3b8;margin-top:14px">〜</div>';
+  h+='<div><div style="font-size:10px;color:#64748b;margin-bottom:2px">終了時刻</div><select id="sdEnd" style="width:100%;padding:11px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:15px;font-family:inherit;background:#fff">';
+  TIME_SLOTS.forEach(function(t){if(t==="09:30")return;h+='<option value="'+t+'"'+(showShiftDay.end===t?" selected":"")+'>'+t+'</option>'});
+  h+='</select></div></div>';
+  /* 勤務時間プレビュー */
+  var pvSm=parseInt(showShiftDay.start.slice(0,2))*60+parseInt(showShiftDay.start.slice(3,5));
+  var pvEm=parseInt(showShiftDay.end.slice(0,2))*60+parseInt(showShiftDay.end.slice(3,5));
+  var pvMins=pvEm-pvSm;
+  h+='<div style="text-align:center;font-size:12px;color:'+(pvMins>0?"#059669":"#dc2626")+';margin-bottom:14px;padding:8px;background:'+(pvMins>0?"#ecfdf5":"#fef2f2")+';border-radius:8px;font-weight:700">';
+  if(pvMins>0)h+='⏱ 勤務時間: '+Math.floor(pvMins/60)+'時間'+(pvMins%60?(pvMins%60)+'分':"");
+  else h+='⚠️ 終了時刻は開始時刻より後に設定してください';
+  h+='</div>';
+  /* アクションボタン */
+  h+='<button id="sdSave" style="width:100%;padding:14px;border:none;border-radius:12px;background:'+(pvMins>0?"#1a237e":"#cbd5e1")+';color:#fff;font-weight:800;font-size:14px;margin-bottom:8px"'+(pvMins>0?"":" disabled")+'>💼 この時間でシフト登録</button>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
+  h+='<button id="sdOff" style="padding:12px;border:1.5px solid #94a3b8;border-radius:10px;background:#f1f5f9;color:#475569;font-weight:700;font-size:13px;font-family:inherit">🚫 休みにする</button>';
+  h+='<button id="sdDel" style="padding:12px;border:1.5px solid #ef4444;border-radius:10px;background:#fef2f2;color:#dc2626;font-weight:700;font-size:13px;font-family:inherit">🗑 削除</button>';
+  h+='</div>';
+  h+='</div></div></div>';
+}
+
+/* ========== ログイン ========== */
+if(V==="login"){
+  h+='<div style="min-height:100vh;background:linear-gradient(135deg,#0d1b2a,#1a237e);display:flex;align-items:center;justify-content:center;padding:20px"><div style="background:#fff;border-radius:20px;padding:32px 24px;max-width:340px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.4)"><div style="text-align:center;margin-bottom:20px"><div style="font-size:42px">📞</div><div style="font-size:20px;font-weight:800;color:#1a237e">川嶋メソッド</div><div style="font-size:11px;color:#94a3b8;margin-top:2px">テレアポ管理 v26</div></div><div style="text-align:center;font-size:13px;color:#455a64;margin-bottom:14px">従業員番号を入力</div><div style="display:flex;justify-content:center;gap:8px;margin-bottom:14px">';
+  for(var i=0;i<4;i++){var f=pin.length>i;h+='<div style="width:46px;height:54px;border-radius:12px;border:2px solid '+(f?"#1a237e":"#e0e0e0")+';background:'+(f?"#e8eaf6":"#fafafa")+';display:flex;align-items:center;justify-content:center;font-size:24px;color:#1a237e">'+(f?"●":"")+'</div>'}
+  h+='</div><div id="pp" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;max-width:240px;margin:0 auto 12px"></div>';
+  if(pinErr)h+='<div style="text-align:center;font-size:12px;color:#e53935;font-weight:700;margin-top:6px">'+pinErr+'</div>';
+  h+='<div style="text-align:center;margin-top:14px;font-size:10px;color:#cbd5e1">📱 ホーム画面に追加で起動高速化</div>';
+  h+='</div></div>';root.innerHTML=h;
+  var pp=document.getElementById("pp");
+  [1,2,3,4,5,6,7,8,9,null,0,"D"].forEach(function(n){var b=document.createElement("button");b.style.cssText="height:56px;border-radius:12px;font-size:"+(n==="D"?"16":"22")+"px;border:1.5px solid #e0e0e0;background:#fff;color:#1a237e;font-family:inherit;font-weight:700";if(n===null){b.style.visibility="hidden";b.textContent=" "}else{b.textContent=n==="D"?"⌫":n;b.onclick=function(){if(n==="D"){pin=pin.slice(0,-1);pinErr="";render();return}if(pin.length>=4)return;pin+=String(n);pinErr="";vib(20);render();tryLogin()}}pp.appendChild(b)});
+  return;
+}
+
+/* ヘッダー */
+var ol=navigator.onLine;
+h+='<header style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:#fff;border-bottom:1px solid #e2e8f0;position:sticky;top:0;z-index:50">';
+h+='<div style="display:flex;align-items:center;gap:8px"><span style="font-size:18px">📞</span><div><div style="font-size:13px;font-weight:800;line-height:1.2">'+(isA?"🔒 管理者":(asAppointer?'<span style="color:#7c3aed">👤 '+U.nm+' として操作中</span>':U.nm))+'</div>';
+h+='<div style="font-size:9px;color:'+(ol?"#10b981":"#ef4444")+';line-height:1">'+(ol?"●オンライン":"●オフライン")+'<span id="syncBadge" style="margin-left:6px;color:#f59e0b;font-weight:700;display:'+(SQ.length?"inline-block":"none")+'">'+(SQ.length?"📤"+SQ.length:"")+'</span></div></div></div>';
+h+='<div style="display:flex;gap:6px;align-items:center">';
+if(asAppointer)h+='<button id="backToAdmin" style="background:#f5f3ff;border:1.5px solid #8b5cf6;border-radius:8px;padding:8px 12px;color:#7c3aed;font-size:11px;font-weight:700">← 管理者に戻る</button>';
+h+='<button id="kbdHelp" class="pc-only" style="background:#f1f5f9;border:none;border-radius:8px;padding:8px 10px;color:#64748b;font-size:11px;font-weight:700">⌨️ <kbd>?</kbd></button>';
+h+='<button id="lo" style="background:#f1f5f9;border:none;border-radius:8px;padding:8px 12px;color:#64748b;font-size:12px;font-weight:700">ログアウト</button></div></header>';
+
+/* お知らせティッカー (アポ + コールバック) */
+if(!isA&&V==="home"){
+  var up=upcomingAppo(),ucb=upcomingCB();
+  if(up.length||ucb.length){
+    var tt="";
+    up.forEach(function(u){var dt=new Date(u.datetime);tt+="🔔 アポ "+(dt.getMonth()+1)+"/"+dt.getDate()+" "+pad(dt.getHours())+":"+pad(dt.getMinutes())+"　"+(u.company||"")+"　📞"+(u.phone||"")+"　　　"});
+    ucb.forEach(function(c){var dt=new Date(c.at);tt+="📞 再架電 "+dtJP(dt)+"　"+(c.co||"")+"　"+telFmtSafe(c.ph)+"　"+(c.memo||"")+"　　　"});
+    h+='<div class="ticker"><span>'+tt+'</span></div>'
+  }
+}
+
+if(loading){h+='<main style="padding:40px;text-align:center;color:#94a3b8">📡 取得中...</main>';root.innerHTML=h;document.getElementById("lo").onclick=function(){U=null;V="login";pin="";loading=false;render()};return}
+
+/* インポートモーダル (v12: ファイルUL + ペースト + クリア) */
+if(showImp){
+  h+='<div id="ib" class="bottomSheet" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;display:flex;align-items:flex-end;justify-content:center"><div style="background:#fff;border-radius:20px 20px 0 0;width:100%;max-width:480px;max-height:92vh;overflow-y:auto" onclick="event.stopPropagation()">';
+  h+='<div style="padding:14px 16px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:#fff;z-index:1"><b style="font-size:15px">📋 架電リスト読込</b><button id="cib" style="font-size:22px;color:#94a3b8;background:none;border:none;width:36px;height:36px">✕</button></div>';
+  h+='<div style="padding:14px 16px">';
+  /* 対象 (admin) または保存済み件数 (アポインター) */
+  if(isA){
+    h+='<div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:4px">対象アポインター</div>';
+    h+='<div style="background:#eff6ff;border:1.5px solid #3b82f6;border-radius:10px;padding:10px;margin-bottom:8px"><div style="font-size:12px;font-weight:800;color:#1d4ed8;margin-bottom:4px">⚠️ アップロード先を選択してください</div><div style="font-size:10px;color:#1d4ed8">選んだアポインターのリストとして全端末・全アカウントに反映されます</div></div>';
+    h+='<select id="tgtSel" style="width:100%;padding:12px;border:1.5px solid #3b82f6;border-radius:8px;margin-bottom:12px;font-family:inherit;font-size:14px;font-weight:700">';
+    STAFF.forEach(function(s){var saved=(ld("l-"+s.id)||[]).length;h+='<option value="'+s.id+'">'+s.nm+' '+(saved?'('+saved+'件保存中)':'(リスト未設定)')+'</option>'});
+    h+='</select>';
+  }else{
+    var savedN=rows.length;
+    if(savedN>0){
+      h+='<div style="background:#ecfdf5;border:1px solid #10b981;border-radius:10px;padding:10px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center">';
+      h+='<div><div style="font-size:11px;color:#059669;font-weight:700">📌 保存済みリスト</div><div style="font-size:18px;font-weight:800;color:#065f46">'+savedN+'件</div></div>';
+      h+='<button id="clrCur" style="padding:8px 14px;border:1px solid #ef4444;border-radius:8px;background:#fef2f2;color:#dc2626;font-size:12px;font-weight:700">🗑 クリア</button>';
+      h+='</div>';
+    }else{
+      h+='<div style="background:#fff7ed;border:1px solid #fb923c;border-radius:10px;padding:10px;margin-bottom:14px;text-align:center;font-size:12px;color:#9a3412">📋 リスト未設定</div>';
+    }
+  }
+  /* ① ファイル取込 */
+  h+='<div style="font-size:12px;font-weight:800;color:#1a237e;margin-bottom:6px">① 📁 Excelファイルから取込</div>';
+  h+='<div id="dropZone" style="border:2.5px dashed #cbd5e1;border-radius:12px;padding:18px 12px;text-align:center;background:#f8fafc;margin-bottom:12px;cursor:pointer;transition:all .15s">';
+  h+='<input id="impFile" type="file" accept=".xlsx,.xls,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/tab-separated-values" style="display:none">';
+  h+='<div style="font-size:32px;margin-bottom:4px">📁</div>';
+  h+='<div style="font-size:13px;color:#475569;font-weight:700">クリックで選択 / ドラッグ&ドロップ</div>';
+  h+='<div style="font-size:11px;color:#94a3b8;margin-top:4px">.xlsx / .xls / .csv / .tsv 対応</div>';
+  h+='</div>';
+  /* ② ペースト */
+  h+='<div style="font-size:12px;font-weight:800;color:#1a237e;margin-bottom:6px">② 📋 コピー&amp;ペーストから取込</div>';
+  h+='<textarea id="impTA" style="width:100%;padding:11px;border:1.5px solid #e2e8f0;border-radius:10px;background:#f8fafc;box-sizing:border-box;font-size:13px;resize:vertical;font-family:inherit" rows="6" placeholder="スプレッドシートのセル範囲を選択して Ctrl+C → ここに Ctrl+V&#10;&#10;例: 会社名 [Tab] 電話番号&#10;〇〇株式会社  03-1234-5678&#10;△△有限会社  090-1111-2222"></textarea>';
+  h+='<button id="imb" style="width:100%;margin-top:8px;padding:14px;border:none;border-radius:12px;background:#3b82f6;color:#fff;font-size:14px;font-weight:800">📥 ペースト内容を取込</button>';
+  /* ヘルプ */
+  h+='<div style="margin-top:10px;padding:10px;background:#fefce8;border:1px solid #facc15;border-radius:8px;font-size:11px;color:#854d0e;line-height:1.7">';
+  h+='💡 <b>必要な列</b>: 会社名 と 電話番号<br>';
+  h+='💡 <b>列の順序</b>: 会社名→電話番号→担当者→住所 (担当者・住所は任意)<br>';
+  h+='💡 ヘッダー行 (「会社名」「電話番号」など) は自動認識します<br>';
+  h+='💡 Excel複数シートの場合は1番目のシートのみ取り込みます<br>';
+  h+='💡 重複する会社名・電話番号は読込時に件数表示されます';
+  h+='</div>';
+  /* テンプレDL */
+  h+='<button id="dlTpl" style="width:100%;margin-top:8px;padding:10px;border:1px dashed #94a3b8;border-radius:8px;background:#fafbfc;color:#475569;font-size:12px;font-weight:700">📄 テンプレ CSVをダウンロード</button>';
+  /* エラー */
+  if(impErr)h+='<div style="margin-top:8px;padding:10px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;font-size:12px;color:#dc2626">'+impErr+'</div>';
+  /* admin: 全クリア */
+  if(isA){
+    h+='<div style="margin-top:14px;padding-top:12px;border-top:1px solid #e2e8f0">';
+    h+='<button id="clrAll" style="width:100%;padding:12px;border:1px solid #ef4444;border-radius:10px;background:#fef2f2;color:#dc2626;font-size:13px;font-weight:700">🗑 全アポインターのリストをまとめてクリア</button>';
+    h+='</div>';
+  }
+  h+='</div></div></div>'
+}
+
+h+='<main style="flex:1;overflow-y:auto;padding:10px">';
+
+/* ========== 管理者 (v13: ヒートマップ＋PCグリッド) ========== */
+if(V==="admin"){
+  h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap"><div style="font-size:17px;font-weight:800;color:#1a237e;flex:1">👑 管理者ダッシュボード</div>';
+  h+='<button id="testGasA" style="padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#475569;font-size:11px;font-weight:700">🌐 GAS接続テスト</button>';
+  h+='<button id="adClrAll" style="padding:8px 12px;border:1.5px solid #ef4444;border-radius:8px;background:#fef2f2;color:#dc2626;font-size:11px;font-weight:700">🗑 全員リストクリア</button>';
+  h+='</div>';
+  /* 全体KPI (本日) */
+  var todStr=td();
+  var totL=0,totC=0,totA=0,totW=0;
+  STAFF.forEach(function(s){
+    totL+=(ld("l-"+s.id)||[]).length;
+    var cl2=ld("h-"+s.id)||[];var c2=cl2.filter(function(c){return c.d===todStr});
+    totC+=c2.length;totA+=c2.filter(function(c){return c.r==="appo"}).length;
+    var at2=ld("at-"+s.id)||{},ta2=at2[todStr]||{};
+    if(ta2.ci&&!ta2.co)totW++;
+  });
+  h+='<div class="pc-grid-4" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">';
+  [["本日勤務中",totW+"/"+STAFF.length,"#10b981","👥"],["合計リスト",totL,"#3b82f6","📋"],["本日架電",totC,"#1a237e","📞"],["本日アポ",totA,"#f59e0b","🎯"]].forEach(function(k){
+    h+='<div style="background:#fff;border-radius:12px;padding:12px;text-align:center;border:1px solid #e2e8f0"><div style="font-size:22px">'+k[3]+'</div><div style="font-size:24px;font-weight:800;color:'+k[2]+';line-height:1.1;margin-top:2px">'+k[1]+'</div><div style="font-size:10px;color:#64748b;margin-top:2px">'+k[0]+'</div></div>';
+  });
+  h+='</div>';
+  /* 全員ヒートマップ (本日 9-17時) */
+  h+='<div style="background:#fff;border-radius:14px;padding:14px;border:1px solid #e2e8f0;margin-bottom:14px">';
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><div style="font-size:13px;font-weight:800;color:#1a237e">⏰ 本日 1時間ごと架電数 (全員)</div><div style="font-size:10px;color:#94a3b8">'+todStr+'</div></div>';
+  h+='<div style="overflow-x:auto"><table style="width:100%;font-size:11px;border-collapse:collapse;min-width:520px">';
+  h+='<thead><tr><th style="padding:5px;text-align:left;color:#64748b;font-weight:700">アポインター</th>';
+  for(var hh=9;hh<=17;hh++){h+='<th style="padding:5px;text-align:center;color:#64748b;font-weight:700;width:38px">'+hh+'時</th>'}
+  h+='<th style="padding:5px;text-align:right;color:#64748b;font-weight:700;width:36px">合計</th>';
+  h+='<th style="padding:5px;text-align:right;color:#64748b;font-weight:700;width:32px">🎯</th></tr></thead><tbody>';
+  /* 各アポインターの行 */
+  var allHrCounts=[];
+  STAFF.forEach(function(s){
+    var cl=ld("h-"+s.id)||[],todCalls=cl.filter(function(c){return c.d===todStr});
+    var hCount={},apCnt=0;
+    for(var hh=9;hh<=17;hh++)hCount[hh]=0;
+    todCalls.forEach(function(c){
+      if(!c.tm)return;
+      var hr=parseInt(String(c.tm).slice(0,2));if(isNaN(hr))return;
+      if(hr<9)hr=9;if(hr>17)hr=17;
+      hCount[hr]++;
+      if(c.r==="appo")apCnt++;
+    });
+    allHrCounts.push(hCount);
+    h+='<tr style="border-top:1px solid #f1f5f9"><td style="padding:6px 5px;font-weight:700;color:#1a237e">'+s.nm+'</td>';
+    for(var hh=9;hh<=17;hh++){
+      var v=hCount[hh];
+      var bg="#fafbfc",col="#cbd5e1";
+      if(v>0){
+        var alpha=Math.min(1,v/10);
+        bg="rgba(59,130,246,"+alpha+")";col=v>=5?"#fff":"#1a237e";
+      }
+      h+='<td style="padding:6px 5px;text-align:center;background:'+bg+';color:'+col+';font-weight:700">'+(v||"")+'</td>';
+    }
+    h+='<td style="padding:6px 5px;text-align:right;font-weight:800;color:#1a237e">'+todCalls.length+'</td>';
+    h+='<td style="padding:6px 5px;text-align:right;font-weight:800;color:'+(apCnt>0?"#f59e0b":"#cbd5e1")+'">'+(apCnt||"—")+'</td>';
+    h+='</tr>';
+  });
+  /* 合計行 */
+  h+='<tr style="border-top:2px solid #cbd5e1;background:#f8fafc"><td style="padding:6px 5px;font-weight:800;color:#475569">合計</td>';
+  for(var hh=9;hh<=17;hh++){var sum=0;allHrCounts.forEach(function(hc){sum+=hc[hh]||0});h+='<td style="padding:6px 5px;text-align:center;font-weight:800;color:'+(sum>0?"#1a237e":"#cbd5e1")+'">'+(sum||"")+'</td>'}
+  h+='<td style="padding:6px 5px;text-align:right;font-weight:800;color:#1a237e">'+totC+'</td>';
+  h+='<td style="padding:6px 5px;text-align:right;font-weight:800;color:#f59e0b">'+totA+'</td>';
+  h+='</tr></tbody></table></div>';
+  h+='<div style="margin-top:8px;font-size:10px;color:#94a3b8;display:flex;align-items:center;gap:8px">凡例: <span style="background:rgba(59,130,246,.1);padding:2px 6px;border-radius:3px">少</span><span style="background:rgba(59,130,246,.5);padding:2px 6px;border-radius:3px">中</span><span style="background:rgba(59,130,246,1);color:#fff;padding:2px 6px;border-radius:3px">多</span></div>';
+  h+='</div>';
+  /* 個別アポインター詳細カード (PCグリッド) */
+  h+='<div class="pc-grid-2" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">';
+  STAFF.forEach(function(s){
+    var li=ld("l-"+s.id)||[],cl=ld("h-"+s.id)||[],ap=ld("a-"+s.id)||[],at=ld("at-"+s.id)||{},ta=at[todStr]||{},cbsv=ld("cb-"+s.id)||[];
+    var tC=cl.filter(function(c){return c.d===todStr});var tA=tC.filter(function(c){return c.r==="appo"}).length;
+    var pendingCB=cbsv.filter(function(c){return!c.done}).length;
+    var totSec=0;tC.forEach(function(c){totSec+=durSec(c.dur||"")});
+    h+='<div style="background:#fff;border-radius:14px;padding:14px;border:1px solid #e2e8f0;border-left:4px solid '+(ta.ci&&!ta.co?"#10b981":"#cbd5e1")+'">';
+    h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><div><b style="color:#1a237e;font-size:15px">'+s.nm+'</b> <span style="font-size:10px;color:#94a3b8">PIN '+s.pin+'</span></div>'+(ta.ci&&!ta.co?'<span style="font-size:10px;background:#dcfce7;color:#166534;padding:3px 8px;border-radius:10px;font-weight:700">●勤務中</span>':"")+'</div>';
+    h+='<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:5px;font-size:10px;margin-bottom:10px">';
+    h+='<div style="text-align:center;padding:6px 3px;background:#f8fafc;border-radius:6px"><div style="font-size:16px;font-weight:800;color:#3b82f6">'+li.length+'</div><div style="color:#94a3b8">リスト</div></div>';
+    h+='<div style="text-align:center;padding:6px 3px;background:#f8fafc;border-radius:6px"><div style="font-size:16px;font-weight:800;color:#1a237e">'+tC.length+'</div><div style="color:#94a3b8">架電</div></div>';
+    h+='<div style="text-align:center;padding:6px 3px;background:#ecfdf5;border-radius:6px"><div style="font-size:16px;font-weight:800;color:#10b981">'+tA+'</div><div style="color:#94a3b8">アポ</div></div>';
+    h+='<div style="text-align:center;padding:6px 3px;background:#fff7ed;border-radius:6px"><div style="font-size:11px;font-weight:800;color:#ea580c">'+fmtSec(totSec)+'</div><div style="color:#94a3b8">通話</div></div>';
+    h+='<div style="text-align:center;padding:6px 3px;background:#fef3c7;border-radius:6px"><div style="font-size:16px;font-weight:800;color:#f59e0b">'+pendingCB+'</div><div style="color:#94a3b8">CB</div></div>';
+    h+='</div>';
+    h+='<div style="font-size:11px;color:#64748b;margin-bottom:8px;padding:6px 8px;background:#f8fafc;border-radius:6px">⏱ 出:'+(ta.ci?ta.ci.slice(0,5):"—")+' / 退:'+(ta.co?ta.co.slice(0,5):"—")+' / 休:'+(ta.bs?ta.bs.slice(0,5):"—")+'〜'+(ta.be?ta.be.slice(0,5):"—")+'</div>';
+    /* v15: 退勤レポート送信状態 */
+    var ldrA=ld("lastDailyReport-"+s.id);
+    if(ldrA){
+      var statBgA=ldrA.status==="sent"?"#dcfce7":ldrA.status==="queued"?"#fef3c7":"#dbeafe";
+      var statColA=ldrA.status==="sent"?"#166534":ldrA.status==="queued"?"#92400e":"#1d4ed8";
+      var statIconA=ldrA.status==="sent"?"✅":ldrA.status==="queued"?"📤":"⏳";
+      h+='<div style="font-size:10px;padding:5px 8px;background:'+statBgA+';color:'+statColA+';border-radius:6px;margin-bottom:8px">'+statIconA+' 退勤レポート '+(ldrA.status==="sent"?"送信済":ldrA.status==="queued"?"キュー保留":"送信中")+' ('+ldrA.date+')</div>';
+    }
+    h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px">';
+    h+='<button data-ld="'+s.id+'" style="padding:9px;border:1.5px solid #3b82f6;border-radius:8px;background:#eff6ff;color:#3b82f6;font-size:11px;font-weight:700">📋 リスト管理</button>';
+    h+='<button data-impr="'+s.id+'" style="padding:9px;border:1.5px solid #8b5cf6;border-radius:8px;background:#f5f3ff;color:#7c3aed;font-size:11px;font-weight:700">👤 として操作</button>';
+    h+='<button data-clr="'+s.id+'" style="padding:9px;border:1px solid #ef4444;border-radius:8px;background:#fef2f2;color:#dc2626;font-size:11px;font-weight:700">🗑 リスト削除</button>';
+    h+='<button data-vap="'+s.id+'" style="padding:9px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#475569;font-size:11px;font-weight:700">🎯 アポ ('+ap.length+')</button>';
+    h+='</div></div>';
+  });
+  h+='</div>';
+}
+
+/* ========== ホーム ========== */
+else if(V==="home"&&!isA){
+  var at=todayAtt(),tc=tdc(),tdA=tc.filter(function(c){return c.r==="appo"}).length;
+  var skC=Object.keys(skipped).filter(function(k){return skipped[k]}).length;
+  var pendingCBcount=cbs.filter(function(c){return!c.done}).length;
+
+  /* 勤怠ボード (大ボタン2列) */
+  h+='<div style="background:#fff;border-radius:14px;padding:14px;border:1px solid #e2e8f0;margin-bottom:10px">';
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><div style="font-size:13px;font-weight:800;color:#1a237e">⏱ '+dateJP()+' 勤怠</div>';
+  if(at.ci&&!at.co)h+='<span style="font-size:10px;background:#dcfce7;color:#166534;padding:3px 8px;border-radius:10px;font-weight:700">●勤務中</span>';
+  h+='</div>';
+  /* タイムライン表示 */
+  if(at.ci||at.co||at.bs||at.be){
+    h+='<div style="display:flex;gap:6px;font-size:10px;color:#64748b;margin-bottom:10px;flex-wrap:wrap">';
+    if(at.ci)h+='<span style="background:#ecfdf5;color:#059669;padding:3px 7px;border-radius:6px;font-weight:700">▶ 出勤 '+at.ci.slice(0,5)+'</span>';
+    if(at.bs)h+='<span style="background:#fffbeb;color:#92400e;padding:3px 7px;border-radius:6px;font-weight:700">⏸ 休 '+at.bs.slice(0,5)+'</span>';
+    if(at.be)h+='<span style="background:#eff6ff;color:#1d4ed8;padding:3px 7px;border-radius:6px;font-weight:700">▶ 復 '+at.be.slice(0,5)+'</span>';
+    if(at.co)h+='<span style="background:#fef2f2;color:#b91c1c;padding:3px 7px;border-radius:6px;font-weight:700">■ 退勤 '+at.co.slice(0,5)+'</span>';
+    h+='</div>';
+  }
+  h+='<div id="atb" style="display:grid;grid-template-columns:1fr 1fr;gap:8px"></div></div>';
+
+  /* KPI */
+  h+='<div style="display:flex;gap:6px;margin-bottom:10px">';
+  [[tc.length,"架電","#3b82f6"],[tdA,"アポ","#10b981"],[appos.length,"累計","#f59e0b"],[pendingCBcount,"再架電","#ef4444"]].forEach(function(k){
+    h+='<div style="flex:1;background:#fff;border-radius:10px;padding:10px 4px;text-align:center;border:1px solid #e2e8f0"><div style="font-size:20px;font-weight:800;color:'+k[2]+'">'+k[0]+'</div><div style="font-size:10px;color:#64748b">'+k[1]+'</div></div>'
+  });
+  h+='</div>';
+
+  /* 通話復帰待ちバナー */
+  if(CALL_PENDING){
+    h+='<div style="background:linear-gradient(135deg,#fef3c7,#fed7aa);border:2px solid #f59e0b;border-radius:14px;padding:14px;margin-bottom:10px;text-align:center" class="pulse">';
+    h+='<div style="font-size:14px;font-weight:800;color:#92400e">📞 通話中... ダイヤラーから戻ると自動で結果入力に進みます</div>';
+    h+='<button id="cancelCall" style="margin-top:8px;padding:6px 12px;border:1px solid #f59e0b;border-radius:8px;background:#fff;color:#92400e;font-size:11px;font-weight:700">通話を取り消し</button>';
+    h+='</div>';
+  }
+
+  /* 架電カード */
+  if(rows.length>0&&cur){
+    var cSk=skipped[ci];var phone=gf(cur,"ph");var fmtP=fmtPhone(phone);
+    h+='<div style="background:#fff;border-radius:14px;padding:14px;border:2px solid '+(cSk?"#f59e0b":"#3b82f6")+';margin-bottom:10px">';
+    if(cSk)h+='<div style="background:#fef3c7;padding:5px 10px;border-radius:6px;font-size:11px;color:#92400e;margin-bottom:8px;font-weight:700">⏭ スキップ済み</div>';
+    h+='<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#94a3b8"><span>架電先 '+(ci+1)+'/'+rows.length+(skC>0?' (スキップ'+skC+')':'')+'</span><span>残り'+rows.filter(function(_,i){return show(i)}).length+'件</span></div>';
+    h+='<div style="font-size:18px;font-weight:800;margin-top:4px">'+(gf(cur,"co")||"行"+(ci+1))+'</div>';
+    if(gf(cur,"pe"))h+='<div style="font-size:13px;color:#64748b;margin-top:2px">👤 '+gf(cur,"pe")+'</div>';
+    if(gf(cur,"ad"))h+='<div style="font-size:11px;color:#94a3b8;margin-top:2px">📍 '+gf(cur,"ad")+'</div>';
+    if(phone){
+      /* v26: オートコール(連続発信モード)トグル */
+      h+='<div style="margin-top:10px;padding:10px 12px;border-radius:12px;border:1.5px solid '+(AUTO_MODE?"#f59e0b":"#e2e8f0")+';background:'+(AUTO_MODE?"#fffbeb":"#f8fafc")+'">';
+      h+='<div style="display:flex;align-items:center;justify-content:space-between">';
+      h+='<div><div style="font-size:12px;font-weight:800;color:'+(AUTO_MODE?"#d97706":"#475569")+'">⚡ オートコール（連続発信）</div><div style="font-size:9px;color:#94a3b8;margin-top:1px">'+(AUTO_MODE?"応答なしは自動で次へ進みます":"ONにすると連続で発信できます")+'</div></div>';
+      h+='<button id="autoToggle" style="width:52px;height:28px;border-radius:14px;border:none;background:'+(AUTO_MODE?"#f59e0b":"#cbd5e1")+';position:relative;cursor:pointer;flex-shrink:0"><span style="position:absolute;top:3px;left:'+(AUTO_MODE?"27px":"3px")+';width:22px;height:22px;border-radius:50%;background:#fff;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)"></span></button>';
+      h+='</div>';
+      if(AUTO_MODE){
+        h+='<div style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:10px;color:#92400e">応答なし判定: <select id="autoSec" style="padding:3px 6px;border:1px solid #fcd34d;border-radius:6px;background:#fff;font-size:11px;font-weight:700;color:#92400e">';
+        [10,15,20,25].forEach(function(s){h+='<option value="'+s+'"'+(AUTO_NO_ANSWER_SEC===s?" selected":"")+'>'+s+'秒</option>'});
+        h+='</select> 未満で切れたら次へ <span style="margin-left:auto;font-weight:800">📞 本日'+autoCallCount+'件</span></div>';
+      }
+      h+='</div>';
+      h+='<a id="phLnk" href="tel:'+telPhone(phone)+'" style="display:block;margin-top:10px;padding:24px 14px;background:linear-gradient(135deg,#10b981,#059669);border:none;border-radius:16px;text-align:center;text-decoration:none;box-shadow:0 8px 22px rgba(16,185,129,.32)">';
+      h+='<div style="font-size:13px;color:#d1fae5;font-weight:800;letter-spacing:.05em">'+(AUTO_MODE?"⚡ 連続発信":"📞 発信")+'</div>';
+      h+='<div style="font-size:30px;font-weight:800;color:#fff;letter-spacing:2px;font-family:monospace;margin-top:4px">'+fmtP+'</div>';
+      h+='<div style="font-size:10px;color:#a7f3d0;margin-top:6px">タップで発信開始 / 通話終了→自動で結果入力 <span class="pc-only">/ PC: <kbd style="background:rgba(255,255,255,.2);color:#fff;border-color:rgba(255,255,255,.4)">Space</kbd></span></div></a>';
+      h+='<button id="cpPh" data-cpph="'+telPhone(phone)+'" style="display:block;width:100%;margin-top:6px;padding:9px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#475569;font-size:11px;font-weight:700">📋 番号をコピー（PCで手動ダイヤル用）</button>';
+    }
+    if(!cSk)h+='<button id="sc" style="display:block;width:100%;padding:14px;border:none;border-radius:12px;color:#fff;font-size:15px;font-weight:800;background:linear-gradient(135deg,#10b981,#059669);margin-top:10px">📋 手動でチェックリスト・結果入力</button>';
+    h+='<div style="display:flex;gap:6px;margin-top:8px">';
+    h+='<button id="pv" style="flex:1;padding:9px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#64748b;font-size:12px;opacity:'+(ci>0?1:.3)+'">← 前</button>';
+    h+='<button id="sk" style="flex:1;padding:9px;border:1px solid #f59e0b;border-radius:8px;background:#fffbeb;color:#92400e;font-size:12px;font-weight:700">⏭ スキップ</button>';
+    h+='<button id="nx" style="flex:1;padding:9px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#64748b;font-size:12px;opacity:'+(ci<rows.length-1?1:.3)+'">次 →</button></div>';
+    if(skC>0)h+='<button id="us" style="width:100%;margin-top:6px;padding:7px;border:none;background:#f1f5f9;color:#94a3b8;font-size:11px;border-radius:6px">スキップ全解除('+skC+')</button>';
+    h+='</div>';
+  }else{
+    h+='<div style="background:#fff;border-radius:14px;padding:30px 20px;border:1px solid #e2e8f0;margin-bottom:10px;text-align:center;color:#94a3b8"><div style="font-size:42px;margin-bottom:10px">📋</div><div style="font-size:14px;color:#475569;font-weight:700;margin-bottom:12px">架電リストが未設定です</div><div style="font-size:11px;color:#94a3b8;margin-bottom:10px">管理者がリストを設定するまでお待ちください</div><div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap"><button id="rf" style="padding:10px 18px;border:1.5px solid #3b82f6;border-radius:10px;background:#eff6ff;color:#3b82f6;font-size:13px;font-weight:700">🔄 サーバーから取得</button></div></div>';
+  }
+
+  /* メニュー (v11: 集計・シフト追加, v21: アポインターには「リスト読込」非表示) */
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px">';
+  var unc=rows.filter(function(_,i){return show(i)}).length;
+  h+='<button id="ml" style="padding:14px 8px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;font-size:12px;font-weight:700;text-align:center"><div style="font-size:20px">📑</div>リスト<br><span style="font-size:10px;color:#94a3b8">残'+unc+'</span></button>';
+  h+='<button id="ma" style="padding:14px 8px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;font-size:12px;font-weight:700;text-align:center"><div style="font-size:20px">🎯</div>アポ<br><span style="font-size:10px;color:#94a3b8">'+appos.length+'件</span></button>';
+  h+='<button id="mc" style="padding:14px 8px;border:1px solid '+(pendingCBcount?"#f59e0b":"#e2e8f0")+';border-radius:12px;background:'+(pendingCBcount?"#fffbeb":"#fff")+';font-size:12px;font-weight:700;text-align:center"><div style="font-size:20px">'+(pendingCBcount?'<span class="bell">🔔</span>':"📞")+'</div>再架電<br><span style="font-size:10px;color:'+(pendingCBcount?"#f59e0b":"#94a3b8")+';font-weight:'+(pendingCBcount?700:400)+'">'+pendingCBcount+'件</span></button>';
+  h+='</div>';
+  /* v21: アポインターには「リスト読込」を非表示 (管理者のみ操作可能) - 代わりに「サーバー再同期」を出す */
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;margin-bottom:10px">';
+  h+='<button id="mresync" style="padding:14px 8px;border:1px solid #10b981;border-radius:12px;background:#ecfdf5;font-size:11px;font-weight:700;text-align:center;color:#059669"><div style="font-size:20px">🔄</div>再同期</button>';
+  h+='<button id="mst" style="padding:14px 8px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;font-size:11px;font-weight:700;text-align:center"><div style="font-size:20px">📊</div>架電集計</button>';
+  h+='<button id="mhist" style="padding:14px 8px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;font-size:11px;font-weight:700;text-align:center"><div style="font-size:20px">📜</div>履歴</button>';
+  h+='<button id="msh" style="padding:14px 8px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;font-size:11px;font-weight:700;text-align:center"><div style="font-size:20px">📅</div>シフト</button>';
+  h+='</div>';
+}
+
+/* ========== 通話・チェックリスト ========== */
+else if(V==="call"){
+  var phone=cur?gf(cur,"ph"):"";var fmtP=fmtPhone(phone);
+  h+='<div style="padding:10px 14px;background:#fff;border-bottom:1px solid #e2e8f0;border-radius:12px;margin-bottom:8px"><div style="font-size:15px;font-weight:800">'+(cur?gf(cur,"co"):"—")+'</div>';
+  if(cur&&gf(cur,"pe"))h+='<div style="font-size:12px;color:#64748b;margin-top:1px">👤 '+gf(cur,"pe")+'</div>';
+  if(phone)h+='<a id="phLnk" href="tel:'+telPhone(phone)+'" style="display:inline-block;margin-top:6px;padding:8px 14px;background:#eff6ff;border-radius:10px;text-decoration:none"><span style="font-size:16px;font-weight:800;color:#1d4ed8;font-family:monospace">📞 '+fmtP+'</span></a>';
+  h+='</div>';
+
+  h+='<div style="padding:0 6px">';
+  /* チェックリスト (v26: ステップ見出し削除、フラットなリスト) */
+  CHECKS.forEach(function(c){
+    var done=ck[c.id];
+    h+='<div data-ck="'+c.id+'" style="display:flex;align-items:center;gap:8px;padding:11px 10px;border-radius:10px;margin-bottom:5px;border:1.5px solid '+(done?"#10b981":"#e2e8f0")+';background:'+(done?"#f0fdf4":"#fff")+';cursor:pointer"><div style="width:22px;height:22px;border-radius:6px;border:2px solid '+(done?"#10b981":"#d1d5db")+';background:'+(done?"#10b981":"#fff")+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;flex-shrink:0">'+(done?"✓":"")+'</div><div style="flex:1"><div style="font-size:13px;line-height:1.4">'+c.label+'</div><div style="font-size:10px;color:#94a3b8;margin-top:1px">'+c.note+'</div></div></div>';
+  });
+
+  /* 暴走 (v19: 複数選択) */
+  h+='<div style="font-size:13px;font-weight:800;color:#ef4444;margin:14px 0 6px">⚠️ 暴走したステップ <span style="font-size:10px;color:#94a3b8;font-weight:400">(複数選択可)</span></div>';
+  BOUSOU_OPTS.forEach(function(b){
+    var sel=b.id==="none"?bousou.length===0:bousou.indexOf(b.id)>=0;
+    /* 複数選択は四角チェック、"暴走なし"は丸 */
+    var box=b.id==="none"
+      ?'<div style="width:18px;height:18px;border-radius:50%;border:2px solid '+(sel?"#10b981":"#d1d5db")+';background:'+(sel?"#10b981":"#fff")+';flex-shrink:0"></div>'
+      :'<div style="width:20px;height:20px;border-radius:5px;border:2px solid '+(sel?"#ef4444":"#d1d5db")+';background:'+(sel?"#ef4444":"#fff")+';display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;flex-shrink:0">'+(sel?"✓":"")+'</div>';
+    var bg=sel?(b.id==="none"?"#f0fdf4":"#fef2f2"):"#fff";
+    var bd=sel?(b.id==="none"?"#10b981":"#ef4444"):"#e2e8f0";
+    h+='<div data-bs="'+b.id+'" style="display:flex;align-items:center;gap:8px;padding:9px 10px;border-radius:10px;margin-bottom:4px;border:1.5px solid '+bd+';background:'+bg+';cursor:pointer">'+box+'<span style="font-size:13px">'+b.label+'</span></div>';
+  });
+
+  /* v19: 終話ステップ */
+  h+='<div style="font-size:13px;font-weight:800;color:#7c3aed;margin:14px 0 6px">🎬 終話したステップ</div>';
+  h+='<select data-endstep="1" style="width:100%;padding:10px;border:1.5px solid #e2e8f0;border-radius:10px;background:#fff;font-size:14px">';
+  h+='<option value="">-- 選択してください --</option>';
+  END_STEP_OPTS.forEach(function(e){
+    h+='<option value="'+e.id+'"'+(endStep===e.id?" selected":"")+'>'+e.label+'</option>';
+  });
+  h+='</select>';
+
+  /* アウト */
+  h+='<div style="font-size:13px;font-weight:800;color:#64748b;margin:14px 0 6px">📝 切り返しできなかったアウト</div>';
+  h+='<textarea id="outTA" style="width:100%;padding:10px;border:1.5px solid #e2e8f0;border-radius:10px;background:#f8fafc;box-sizing:border-box;font-size:14px;resize:vertical" rows="2" placeholder="相手から言われて切り返せなかった言葉..."></textarea>';
+
+  /* 結果 */
+  h+='<div style="font-size:13px;font-weight:800;color:#1a237e;margin:14px 0 6px">📊 架電結果</div>';
+  h+='<div id="rb" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px"></div>';
+
+  /* 断り選択時：クイックスタンプ */
+  if(selRes==="refused"){
+    h+='<div style="font-size:11px;color:#64748b;margin:6px 0 4px">⚡ 断り理由スタンプ（メモ欄に挿入）</div>';
+    h+='<div id="rsmp" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px"></div>';
+  }
+  h+='<textarea id="memoTA" style="width:100%;padding:10px;border:1.5px solid #e2e8f0;border-radius:10px;background:#f8fafc;box-sizing:border-box;font-size:14px;resize:vertical" rows="2" placeholder="📝 メモ（顧客の反応・特記事項など）"></textarea>';
+  h+='<button id="sv" style="display:block;width:100%;padding:16px;border:none;border-radius:12px;color:#fff;font-size:16px;font-weight:800;margin:12px 0 24px;opacity:'+(selRes?1:.4)+';background:'+(selRes==="appo"?"#1a237e":selRes==="cb"?"#f59e0b":"linear-gradient(135deg,#10b981,#059669)")+'">'+(selRes==="appo"?"🎯 アポ詳細を入力":selRes==="cb"?"📞 再架電予定を登録":"✅ 保存して次の架電へ")+'</button>';
+  h+='</div>';
+}
+
+/* ========== アポフォーム (v11 拡張版) ========== */
+else if(V==="appo"){
+  h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><button id="bk" style="background:#f1f5f9;border:none;border-radius:8px;padding:8px 14px;color:#64748b;font-size:12px">← スキップ</button><b style="font-size:15px">🎯 アポ詳細入力</b>';
+  if(voiceSupported())h+='<span style="margin-left:auto;font-size:10px;color:#10b981;background:#ecfdf5;padding:3px 8px;border-radius:6px;font-weight:700">🎤 音声入力対応</span>';
+  h+='</div>';
+  /* フィールド描画ヘルパー */
+  function fld(id,label,required,type,placeholder,enableVoice){
+    var rec=REC&&RECTGT==="af_"+id;
+    var inp='<input id="af_'+id+'" type="'+(type||"text")+'" placeholder="'+(placeholder||"")+'" style="width:100%;padding:11px;border:1.5px solid '+(rec?"#ef4444":"#e2e8f0")+';border-radius:8px;box-sizing:border-box;font-size:15px" value="'+(af[id]||"").replace(/"/g,"&quot;")+'">';
+    var voice=enableVoice&&voiceSupported()?'<button data-voice="af_'+id+'" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);width:34px;height:34px;border:none;border-radius:8px;background:'+(rec?"#ef4444":"#f1f5f9")+';color:'+(rec?"#fff":"#3b82f6")+';font-size:15px;'+(rec?"animation:pulse 1s infinite":"")+'">'+(rec?"🔴":"🎤")+'</button>':"";
+    return '<div style="margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:3px">'+label+(required?' <span style="color:#ef4444">*</span>':"")+(rec?' <span style="color:#ef4444;font-weight:800">録音中...</span>':"")+'</div><div style="position:relative">'+inp+voice+'</div></div>';
+  }
+  h+='<div style="background:#fff;border-radius:14px;padding:12px;border:1px solid #e2e8f0;margin-bottom:10px">';
+  h+=fld("project","案件名",false,"text","例: NKT",true);
+  /* 商談日付・時間（横並び） */
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">';
+  h+='<div><div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:3px">商談日付 <span style="color:#ef4444">*</span></div><input id="af_meetingDate" type="date" style="width:100%;padding:11px;border:1.5px solid #e2e8f0;border-radius:8px;box-sizing:border-box;font-size:15px" value="'+(af.meetingDate||"")+'"></div>';
+  h+='<div><div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:3px">商談時間 <span style="color:#ef4444">*</span></div><input id="af_meetingTime" type="time" style="width:100%;padding:11px;border:1.5px solid #e2e8f0;border-radius:8px;box-sizing:border-box;font-size:15px" value="'+(af.meetingTime||"")+'"></div>';
+  h+='</div>';
+  h+=fld("company","法人名",true,"text","例: （株）オアシス大南",true);
+  h+=fld("phone","電話番号",false,"tel","例: 048-555-0909",true);
+  h+=fld("person","担当者名（漢字）",true,"text","例: 山田太郎",true);
+  h+=fld("role","担当者の役職",false,"text","例: 人事部長",true);
+  h+=fld("email","メールアドレス",false,"email","例: yamada@example.com",true);
+  h+='<div style="margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:3px">性別</div><div id="gb" style="display:flex;gap:6px"></div></div>';
+  h+=fld("address","住所",false,"text","",true);
+  /* 人柄 textarea */
+  var recP=REC&&RECTGT==="af_personality";
+  h+='<div style="margin-bottom:8px"><div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:3px">人柄（重要）'+(recP?' <span style="color:#ef4444;font-weight:800">録音中...</span>':"")+'</div><div style="position:relative"><textarea id="af_personality" style="width:100%;padding:11px;'+(voiceSupported()?"padding-right:46px;":"")+'border:1.5px solid '+(recP?"#ef4444":"#e2e8f0")+';border-radius:8px;background:#f8fafc;box-sizing:border-box;resize:vertical;font-size:14px" rows="3">'+(af.personality||"")+'</textarea>';
+  if(voiceSupported())h+='<button data-voice="af_personality" style="position:absolute;right:6px;top:6px;width:34px;height:34px;border:none;border-radius:8px;background:'+(recP?"#ef4444":"#f1f5f9")+';color:'+(recP?"#fff":"#3b82f6")+';font-size:15px;'+(recP?"animation:pulse 1s infinite":"")+'">'+(recP?"🔴":"🎤")+'</button>';
+  h+='</div></div>';
+  h+='</div>';
+  h+='<button id="sd" style="display:block;width:100%;padding:16px;border:none;border-radius:12px;color:#fff;font-size:16px;font-weight:800;background:#1a237e;margin-bottom:24px">📧 楠さんへメール送信</button>';
+}
+
+/* ========== アポ一覧 ========== */
+else if(V==="appolist"){
+  h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">';
+  h+='<button id="bk" style="background:#f1f5f9;border:none;border-radius:8px;padding:8px 14px;color:#64748b;font-size:12px">← 戻る</button>';
+  h+='<b style="font-size:15px;flex:1">🎯 アポ一覧 ('+appos.length+')</b>';
+  if(appos.length)h+='<button id="expApo" style="padding:8px 12px;border:1px solid #10b981;border-radius:8px;background:#ecfdf5;color:#059669;font-size:11px;font-weight:700">📥 CSV出力</button>';
+  h+='</div>';
+  if(!appos.length)h+='<div style="text-align:center;padding:40px;color:#94a3b8">履歴なし</div>';
+  else h+='<div id="apo"></div>';
+}
+
+/* ========== 再架電一覧 ========== */
+else if(V==="cblist"){
+  var openCBs=cbs.filter(function(c){return!c.done}),doneCBs=cbs.filter(function(c){return c.done});
+  h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><button id="bk" style="background:#f1f5f9;border:none;border-radius:8px;padding:8px 14px;color:#64748b;font-size:12px">← 戻る</button><b style="font-size:15px">📞 再架電予定</b></div>';
+  if(!cbs.length)h+='<div style="text-align:center;padding:40px;color:#94a3b8">予定なし</div>';
+  else{
+    if(openCBs.length){h+='<div style="font-size:12px;font-weight:700;color:#f59e0b;margin-bottom:6px">未対応 ('+openCBs.length+')</div><div id="cbList"></div>';}
+    if(doneCBs.length){h+='<div style="font-size:12px;font-weight:700;color:#94a3b8;margin:14px 0 6px">完了 ('+doneCBs.length+')</div><div id="cbDoneList"></div>';}
+  }
+}
+
+/* ========== 集計 (v11) ========== */
+else if(V==="stats"){
+  h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">';
+  h+='<button id="bk" style="background:#f1f5f9;border:none;border-radius:8px;padding:8px 14px;color:#64748b;font-size:12px">← 戻る</button>';
+  h+='<b style="font-size:15px;flex:1">📊 架電集計</b>';
+  h+='<button id="expHist" style="padding:8px 12px;border:1px solid #10b981;border-radius:8px;background:#ecfdf5;color:#059669;font-size:11px;font-weight:700">📥 履歴CSV</button>';
+  h+='<button id="expHr" style="padding:8px 12px;border:1px solid #3b82f6;border-radius:8px;background:#eff6ff;color:#1d4ed8;font-size:11px;font-weight:700">📥 1時間別CSV</button>';
+  h+='</div>';
+  /* v15: 直近の退勤レポート状態表示 */
+  if(U!=="admin"){
+    var ldr=ld("lastDailyReport-"+U.id);
+    if(ldr){
+      var ago=Math.floor((Date.now()-ldr.ts)/60000);
+      var statBg=ldr.status==="sent"?"#dcfce7":ldr.status==="queued"?"#fef3c7":"#fee2e2";
+      var statCol=ldr.status==="sent"?"#166534":ldr.status==="queued"?"#92400e":"#dc2626";
+      var statIcon=ldr.status==="sent"?"✅":ldr.status==="queued"?"📤":"⏳";
+      var statText=ldr.status==="sent"?"送信完了":ldr.status==="queued"?"キュー保留中":"送信中";
+      h+='<div style="background:'+statBg+';border-radius:10px;padding:10px;margin-bottom:10px;font-size:12px;color:'+statCol+'"><b>'+statIcon+' 直近の退勤レポート: '+statText+'</b><br>'+ldr.date+' / 架電'+ldr.totalCalls+'件 / アポ'+ldr.totalApos+'件 / '+ldr.workDuration+' <span style="font-size:10px;opacity:.7">('+(ago<1?"今":ago+"分前")+')</span></div>';
+    }
+  }
+  /* v15+v17+v18: 接続/ストレージ/同期ボタン */
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">';
+  h+='<button id="resyncFromGas" style="padding:10px;border:1.5px solid #10b981;border-radius:8px;background:#ecfdf5;color:#059669;font-size:12px;font-weight:700">🔄 サーバーから再同期</button>';
+  h+='<button id="testGas" style="padding:10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#475569;font-size:12px;font-weight:700">🌐 GAS接続テスト</button>';
+  h+='</div>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px">';
+  var dlqCount=(ld("sq_dlq")||[]).length;
+  h+='<button id="resendDLQ" style="padding:8px;border:1px solid '+(dlqCount?"#f59e0b":"#cbd5e1")+';border-radius:8px;background:'+(dlqCount?"#fffbeb":"#fff")+';color:'+(dlqCount?"#92400e":"#94a3b8")+';font-size:11px;font-weight:700">'+(dlqCount?"⚠️ DLQ ("+dlqCount+")":"DLQなし")+'</button>';
+  h+='<button id="diagStorage" style="padding:8px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#475569;font-size:11px;font-weight:700">💾 容量診断</button>';
+  h+='</div>';
+  [["today","本日","#3b82f6"],["week","今週","#10b981"],["month","今月","#f59e0b"],["all","累計","#8b5cf6"]].forEach(function(p){
+    var s=statsFor(p[0]);
+    h+='<div style="background:#fff;border-radius:14px;padding:14px;border:1px solid #e2e8f0;margin-bottom:10px;border-left:4px solid '+p[2]+'">';
+    h+='<div style="font-size:13px;font-weight:800;color:'+p[2]+';margin-bottom:8px">'+p[1]+'</div>';
+    h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px"><div style="text-align:center"><div style="font-size:20px;font-weight:800;color:#1a237e">'+s.count+'</div><div style="font-size:10px;color:#94a3b8">架電数</div></div>';
+    h+='<div style="text-align:center"><div style="font-size:13px;font-weight:800;color:#1a237e">'+fmtSec(s.totalSec)+'</div><div style="font-size:10px;color:#94a3b8">通話時間</div></div>';
+    h+='<div style="text-align:center"><div style="font-size:20px;font-weight:800;color:#10b981">'+s.apo+'</div><div style="font-size:10px;color:#94a3b8">アポ</div></div>';
+    h+='<div style="text-align:center"><div style="font-size:18px;font-weight:800;color:#ef4444">'+s.rate+'%</div><div style="font-size:10px;color:#94a3b8">アポ率</div></div></div>';
+    if(s.count>0)h+='<div style="font-size:11px;color:#64748b;margin-top:8px;text-align:center;background:#f8fafc;padding:6px;border-radius:6px">平均通話時間: <b>'+fmtSec(s.avgSec)+'</b></div>';
+    h+='</div>';
+  });
+  /* 直近7日の推移 */
+  h+='<div style="background:#fff;border-radius:14px;padding:14px;border:1px solid #e2e8f0;margin-bottom:10px"><div style="font-size:13px;font-weight:800;color:#1a237e;margin-bottom:8px">📈 直近7日の推移</div>';
+  var byDay=statsByDay(7),maxC=Math.max.apply(null,byDay.map(function(d){return d.count}))||1;
+  byDay.forEach(function(d){
+    var bw=Math.max(2,Math.round(d.count*100/maxC));
+    h+='<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:11px"><span style="width:32px;color:#64748b;font-weight:700">'+d.label+'</span><div style="flex:1;background:#f1f5f9;border-radius:4px;height:20px;position:relative;overflow:hidden"><div style="background:linear-gradient(90deg,#3b82f6,#1a237e);height:100%;width:'+bw+'%;border-radius:4px"></div>'+(d.count>0?'<span style="position:absolute;top:50%;transform:translateY(-50%);left:6px;font-size:10px;font-weight:700;color:#fff">'+d.count+'件</span>':"")+'</div><span style="width:54px;text-align:right;color:#64748b;font-size:10px">'+(d.sec?fmtSec(d.sec):"—")+'</span><span style="width:30px;text-align:right;color:#10b981;font-weight:700">🎯'+d.apo+'</span></div>';
+  });
+  h+='</div>';
+  /* 結果別内訳（今月） */
+  var thisYM=(new Date()).getFullYear()+"-"+pad((new Date()).getMonth()+1);
+  var thisMonth=hist.filter(function(c){return c.d&&c.d.indexOf(thisYM)===0});
+  if(thisMonth.length){
+    h+='<div style="background:#fff;border-radius:14px;padding:14px;border:1px solid #e2e8f0;margin-bottom:10px"><div style="font-size:13px;font-weight:800;color:#1a237e;margin-bottom:8px">📊 今月の結果内訳</div>';
+    RESULTS.forEach(function(r){
+      var c=thisMonth.filter(function(x){return x.r===r.id}).length;
+      var pct=Math.round(c*1000/thisMonth.length)/10;
+      h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:12px"><span style="width:24px;text-align:center">'+r.i+'</span><span style="width:54px;color:#64748b">'+r.l+'</span><div style="flex:1;background:#f1f5f9;border-radius:4px;height:14px"><div style="background:'+r.c+';height:100%;width:'+pct+'%;border-radius:4px"></div></div><span style="width:30px;text-align:right;font-weight:700">'+c+'</span><span style="width:42px;text-align:right;color:#94a3b8;font-size:10px">'+pct+'%</span></div>';
+    });
+    h+='</div>';
+  }
+
+  /* ========== 1時間ごと集計 (v12) ========== */
+  h+='<div style="background:#fff;border-radius:14px;padding:14px;border:1px solid #e2e8f0;margin-bottom:10px">';
+  h+='<div style="font-size:13px;font-weight:800;color:#1a237e;margin-bottom:8px">⏰ 勤務日別 / 1時間ごと集計</div>';
+  /* 出勤日 (att.ci がある日) */
+  var wDays=workDays();
+  if(!wDays.length){
+    h+='<div style="text-align:center;padding:20px;color:#94a3b8;font-size:12px">出勤打刻データなし</div>';
+  }else{
+    /* 表示する日を選択 (デフォルト: 今日 or 直近の出勤日) */
+    if(!hourStatsDate||wDays.indexOf(hourStatsDate)<0)hourStatsDate=wDays[0];
+    h+='<div style="font-size:11px;color:#64748b;margin-bottom:4px">勤務日選択</div>';
+    h+='<select id="hsDate" style="width:100%;padding:10px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:14px;font-family:inherit;background:#fff;margin-bottom:10px">';
+    wDays.forEach(function(d){
+      var dt=new Date(d+"T00:00:00"),dow=["日","月","火","水","木","金","土"][dt.getDay()];
+      var ta=att[d]||{};
+      var range=(ta.ci?ta.ci.slice(0,5):"—")+"〜"+(ta.co?ta.co.slice(0,5):"勤務中");
+      h+='<option value="'+d+'"'+(hourStatsDate===d?" selected":"")+'>'+(dt.getMonth()+1)+'/'+dt.getDate()+'('+dow+') '+range+'</option>';
+    });
+    h+='</select>';
+    /* 時間別集計表 */
+    var hr=statsByHour(hourStatsDate);
+    var totC=0,totS=0,totA=0;hr.forEach(function(b){totC+=b.count;totS+=b.sec;totA+=b.apo});
+    var maxC=Math.max.apply(null,hr.map(function(b){return b.count}))||1;
+    /* 合計サマリー */
+    h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px">';
+    h+='<div style="background:#eff6ff;border-radius:8px;padding:8px;text-align:center"><div style="font-size:18px;font-weight:800;color:#1d4ed8">'+totC+'</div><div style="font-size:10px;color:#64748b">架電数</div></div>';
+    h+='<div style="background:#ecfdf5;border-radius:8px;padding:8px;text-align:center"><div style="font-size:13px;font-weight:800;color:#059669">'+fmtSec(totS)+'</div><div style="font-size:10px;color:#64748b">通話時間</div></div>';
+    h+='<div style="background:#fef3c7;border-radius:8px;padding:8px;text-align:center"><div style="font-size:18px;font-weight:800;color:#d97706">'+totA+'</div><div style="font-size:10px;color:#64748b">アポ</div></div>';
+    h+='</div>';
+    /* 1時間ごとテーブル */
+    h+='<div style="overflow-x:auto"><table style="width:100%;font-size:11px;border-collapse:collapse">';
+    h+='<thead><tr style="background:#f8fafc"><th style="padding:6px 4px;text-align:left;color:#64748b;font-weight:700;width:38px">時間</th><th style="padding:6px 4px;text-align:left;color:#64748b;font-weight:700">架電</th><th style="padding:6px 4px;text-align:right;color:#64748b;font-weight:700;width:36px">件数</th><th style="padding:6px 4px;text-align:right;color:#64748b;font-weight:700;width:60px">通話時間</th><th style="padding:6px 4px;text-align:right;color:#64748b;font-weight:700;width:30px">🎯</th><th style="padding:6px 4px;text-align:right;color:#64748b;font-weight:700;width:42px">アポ率</th></tr></thead><tbody>';
+    hr.forEach(function(b){
+      var bw=b.count>0?Math.max(8,Math.round(b.count*100/maxC)):0;
+      var rowBg=b.count>0?"#fff":"#fafbfc";
+      var rate=b.count>0?Math.round(b.apo*1000/b.count)/10:0;
+      h+='<tr style="border-bottom:1px solid #f1f5f9;background:'+rowBg+'">';
+      h+='<td style="padding:6px 4px;font-weight:700;color:'+(b.count>0?"#1a237e":"#cbd5e1")+'">'+b.label+'</td>';
+      h+='<td style="padding:6px 4px"><div style="background:#f1f5f9;border-radius:3px;height:14px;position:relative;overflow:hidden">'+(b.count>0?'<div style="background:linear-gradient(90deg,#3b82f6,#1a237e);height:100%;width:'+bw+'%;border-radius:3px"></div>':'')+'</div></td>';
+      h+='<td style="padding:6px 4px;text-align:right;font-weight:700;color:'+(b.count>0?"#1a237e":"#cbd5e1")+'">'+(b.count||"—")+'</td>';
+      h+='<td style="padding:6px 4px;text-align:right;color:'+(b.sec>0?"#059669":"#cbd5e1")+';font-size:10px">'+(b.sec>0?fmtSec(b.sec):"—")+'</td>';
+      h+='<td style="padding:6px 4px;text-align:right;font-weight:700;color:'+(b.apo>0?"#d97706":"#cbd5e1")+'">'+(b.apo||"—")+'</td>';
+      h+='<td style="padding:6px 4px;text-align:right;font-weight:700;font-size:10px;color:'+(rate>0?"#dc2626":"#cbd5e1")+'">'+(b.count>0?rate+"%":"—")+'</td>';
+      h+='</tr>';
+    });
+    h+='</tbody></table></div>';
+    /* 平均値 */
+    if(totC>0){
+      var avgPerHr=Math.round(totC*10/hr.filter(function(b){return b.count>0}).length)/10;
+      h+='<div style="margin-top:8px;font-size:11px;color:#64748b;background:#f8fafc;padding:8px;border-radius:6px;text-align:center">📊 稼働時間あたり平均 <b style="color:#1a237e">'+avgPerHr+'件/時</b> ／ 平均通話時間 <b style="color:#1a237e">'+fmtSec(totC?Math.round(totS/totC):0)+'</b></div>';
+    }
+  }
+  h+='</div>';
+}
+
+/* ========== シフト申請 (v11) ========== */
+else if(V==="shift"){
+  h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><button id="bk" style="background:#f1f5f9;border:none;border-radius:8px;padding:8px 14px;color:#64748b;font-size:12px">← 戻る</button><b style="font-size:15px">📅 シフト申請</b></div>';
+  /* 月セレクタ */
+  var smp=shiftMonth.split("-");
+  h+='<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;background:#fff;border-radius:12px;padding:8px 10px;border:1px solid #e2e8f0">';
+  h+='<button id="shPrev" style="padding:8px 14px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;color:#64748b;font-size:14px">◀</button>';
+  h+='<div style="flex:1;text-align:center;font-size:16px;font-weight:800;color:#1a237e">'+smp[0]+'年'+(+smp[1])+'月</div>';
+  h+='<button id="shNext" style="padding:8px 14px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;color:#64748b;font-size:14px">▶</button></div>';
+  /* 凡例 (v12) */
+  h+='<div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center;font-size:10px;color:#64748b;margin-bottom:8px;background:#f8fafc;padding:8px;border-radius:8px">';
+  h+='<span style="font-weight:700">日付タップ→時間指定 / 9:30〜18:00 30分刻み</span>';
+  h+='</div>';
+  /* カレンダー */
+  h+='<div style="background:#fff;border-radius:12px;padding:8px;border:1px solid #e2e8f0;margin-bottom:10px">';
+  h+='<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center;font-size:11px;font-weight:700;margin-bottom:4px">';
+  ["日","月","火","水","木","金","土"].forEach(function(d,i){var c=i===0?"#ef4444":i===6?"#3b82f6":"#94a3b8";h+='<div style="color:'+c+'">'+d+'</div>'});
+  h+='</div>';
+  h+='<div id="shCal" style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px"></div></div>';
+  /* サマリー (v12: 時間ベース) */
+  var workCount=Object.keys(shiftDays).filter(function(k){var v=shiftDays[k];return v&&v!=="off"&&typeof v==="object"&&v.start}).length;
+  var offCount=Object.keys(shiftDays).filter(function(k){return shiftDays[k]==="off"}).length;
+  var totalMins=0;
+  Object.keys(shiftDays).forEach(function(k){var v=shiftDays[k];if(v&&typeof v==="object"&&v.start&&v.end){var sm=parseInt(v.start.slice(0,2))*60+parseInt(v.start.slice(3,5));var em=parseInt(v.end.slice(0,2))*60+parseInt(v.end.slice(3,5));totalMins+=Math.max(0,em-sm)}});
+  var ttlH=Math.floor(totalMins/60),ttlM=totalMins%60;
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px">';
+  h+='<div style="background:#ecfdf5;border-radius:10px;padding:10px;text-align:center"><div style="font-size:22px;font-weight:800;color:#10b981">'+workCount+'</div><div style="font-size:11px;color:#64748b">出勤予定日</div></div>';
+  h+='<div style="background:#f1f5f9;border-radius:10px;padding:10px;text-align:center"><div style="font-size:22px;font-weight:800;color:#94a3b8">'+offCount+'</div><div style="font-size:11px;color:#64748b">休み</div></div>';
+  h+='<div style="background:#eff6ff;border-radius:10px;padding:10px;text-align:center"><div style="font-size:18px;font-weight:800;color:#1d4ed8">'+ttlH+'h'+(ttlM?ttlM+'m':'')+'</div><div style="font-size:11px;color:#64748b">合計時間</div></div>';
+  h+='</div>';
+  /* 一括テンプレ (v13) */
+  h+='<div style="background:#fff;border-radius:12px;padding:12px;border:1px solid #e2e8f0;margin-bottom:10px">';
+  h+='<div style="font-size:12px;font-weight:800;color:#1a237e;margin-bottom:8px">⚡ 一括テンプレ ('+(+shiftMonth.split("-")[1])+'月)</div>';
+  h+='<div class="pc-grid-2" style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
+  [["weekday_full","平日 9:30〜18:00 / 土日休","#10b981"],["all_full","全日 9:30〜18:00","#3b82f6"],["weekday_morning","平日 午前のみ / 土日休","#f59e0b"],["weekday_afternoon","平日 午後のみ / 土日休","#8b5cf6"]].forEach(function(t){
+    h+='<button data-shtmpl="'+t[0]+'" style="padding:10px 6px;border:1.5px solid '+t[2]+';border-radius:10px;background:'+t[2]+'15;color:'+t[2]+';font-weight:700;font-size:11px;font-family:inherit;line-height:1.3">'+t[1]+'</button>';
+  });
+  h+='</div>';
+  h+='<button data-shtmpl="clear" style="margin-top:6px;width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;color:#64748b;font-weight:700;font-size:11px;font-family:inherit">🗑 この月の入力を全削除</button>';
+  h+='</div>';
+  /* 申請・修正ボタン */
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">';
+  h+='<button id="shApply" style="padding:16px 8px;border:none;border-radius:12px;background:#1a237e;color:#fff;font-weight:800;font-size:14px">📩 申請する</button>';
+  h+='<button id="shModify" style="padding:16px 8px;border:1.5px solid #f59e0b;border-radius:12px;background:#fffbeb;color:#92400e;font-weight:800;font-size:14px">✏️ 修正申請</button></div>';
+  h+='<div style="background:#fef3c7;border-radius:8px;padding:10px;font-size:11px;color:#92400e;text-align:center;margin-bottom:14px">📧 送信先: <b>'+SHIFT_NOTIFY_TO+'</b></div>';
+  /* 申請履歴 (v13) */
+  var shHist=U!=="admin"?(ld("shHist-"+U.id)||[]):[];
+  if(shHist.length){
+    h+='<div style="background:#fff;border-radius:12px;padding:12px;border:1px solid #e2e8f0;margin-bottom:24px">';
+    h+='<div style="font-size:12px;font-weight:800;color:#1a237e;margin-bottom:8px">📜 過去の申請履歴</div>';
+    shHist.slice(0,10).forEach(function(rec){
+      var dt=new Date(rec.ts);
+      var dts=(dt.getMonth()+1)+"/"+dt.getDate()+" "+pad(dt.getHours())+":"+pad(dt.getMinutes());
+      var hh=Math.floor((rec.totalMins||0)/60),mm=(rec.totalMins||0)%60;
+      h+='<div style="padding:8px;border-bottom:1px solid #f1f5f9;font-size:11px;display:flex;justify-content:space-between;align-items:center"><div><b style="color:'+(rec.mode==="apply"?"#1d4ed8":"#d97706")+'">'+(rec.mode==="apply"?"📩 申請":"✏️ 修正")+'</b> <span style="color:#475569">'+rec.month+'</span> <span style="color:#94a3b8">'+rec.workCount+'日 / '+hh+'h'+(mm?mm+'m':'')+'</span></div><span style="color:#94a3b8;font-size:10px">'+dts+'</span></div>';
+    });
+    if(shHist.length>10)h+='<div style="text-align:center;padding-top:6px;font-size:10px;color:#94a3b8">...他 '+(shHist.length-10)+'件</div>';
+    h+='</div>';
+  }
+}
+
+/* ========== リスト ========== */
+/* ========== 通話履歴ビュー (v13) ========== */
+else if(V==="history"){
+  h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">';
+  h+='<button id="bk" style="background:#f1f5f9;border:none;border-radius:8px;padding:8px 14px;color:#64748b;font-size:12px">← 戻る</button>';
+  h+='<b style="font-size:15px;flex:1">📜 通話履歴</b>';
+  h+='<button id="expHist2" style="padding:8px 12px;border:1px solid #10b981;border-radius:8px;background:#ecfdf5;color:#059669;font-size:11px;font-weight:700">📥 全履歴CSV</button>';
+  h+='</div>';
+  /* 日付フィルタ */
+  var hd=historyDate||td();
+  h+='<div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;background:#fff;border-radius:10px;padding:8px;border:1px solid #e2e8f0">';
+  h+='<span style="font-size:12px;color:#64748b">日付:</span>';
+  h+='<input id="hdate" type="date" value="'+hd+'" style="flex:1;padding:8px;border:1px solid #e2e8f0;border-radius:6px;font-size:14px;background:#fff">';
+  h+='<button id="hdToday" style="padding:8px 12px;border:1px solid #3b82f6;border-radius:6px;background:#eff6ff;color:#1d4ed8;font-size:11px;font-weight:700">今日</button>';
+  h+='</div>';
+  /* 履歴一覧 */
+  var dayHist=hist.filter(function(c){return c.d===hd}).slice().sort(function(a,b){return(a.tm||"").localeCompare(b.tm||"")});
+  if(!dayHist.length){
+    h+='<div style="text-align:center;padding:40px;color:#94a3b8;font-size:13px">📭 '+hd+' の履歴なし</div>';
+  }else{
+    /* サマリー */
+    var hSec=0,hAp=0;dayHist.forEach(function(c){hSec+=durSec(c.dur||"");if(c.r==="appo")hAp++});
+    h+='<div class="pc-grid-3" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px">';
+    h+='<div style="background:#fff;border-radius:10px;padding:10px;text-align:center;border:1px solid #e2e8f0"><div style="font-size:22px;font-weight:800;color:#1a237e">'+dayHist.length+'</div><div style="font-size:10px;color:#64748b">架電数</div></div>';
+    h+='<div style="background:#fff;border-radius:10px;padding:10px;text-align:center;border:1px solid #e2e8f0"><div style="font-size:14px;font-weight:800;color:#059669">'+fmtSec(hSec)+'</div><div style="font-size:10px;color:#64748b">通話時間</div></div>';
+    h+='<div style="background:#fff;border-radius:10px;padding:10px;text-align:center;border:1px solid #e2e8f0"><div style="font-size:22px;font-weight:800;color:#f59e0b">'+hAp+'</div><div style="font-size:10px;color:#64748b">アポ</div></div>';
+    h+='</div>';
+    /* テーブル */
+    h+='<div style="background:#fff;border-radius:12px;border:1px solid #e2e8f0;overflow:hidden"><div style="overflow-x:auto"><table class="dataTable" style="width:100%">';
+    h+='<thead><tr><th style="width:48px">時刻</th><th>会社名</th><th class="pc-only">担当</th><th style="width:120px">電話</th><th style="width:60px">結果</th><th style="width:50px;text-align:right">通話</th><th class="pc-only" style="width:60px;text-align:center">CK</th></tr></thead><tbody>';
+    dayHist.forEach(function(c){
+      var ri=null;RESULTS.forEach(function(r){if(r.id===c.r)ri=r});
+      var fp=c.ph?fmtPhone(c.ph):"";
+      h+='<tr><td style="font-family:monospace;color:#1a237e;font-weight:700">'+(c.tm||"—")+'</td>';
+      h+='<td>'+(c.co||"—")+'</td>';
+      h+='<td class="pc-only" style="color:#64748b">'+(c.pe||"")+'</td>';
+      h+='<td style="font-family:monospace;font-size:11px">'+(fp?'<a href="tel:'+telPhone(c.ph)+'" style="color:#3b82f6;text-decoration:none">📞 '+fp+'</a>':"—")+'</td>';
+      h+='<td>'+(ri?'<span style="font-size:10px;background:'+ri.c+'15;color:'+ri.c+';padding:2px 6px;border-radius:5px;font-weight:700">'+ri.i+ri.l+'</span>':c.r||"—")+'</td>';
+      h+='<td style="text-align:right;font-family:monospace;color:#059669">'+(c.dur||"—")+'</td>';
+      h+='<td class="pc-only" style="text-align:center;color:#64748b;font-size:11px">'+(c.ck||"—")+'</td>';
+      h+='</tr>';
+    });
+    h+='</tbody></table></div></div>';
+  }
+}
+
+/* ========== リスト一覧 (v13: 検索・フィルタ・エクスポート) ========== */
+else if(V==="list"){
+  h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">';
+  h+='<button id="bk" style="background:#f1f5f9;border:none;border-radius:8px;padding:8px 14px;color:#64748b;font-size:12px">← 戻る</button>';
+  h+='<b style="font-size:15px;flex:1">📑 リスト ('+rows.length+')</b>';
+  h+='<button id="expList" style="padding:8px 12px;border:1px solid #10b981;border-radius:8px;background:#ecfdf5;color:#059669;font-size:11px;font-weight:700">📥 CSV出力</button>';
+  h+='</div>';
+  /* 検索バー */
+  h+='<div style="display:flex;gap:6px;margin-bottom:8px">';
+  h+='<input id="listSearch" type="text" value="'+(listSearch||"").replace(/"/g,"&quot;")+'" placeholder="🔍 会社名・電話番号・担当者で検索..." style="flex:1;padding:11px;border:1.5px solid #e2e8f0;border-radius:10px;background:#fff;font-size:14px">';
+  if(listSearch)h+='<button id="clrSrch" style="padding:0 14px;border:1px solid #ef4444;border-radius:10px;background:#fef2f2;color:#dc2626;font-size:13px;font-weight:700">✕</button>';
+  h+='</div>';
+  /* フィルタチップ */
+  var counts={all:rows.length,uncalled:0,called:0,skipped:0,appo:0};
+  var tcL=tdc();
+  rows.forEach(function(_,i){
+    if(skipped[i])counts.skipped++;
+    else if(called(i)){counts.called++;var m=tcL.filter(function(c){return c.i===i});if(m.length&&m[0].r==="appo")counts.appo++}
+    else counts.uncalled++;
+  });
+  h+='<div style="display:flex;gap:5px;margin-bottom:10px;overflow-x:auto;padding:2px">';
+  [["all","すべて","#64748b",counts.all],["uncalled","未架電","#3b82f6",counts.uncalled],["called","架電済","#10b981",counts.called],["appo","アポ","#f59e0b",counts.appo],["skipped","スキップ","#ef4444",counts.skipped]].forEach(function(f){
+    var sel=listFilter===f[0];
+    h+='<button data-flt="'+f[0]+'" style="white-space:nowrap;padding:7px 12px;border:1.5px solid '+f[2]+';border-radius:18px;background:'+(sel?f[2]:"#fff")+';color:'+(sel?"#fff":f[2])+';font-size:11px;font-weight:700;font-family:inherit">'+f[1]+' <b>'+f[3]+'</b></button>';
+  });
+  h+='</div>';
+  h+='<div id="lst"></div>';
+}
+
+h+='</main>';root.innerHTML=h;
+
+/* ============ イベントバインド ============ */
+function B(id,fn){var el=document.getElementById(id);if(el)el.addEventListener("click",fn)}
+B("lo",function(){U=null;V="login";pin="";asAppointer=null;clearInterval(tref);unlockScreen();render()});
+/* v13: 管理者へ戻る */
+B("backToAdmin",function(){
+  if(asAppointer){asAppointer=null;U="admin";V="admin";vib(40);flash("🔒 管理者に戻りました");render()}
+});
+/* v13: キーボードヘルプ */
+B("kbdHelp",function(){pcKbdHelp=true;render()});
+B("kbdClose",function(){pcKbdHelp=false;render()});
+/* v13: シフト一括テンプレ */
+document.querySelectorAll("[data-shtmpl]").forEach(function(el){
+  el.addEventListener("click",function(){
+    var t=el.getAttribute("data-shtmpl");
+    if(t==="clear"){
+      showConfirm={title:"この月の入力を全削除？",msg:shiftMonth+" のシフト入力を全て削除します",onYes:function(){applyShiftTemplate("clear");showConfirm=null;render()},onNo:function(){showConfirm=null;render()}};
+      render();
+    }else applyShiftTemplate(t);
+  });
+});
+/* v13: CSVエクスポート */
+B("expHist",exportHistoryCSV);
+B("expHr",exportHourStatsCSV);
+B("expApo",exportApposCSV);
+/* v15: 接続診断 / DLQ */
+B("testGas",testGasConnection);
+B("resendDLQ",resendDLQ);
+B("diagStorage",showStorageDiag);
+/* v18: 手動再同期 */
+B("resyncFromGas",function(){
+  if(U==="admin"||!U){flash("⚠️ アポインターのみ");return}
+  loadFromGAS(U,function(ok,info){
+    if(ok){
+      var msg="✅ 再同期完了: ";
+      var parts=[];
+      if(info.list)parts.push("リスト"+info.list);
+      if(info.hist)parts.push("履歴"+info.hist);
+      if(info.appos)parts.push("アポ"+info.appos);
+      if(info.cb)parts.push("再架電"+info.cb);
+      if(info.attDays)parts.push("勤怠"+info.attDays+"日");
+      msg+=parts.length?parts.join("/"):"データなし";
+      flash(msg);
+      vib([60,40,60]);
+      render();
+    }else{
+      flash("⚠️ 再同期失敗: "+info);
+      vib([100,60,100]);
+    }
+  });
+});
+B("dlTpl",function(){
+  csvDownload("架電リスト_テンプレ.csv",["会社名","電話番号","担当者","住所"],[
+    ["株式会社サンプル","03-1234-5678","山田太郎","東京都千代田区..."],
+    ["有限会社サンプル","090-1111-2222","田中花子","神奈川県横浜市..."]
+  ]);
+});
+B("ib",function(e){if(e.target.id==="ib"){showImp=false;render()}});
+B("cib",function(){showImp=false;render()});
+B("imb",doImport);
+
+/* v12: ファイル選択 + ドラッグ&ドロップ */
+var dz=document.getElementById("dropZone");
+var fi=document.getElementById("impFile");
+if(dz&&fi){
+  dz.addEventListener("click",function(){fi.click()});
+  fi.addEventListener("change",function(e){var f=e.target.files&&e.target.files[0];if(f){handleExcelFile(f);fi.value=""}});
+  dz.addEventListener("dragover",function(e){e.preventDefault();dz.style.borderColor="#3b82f6";dz.style.background="#eff6ff"});
+  dz.addEventListener("dragleave",function(e){e.preventDefault();dz.style.borderColor="#cbd5e1";dz.style.background="#f8fafc"});
+  dz.addEventListener("drop",function(e){e.preventDefault();dz.style.borderColor="#cbd5e1";dz.style.background="#f8fafc";var f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];if(f)handleExcelFile(f)});
+}
+
+/* v12: クリアボタン */
+B("clrCur",function(){if(U&&U!=="admin"){showImp=false;clearList(U.id)}});
+B("clrAll",function(){showImp=false;clearList("all")});
+B("adClrAll",function(){clearList("all")});
+B("testGasA",testGasConnection);
+document.querySelectorAll("[data-clr]").forEach(function(el){
+  el.addEventListener("click",function(){clearList(el.getAttribute("data-clr"))});
+});
+/* v13: 管理者の "として操作" モード */
+document.querySelectorAll("[data-impr]").forEach(function(el){
+  el.addEventListener("click",function(){
+    var sid=el.getAttribute("data-impr");
+    var staff=null;STAFF.forEach(function(s){if(s.id===sid)staff=s});
+    if(!staff)return;
+    asAppointer=staff;
+    /* 元の管理者状態を保存して、アポインターとしてログイン */
+    U=staff;V="home";loadUser(staff.id);
+    flash("👤 "+staff.nm+" として操作中 (右上で管理者へ戻る)");
+    vib([40,30,40]);render();
+  });
+});
+/* v13: アポ閲覧 (管理者) */
+document.querySelectorAll("[data-vap]").forEach(function(el){
+  el.addEventListener("click",function(){
+    var sid=el.getAttribute("data-vap");var staff=null;STAFF.forEach(function(s){if(s.id===sid)staff=s});
+    if(!staff)return;
+    asAppointer=staff;U=staff;V="appolist";loadUser(staff.id);render();
+  });
+});
+
+/* v12: 番号コピー */
+B("cpPh",function(){var btn=document.getElementById("cpPh");if(btn)copyPhoneNum(btn.getAttribute("data-cpph"))});
+
+B("sc",function(){
+  /* 手動でチェックリストへ：タイマーは0から（手動の場合は通話自動検出無し） */
+  ck={};tsec=0;selRes=null;bousou=[];endStep="";clearInterval(tref);
+  tref=setInterval(function(){tsec++;var el=document.getElementById("tmr");if(el)el.textContent=timerStr(tsec)},1000);
+  V="call";lockScreen();render();
+});
+
+B("sv",function(){if(selRes)saveCall()});
+B("sd",sendAppo);
+B("bk",function(){if(V==="appo")goNext();V="home";unlockScreen();render()});
+B("pv",function(){if(ci>0){ci--;render()}});
+B("nx",function(){if(ci<rows.length-1){ci++;render()}});
+B("sk",function(){skipped[ci]=true;sv("sk-"+U.id,skipped);vib(30);flash("⏭ スキップ");goNext();render()});
+B("us",function(){skipped={};sv("sk-"+U.id,{});flash("全解除");render()});
+/* v21: 「サーバーから取得」 - loadFromGASを使う (アポインターも管理者も両方対応) */
+B("rf",function(){
+  if(U&&U!=="admin"){
+    loading=true;render();
+    loadFromGAS(U,function(ok,info){
+      loading=false;
+      if(ok){
+        var msg="✅ サーバーから取得: ";
+        var parts=[];
+        if(info.list)parts.push("リスト"+info.list);
+        if(info.hist)parts.push("履歴"+info.hist);
+        if(info.appos)parts.push("アポ"+info.appos);
+        msg+=parts.length?parts.join("/"):"データなし";
+        flash(msg);
+      }else{
+        flash("⚠️ サーバー取得失敗: "+info);
+      }
+      render();
+    });
+  }
+});
+/* v21: ホーム画面の「再同期」ボタン */
+B("mresync",function(){
+  if(U&&U!=="admin"){
+    loading=true;render();
+    loadFromGAS(U,function(ok,info){
+      loading=false;
+      if(ok){
+        var msg="✅ サーバーから同期: ";
+        var parts=[];
+        if(info.list)parts.push("リスト"+info.list);
+        if(info.hist)parts.push("履歴"+info.hist);
+        if(info.appos)parts.push("アポ"+info.appos);
+        if(info.cb)parts.push("再架電"+info.cb);
+        if(info.attDays)parts.push("勤怠"+info.attDays+"日");
+        msg+=parts.length?parts.join("/"):"データなし";
+        flash(msg);
+        vib([60,40,60]);
+      }else{
+        flash("⚠️ 再同期失敗: "+info);
+        vib([100,60,100]);
+      }
+      render();
+    });
+  }
+});
+B("upMain",function(){
+  /* v21: 管理者のみ */
+  if(U!=="admin"){flash("⚠️ リスト読込は管理者のみ可能です");return}
+  showImp=true;impErr="";render();
+});
+B("ml",function(){V="list";render()});
+B("ma",function(){V="appolist";render()});
+B("mc",function(){V="cblist";render()});
+B("mst",function(){V="stats";render()});
+B("mhist",function(){V="history";historyDate="";render()});
+B("expHist2",exportHistoryCSV);
+B("hdToday",function(){historyDate=td();render()});
+var hdEl=document.getElementById("hdate");
+if(hdEl)hdEl.addEventListener("change",function(){historyDate=hdEl.value;render()});
+B("mup",function(){
+  /* v21: 管理者のみ */
+  if(U!=="admin"){flash("⚠️ リスト読込は管理者のみ可能です");return}
+  showImp=true;impErr="";render();
+});
+B("msh",function(){if(U&&U!=="admin"){shiftDays=ld("sft-"+U.id+"-"+shiftMonth)||{}}V="shift";render()});
+B("shPrev",function(){var p=shiftMonth.split("-"),y=+p[0],m=+p[1];m--;if(m<1){m=12;y--}shiftMonth=y+"-"+pad(m);if(U&&U!=="admin")shiftDays=ld("sft-"+U.id+"-"+shiftMonth)||{};render()});
+B("shNext",function(){var p=shiftMonth.split("-"),y=+p[0],m=+p[1];m++;if(m>12){m=1;y++}shiftMonth=y+"-"+pad(m);if(U&&U!=="admin")shiftDays=ld("sft-"+U.id+"-"+shiftMonth)||{};render()});
+B("shApply",function(){submitShift("apply")});
+B("shModify",function(){submitShift("modify")});
+
+/* シフト日モーダル (v12) */
+function syncShiftDay(){
+  var s=document.getElementById("sdStart"),e=document.getElementById("sdEnd");
+  if(s)showShiftDay.start=s.value;
+  if(e)showShiftDay.end=e.value;
+}
+B("sdClose",function(){showShiftDay=null;render()});
+document.querySelectorAll("[data-sdpre]").forEach(function(el){
+  el.addEventListener("click",function(){
+    var p=el.getAttribute("data-sdpre").split("|");
+    showShiftDay.start=p[0];showShiftDay.end=p[1];
+    vib(15);render();
+  });
+});
+var sdSel=function(){
+  syncShiftDay();
+  /* 終了 ≤ 開始 になった場合は終了を自動で +30分先に補正 */
+  var sm=parseInt(showShiftDay.start.slice(0,2))*60+parseInt(showShiftDay.start.slice(3,5));
+  var em=parseInt(showShiftDay.end.slice(0,2))*60+parseInt(showShiftDay.end.slice(3,5));
+  if(em<=sm){
+    var ix=TIME_SLOTS.indexOf(showShiftDay.start);
+    if(ix>=0&&ix+1<TIME_SLOTS.length)showShiftDay.end=TIME_SLOTS[ix+1];
+  }
+  render();
+};
+var sdS=document.getElementById("sdStart"),sdE=document.getElementById("sdEnd");
+if(sdS)sdS.addEventListener("change",sdSel);
+if(sdE)sdE.addEventListener("change",sdSel);
+B("sdSave",function(){
+  syncShiftDay();
+  var sm=parseInt(showShiftDay.start.slice(0,2))*60+parseInt(showShiftDay.start.slice(3,5));
+  var em=parseInt(showShiftDay.end.slice(0,2))*60+parseInt(showShiftDay.end.slice(3,5));
+  if(em<=sm){flash("⚠️ 終了時刻は開始時刻より後にしてください");return}
+  shiftDays[showShiftDay.dateKey]={start:showShiftDay.start,end:showShiftDay.end};
+  if(U&&U!=="admin")sv("sft-"+U.id+"-"+shiftMonth,shiftDays);
+  vib([40,30,40]);flash("💼 "+showShiftDay.dateKey+" "+showShiftDay.start+"〜"+showShiftDay.end+" 登録");
+  showShiftDay=null;render();
+});
+B("sdOff",function(){
+  shiftDays[showShiftDay.dateKey]="off";
+  if(U&&U!=="admin")sv("sft-"+U.id+"-"+shiftMonth,shiftDays);
+  vib(30);flash("🚫 "+showShiftDay.dateKey+" を休みに設定");
+  showShiftDay=null;render();
+});
+B("sdDel",function(){
+  delete shiftDays[showShiftDay.dateKey];
+  if(U&&U!=="admin")sv("sft-"+U.id+"-"+shiftMonth,shiftDays);
+  vib(30);flash("🗑 "+showShiftDay.dateKey+" を削除");
+  showShiftDay=null;render();
+});
+
+/* 時間別集計の日付選択 (v12) */
+var hsD=document.getElementById("hsDate");
+if(hsD)hsD.addEventListener("change",function(){hourStatsDate=hsD.value;vib(15);render()});
+/* 音声入力ボタン (v11) */
+document.querySelectorAll("[data-voice]").forEach(function(el){
+  el.addEventListener("click",function(ev){
+    ev.preventDefault();ev.stopPropagation();
+    var id=el.getAttribute("data-voice");
+    /* アポフォームの全項目を af に同期してから音声入力を起動 (タイプ済み値を保護) */
+    ["project","meetingDate","meetingTime","company","person","phone","role","address","email","personality"].forEach(function(f){var inp=document.getElementById("af_"+f);if(inp)af[f]=inp.value});
+    startVoice(id);
+  });
+});
+B("cancelCall",function(){CALL_PENDING=false;CALL_INIT_AT=null;render()});
+
+/* tel: タップを記録 */
+var phLnk=document.getElementById("phLnk");
+if(phLnk)phLnk.addEventListener("click",onPhoneTap);
+/* v26: オートコールトグル */
+B("autoToggle",function(){
+  AUTO_MODE=!AUTO_MODE;
+  sv("autoMode-"+U.id,AUTO_MODE);
+  vib(AUTO_MODE?[40,30,40]:30);
+  flash(AUTO_MODE?"⚡ オートコールON - 連続発信できます":"オートコールOFF");
+  render();
+});
+var autoSecEl=document.getElementById("autoSec");
+if(autoSecEl)autoSecEl.addEventListener("change",function(){
+  AUTO_NO_ANSWER_SEC=parseInt(autoSecEl.value)||15;
+  sv("autoSec-"+U.id,AUTO_NO_ANSWER_SEC);
+});
+
+/* 確認ダイアログ */
+B("cfYes",function(){if(showConfirm)showConfirm.onYes()});
+B("cfNo",function(){if(showConfirm)showConfirm.onNo()});
+
+/* コールバックダイアログ */
+B("cbClose",function(){showCB=false;render()});
+B("cbSubmit",function(){
+  var dt=document.getElementById("cbCustom");if(dt)cbCustomDt=dt.value;
+  var mm=document.getElementById("cbMemo");if(mm)cbMemo=mm.value;
+  confirmCB({mode:"custom"});
+});
+var cbPresets=document.getElementById("cbPresets");
+if(cbPresets){
+  CB_PRESETS.forEach(function(p){
+    var b=document.createElement("button");
+    b.style.cssText="padding:14px 6px;border:1.5px solid #f59e0b;border-radius:10px;background:#fffbeb;color:#92400e;font-weight:700;font-size:13px";
+    b.textContent=p.l;
+    b.onclick=function(){
+      var mm=document.getElementById("cbMemo");if(mm)cbMemo=mm.value;
+      confirmCB(p);
+    };
+    cbPresets.appendChild(b);
+  });
+}
+
+document.querySelectorAll("[data-ld]").forEach(function(el){el.addEventListener("click",function(){
+  var tgt=el.getAttribute("data-ld");
+  showImp=true;impErr="";render();
+  /* render後、targetを selectに反映 */
+  var sel=document.getElementById("tgtSel");
+  if(sel&&tgt)sel.value=tgt;
+})});
+document.querySelectorAll("[data-ck]").forEach(function(el){el.addEventListener("click",function(){var id=el.getAttribute("data-ck");ck[id]=!ck[id];vib(15);render()})});
+document.querySelectorAll("[data-bs]").forEach(function(el){el.addEventListener("click",function(){
+  var v=el.getAttribute("data-bs");
+  if(v==="none"){bousou=[];}
+  else{
+    var idx=bousou.indexOf(v);
+    if(idx>=0)bousou.splice(idx,1);else bousou.push(v);
+  }
+  vib(15);render();
+})});
+/* v19: 終話ステップ選択 */
+document.querySelectorAll("[data-endstep]").forEach(function(el){el.addEventListener("change",function(){endStep=el.value;vib(10);render()})});
+
+/* 勤怠ボタン (大ボタン2列) */
+var atb=document.getElementById("atb");
+if(atb){
+  var at=todayAtt();
+  var btns=[
+    ["ci","🟢 出勤","#10b981",!!at.ci],
+    ["bs","🟡 休憩開始","#f59e0b",!at.ci||!!at.bs||!!at.co],
+    ["be","🔵 休憩終了","#3b82f6",!at.bs||!!at.be||!!at.co],
+    ["co","🔴 退勤","#ef4444",!at.ci||!!at.co]
+  ];
+  btns.forEach(function(x){
+    var b=document.createElement("button");
+    b.innerHTML=x[1];
+    var disabled=x[3];
+    b.style.cssText="padding:18px 8px;border:2px solid "+x[2]+";border-radius:12px;background:"+(disabled?"#f8fafc":"#fff")+";font-size:14px;font-weight:800;min-height:60px;color:"+x[2]+";opacity:"+(disabled?0.3:1)+";font-family:inherit";
+    b.disabled=disabled;
+    if(!disabled)b.onclick=function(){punch(x[0])};
+    atb.appendChild(b);
+  });
+}
+
+/* 結果ボタン (v13: PCショートカット表示) */
+var rb=document.getElementById("rb");
+if(rb){
+  RESULTS.forEach(function(r,idx){
+    var b=document.createElement("button");
+    var sel=selRes===r.id;
+    b.style.cssText="position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;padding:12px 4px;border:2px solid "+(sel?r.c:"#e2e8f0")+";border-radius:12px;background:"+(sel?r.c+"15":"#fff")+";min-height:62px;font-family:inherit";
+    b.innerHTML='<span class="pc-only" style="position:absolute;top:3px;right:5px;font-size:9px;color:'+(sel?r.c:"#94a3b8")+';font-weight:700;background:'+(sel?"#fff":"#f1f5f9")+';border-radius:3px;padding:1px 4px;border:1px solid '+(sel?r.c+"40":"#e2e8f0")+'">'+(idx+1)+'</span><span style="font-size:22px">'+r.i+'</span><span style="font-size:11px;font-weight:700;color:'+(sel?r.c:"#64748b")+'">'+r.l+'</span>';
+    b.onclick=function(){selRes=r.id;vib(20);render()};
+    rb.appendChild(b);
+  });
+}
+
+/* 断りスタンプ */
+var rsmp=document.getElementById("rsmp");
+if(rsmp){
+  REFUSE_STAMPS.forEach(function(s){
+    var b=document.createElement("button");
+    b.textContent=s;
+    b.style.cssText="padding:6px 12px;border:1px solid #fecaca;border-radius:14px;background:#fef2f2;color:#b91c1c;font-size:12px;font-weight:700;font-family:inherit";
+    b.onclick=function(){
+      var ta=document.getElementById("memoTA");
+      if(ta){ta.value=(ta.value?ta.value+" / ":"")+s;vib(15)}
+    };
+    rsmp.appendChild(b);
+  });
+}
+
+/* 性別 */
+var gb=document.getElementById("gb");
+if(gb){["男","女"].forEach(function(g){var b=document.createElement("button");b.textContent=g;var sel=af.gender===g;b.style.cssText="flex:1;padding:11px;border:2px solid "+(sel?"#3b82f6":"#e2e8f0")+";border-radius:8px;background:"+(sel?"#eff6ff":"#fff")+";color:"+(sel?"#3b82f6":"#64748b")+";font-size:14px;font-weight:700;font-family:inherit";b.onclick=function(){af.gender=g;/* 入力中の値を af に取り込んでから再描画 */["project","meetingDate","meetingTime","company","person","phone","role","address","email","personality"].forEach(function(f){var el=document.getElementById("af_"+f);if(el)af[f]=el.value});render()};gb.appendChild(b)})}
+
+/* シフトカレンダー (v12: 時間表示＋タップでモーダル) */
+var shCal=document.getElementById("shCal");
+if(shCal){
+  var shp=shiftMonth.split("-"),syear=+shp[0],smonth=+shp[1];
+  var sfirst=new Date(syear,smonth-1,1),slast=new Date(syear,smonth,0);
+  var sStartDow=sfirst.getDay(),sTotal=slast.getDate();
+  for(var si=0;si<sStartDow;si++){var sp=document.createElement("div");sp.style.cssText="height:54px";shCal.appendChild(sp)}
+  for(var sd=1;sd<=sTotal;sd++){
+    var skey=syear+"-"+pad(smonth)+"-"+pad(sd);
+    var sst=shiftDays[skey];
+    var sbg="#fff",sfg="#1e293b",slbl="";
+    if(sst==="off"){sbg="#94a3b8";sfg="#fff";slbl="休"}
+    else if(sst&&typeof sst==="object"&&sst.start&&sst.end){
+      sbg="#10b981";sfg="#fff";
+      /* 短いラベル形式: 9:30-18:00 → "9:30〜" */
+      slbl=sst.start.replace(/^0/,"")+"〜"+sst.end.replace(/^0/,"");
+    }
+    var sdow=new Date(syear,smonth-1,sd).getDay();
+    var sdColor=sst?sfg:sdow===0?"#ef4444":sdow===6?"#3b82f6":"#1e293b";
+    var sb=document.createElement("button");
+    sb.setAttribute("data-shday",skey);
+    sb.style.cssText="display:flex;flex-direction:column;align-items:center;justify-content:center;height:54px;border:1.5px solid "+(sst?sbg:"#e2e8f0")+";border-radius:8px;background:"+sbg+";color:"+sdColor+";font-family:inherit;cursor:pointer;font-size:12px;padding:2px";
+    sb.innerHTML='<div style="font-weight:800;line-height:1;font-size:14px">'+sd+'</div>'+(slbl?'<div style="font-size:8.5px;line-height:1.1;margin-top:2px;font-weight:700;letter-spacing:-.02em">'+slbl+'</div>':'');
+    shCal.appendChild(sb);
+  }
+}
+document.querySelectorAll("[data-shday]").forEach(function(el){
+  el.addEventListener("click",function(){
+    var k=el.getAttribute("data-shday");
+    var cur=shiftDays[k];
+    var initStart="09:30",initEnd="18:00";
+    if(cur&&typeof cur==="object"&&cur.start){initStart=cur.start;initEnd=cur.end||"18:00"}
+    showShiftDay={dateKey:k,start:initStart,end:initEnd};
+    vib(15);render();
+  });
+});
+
+/* リスト一覧 (v13: 検索・フィルタ対応) */
+var lst=document.getElementById("lst");
+if(lst){
+  var tc=tdc();
+  var q=(listSearch||"").trim().toLowerCase();
+  var qn=q.replace(/[^\d]/g,"");  /* 数字のみ (電話番号検索用) */
+  var filtered=[];
+  rows.forEach(function(row,i){
+    var cl=called(i),sk=skipped[i];
+    /* フィルタ */
+    if(listFilter==="uncalled"&&(cl||sk))return;
+    if(listFilter==="skipped"&&!sk)return;
+    if(listFilter==="called"&&!cl)return;
+    if(listFilter==="appo"){var m=tc.filter(function(c){return c.i===i});if(!m.length||m[0].r!=="appo")return}
+    /* 検索 */
+    if(q){
+      var co=String(gf(row,"co")||"").toLowerCase();
+      var pe=String(gf(row,"pe")||"").toLowerCase();
+      var ph=String(gf(row,"ph")||"").replace(/[^\d]/g,"");
+      var match=co.indexOf(q)>=0||pe.indexOf(q)>=0||(qn&&ph.indexOf(qn)>=0);
+      if(!match)return;
+    }
+    filtered.push({row:row,i:i,cl:cl,sk:sk});
+  });
+  if(!filtered.length){
+    var d=document.createElement("div");
+    d.style.cssText="text-align:center;padding:40px 20px;color:#94a3b8;font-size:13px";
+    d.textContent=q?"🔍 検索結果なし":"該当なし";
+    lst.appendChild(d);
+  }else{
+    filtered.forEach(function(f){
+      var row=f.row,i=f.i,cl=f.cl,sk=f.sk;
+      var ri=null;
+      if(cl){var m=tc.filter(function(c){return c.i===i});if(m.length)RESULTS.forEach(function(r){if(r.id===m[0].r)ri=r})}
+      var ph=gf(row,"ph"),pe=gf(row,"pe"),co=gf(row,"co"),ad=gf(row,"ad");
+      var fp=ph?fmtPhone(ph):"";
+      var d=document.createElement("div");
+      d.className="row-hover";
+      d.style.cssText="padding:11px 12px;border:1.5px solid "+(i===ci?"#3b82f6":"#e2e8f0")+";cursor:pointer;background:"+(i===ci?"#eff6ff":sk?"#fffbeb":cl?"#f8fafc":"#fff")+";border-radius:10px;margin-bottom:5px";
+      var inner='<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><span style="font-size:11px;color:#94a3b8;width:32px;flex-shrink:0;font-weight:700">'+(i+1)+'</span><span style="flex:1;font-size:14px;font-weight:700;'+(sk?"text-decoration:line-through;color:#94a3b8":"")+'">'+(co||"行"+(i+1))+'</span>'+(sk?'<span style="font-size:9px;padding:2px 4px;border-radius:4px;background:#fef3c7;color:#92400e">スキップ</span>':cl&&ri?'<span style="font-size:10px;padding:3px 7px;border-radius:5px;background:'+ri.c+'15;color:'+ri.c+';font-weight:700">'+ri.i+ri.l+'</span>':'<span style="font-size:9px;padding:2px 5px;border-radius:4px;background:#f1f5f9;color:#94a3b8">未</span>')+'</div>';
+      if(pe||ad){
+        inner+='<div style="font-size:11px;color:#64748b;margin-left:38px">'+(pe?'👤 '+pe:'')+(pe&&ad?' / ':'')+(ad?'📍 '+ad:'')+'</div>';
+      }
+      if(ph){
+        inner+='<div style="display:flex;align-items:center;gap:6px;margin-top:6px;margin-left:38px">';
+        inner+='<span style="font-size:13px;color:#3b82f6;font-family:monospace;flex:1">📞 '+fp+'</span>';
+        inner+='<a href="tel:'+telPhone(ph)+'" data-row-call="'+i+'" style="display:inline-block;padding:7px 14px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;font-size:11px;font-weight:800;border-radius:8px;text-decoration:none;box-shadow:0 2px 6px rgba(16,185,129,.3)">📞 発信</a>';
+        inner+='<button data-row-cp="'+i+'" style="padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#475569;font-size:11px;font-weight:700">📋</button>';
+        inner+='</div>';
+      }
+      d.innerHTML=inner;
+      d.onclick=function(ev){
+        if(ev.target.tagName==="A"||ev.target.closest("a"))return;
+        if(ev.target.getAttribute&&ev.target.getAttribute("data-row-cp")!=null)return;
+        ci=i;V="home";render();
+      };
+      lst.appendChild(d);
+    });
+  }
+  /* フィルタ後の件数表示 */
+  if(filtered.length<rows.length){
+    var info=document.createElement("div");
+    info.style.cssText="text-align:center;padding:8px;font-size:11px;color:#64748b";
+    info.textContent="表示中: "+filtered.length+" / "+rows.length+"件";
+    lst.appendChild(info);
+  }
+}
+
+/* リスト発信ボタン: tel:タップ追跡 */
+document.querySelectorAll("[data-row-call]").forEach(function(el){
+  el.addEventListener("click",function(){
+    var i=parseInt(el.getAttribute("data-row-call"));
+    ci=i;
+    onPhoneTap();
+  });
+});
+/* リスト 番号コピーボタン (PC用) */
+document.querySelectorAll("[data-row-cp]").forEach(function(el){
+  el.addEventListener("click",function(ev){
+    ev.stopPropagation();
+    var i=parseInt(el.getAttribute("data-row-cp"));
+    var ph=rows[i]&&gf(rows[i],"ph");
+    if(ph)copyPhoneNum(ph);
+  });
+});
+/* 検索入力イベント */
+var ls=document.getElementById("listSearch");
+if(ls){
+  ls.addEventListener("input",function(){listSearch=ls.value;
+    /* 検索内容を再描画して結果を反映 (フォーカスを維持するため特別処理) */
+    var lstEl=document.getElementById("lst");if(!lstEl)return;
+    /* 全部 render() し直すとフォーカス飛ぶので debounce + 直接書き換え */
+    clearTimeout(window._lsTmr);window._lsTmr=setTimeout(function(){var pos=ls.selectionStart;render();var ls2=document.getElementById("listSearch");if(ls2){ls2.focus();try{ls2.setSelectionRange(pos,pos)}catch(e){}}},200);
+  });
+}
+document.querySelectorAll("[data-flt]").forEach(function(el){
+  el.addEventListener("click",function(){listFilter=el.getAttribute("data-flt");vib(15);render()});
+});
+B("clrSrch",function(){listSearch="";render()});
+B("expList",exportListCSV);
+
+/* アポ一覧描画 */
+var apo=document.getElementById("apo");
+if(apo){
+  appos.forEach(function(a){
+    var d=document.createElement("div");
+    d.style.cssText="background:#fff;border-radius:12px;padding:14px;border:1px solid #e2e8f0;margin-bottom:8px";
+    var ph=a.phone?telPhone(a.phone):"";var fp=a.phone?fmtPhone(a.phone):"";
+    d.innerHTML='<div style="display:flex;justify-content:space-between;margin-bottom:4px"><b style="color:#1a237e;font-size:14px">'+(a.company||"—")+'</b><span style="font-size:10px;color:#94a3b8">'+(a.date||"")+'</span></div><div style="font-size:13px;color:#475569;line-height:1.7">'+(a.project?'<div>📋 '+a.project+'</div>':'')+'<div>👤 '+(a.person||"")+'（'+(a.gender||"")+'）'+(a.role?" / "+a.role:"")+'</div>'+(ph?'<div><a href="tel:'+ph+'" style="color:#3b82f6;font-weight:700;text-decoration:none;font-family:monospace">📞 '+fp+'</a></div>':'')+(a.address?'<div>📍 '+a.address+'</div>':'')+(a.datetime?'<div>📅 '+a.datetime+'</div>':'')+(a.email?'<div>✉ '+a.email+'</div>':'')+(a.personality?'<div>💬 '+a.personality+'</div>':'')+'</div>';
+    apo.appendChild(d)
+  })
+}
+
+/* コールバック一覧描画 */
+function renderCBItem(c,done){
+  var d=document.createElement("div");
+  var dt=new Date(c.at);var overdue=!done&&dt.getTime()<Date.now();
+  d.style.cssText="background:#fff;border-radius:12px;padding:12px;border:1.5px solid "+(done?"#e2e8f0":overdue?"#ef4444":"#f59e0b")+";margin-bottom:8px";
+  var ph=c.ph?telPhone(c.ph):"";var fp=c.ph?fmtPhone(c.ph):"";
+  d.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><b style="color:'+(done?"#94a3b8":overdue?"#dc2626":"#92400e")+';font-size:14px">'+(overdue&&!done?"⏰ 期限超過 ":"")+dtJP(dt)+'</b>'+(done?'<span style="font-size:10px;background:#dcfce7;color:#166534;padding:2px 8px;border-radius:6px;font-weight:700">✓完了</span>':'')+'</div><div style="font-size:13px;color:#475569;line-height:1.7"><div style="font-weight:700">'+(c.co||"—")+'</div>'+(c.pe?'<div>👤 '+c.pe+'</div>':'')+(ph?'<div><a href="tel:'+ph+'" style="color:#3b82f6;font-weight:700;text-decoration:none;font-family:monospace">📞 '+fp+'</a></div>':'')+(c.memo?'<div>💬 '+c.memo+'</div>':'')+'</div>'+(!done?'<button data-cbdone="'+c.id+'" style="margin-top:8px;width:100%;padding:8px;border:1px solid #10b981;border-radius:8px;background:#ecfdf5;color:#059669;font-size:12px;font-weight:700">✓ 完了にする</button>':'');
+  return d;
+}
+var cbList=document.getElementById("cbList");
+if(cbList){cbs.filter(function(c){return!c.done}).forEach(function(c){cbList.appendChild(renderCBItem(c,false))})}
+var cbDoneList=document.getElementById("cbDoneList");
+if(cbDoneList){cbs.filter(function(c){return c.done}).slice(0,20).forEach(function(c){cbDoneList.appendChild(renderCBItem(c,true))})}
+document.querySelectorAll("[data-cbdone]").forEach(function(el){
+  el.addEventListener("click",function(){
+    var id=parseInt(el.getAttribute("data-cbdone"));
+    cbs.forEach(function(c){if(c.id===id)c.done=true});
+    sv("cb-"+U.id,cbs);vib(30);flash("✓ 完了");render();
+  });
+});
+
+}catch(e){
+  document.getElementById("root").innerHTML='<div style="padding:20px;color:red"><b>エラー:</b> '+e.message+'<br><button onclick="location.reload()" style="margin-top:10px;padding:10px;background:#3b82f6;color:#fff;border:none;border-radius:8px">再読み込み</button></div>';
+  console.error(e);
+}
+}
+
+/* 安全な電話番号フォーマッタ（ティッカー用） */
+function telFmtSafe(s){return fmtPhone(s)}
+
+/* Service Worker 登録 */
+if("serviceWorker" in navigator){
+  window.addEventListener("load",function(){
+    navigator.serviceWorker.register("sw.js").catch(function(){})
+  });
+}
+
+/* 初期描画 */
+render();
+
+/* 起動時にキューがあれば送信 */
+setTimeout(flushSQ,500);
+
+/* v13: キーボードショートカット初期化 */
+setupKbd();
+
+})();
+</script>
+</body>
+</html>

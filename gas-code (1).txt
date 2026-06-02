@@ -1,0 +1,1542 @@
+// ==========================================
+// 川嶋メソッド テレアポ管理 — GAS完全版 v18
+// メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
+// 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
+//
+// 必要なシート(タブ):
+//   [メイン]
+//     柏木・園田・堀内・河野・福田 — 各アポインターの架電リスト (1行目ヘッダー、初回upload時に自動作成)
+//     勤怠・架電結果・再架電予定・アポイント・シフト申請 (自動作成)
+//   [管理者用]
+//     退勤レポート — 退勤時の自動集計記録 (自動作成、v14追加)
+//     日次サマリー — 日付×アポインターで upsert (自動作成、v14追加)
+//
+// v18追加 (複数アカウント・複数端末対応):
+//   - type:"fetch_state" でアポインターの全データを取得
+//   - type:"upload_list" でリストをスプレッドシートに保存
+//   - 名前マッチング (氏名/姓のみ両対応)
+//   - 日付・時刻フォーマット統一ヘルパー
+// v17:
+//   - LockService で 4人同時退勤の競合防止
+// v16:
+//   - idempotency (clientReqId + CacheService) で重複送信防止
+//   - クォータ確認・未送信メールシート・自動再送
+// v15:
+//   - CORS対応・防御的JSON parse・ping endpoint
+// v14:
+//   - 退勤ボタン押下時、管理者用スプレッドシートへ自動書込
+//   - 同時に tereapo01.sukima@gmail.com へメール通知
+//   - 1時間別架電数・アポ数の詳細を含む日次レポート
+// v12-v13:
+//   - シフト時間範囲指定対応 (9:30〜18:00 30分刻み)
+//   - 河野由香 PIN 094 / アポイント拡張項目
+// ==========================================
+
+var SHEET_ID = "1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM";
+var ADMIN_SHEET_ID = "1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ";  // v14: 管理者用 退勤レポート用
+var PIN_MAP = {"091":"柏木", "092":"園田", "093":"堀内", "094":"河野", "095":"福田", "097":"藪内"};
+// v18: 全名マップ - 出退勤・履歴・アポでは "河野由香" のような全名で記録される
+// v25: 福田貴美恵 PIN 095 追加
+// v26: 藪内亜希 PIN 097 追加 / 発信件数通知 (dial_count_notify) 追加
+var FULL_NAME_MAP = {"091":"柏木幸代", "092":"園田絵里", "093":"堀内真紀子", "094":"河野由香", "095":"福田貴美恵", "097":"藪内亜希"};
+var SHIFT_NOTIFY_TO = "tereapo01.sukima@gmail.com";
+var DAILY_REPORT_TO = "tereapo01.sukima@gmail.com";  // v14: 退勤レポート通知先
+// v26: 発信件数の通知先 (送信元はGAS実行アカウント hr.ashikaga@gmail.com → この宛先へ)
+var DIAL_COUNT_NOTIFY_TO = "tereapo01.sukima@gmail.com";
+var APPO_MAIL_TO = "a.kusunoki@sukimagroup.jp";
+
+// アポインターがログインした時に呼ばれる（架電リスト取得）
+function doGet(e) {
+  try {
+    // ping 接続テスト (v15: ブラウザから直接アクセスしたとき用)
+    if (!e || !e.parameter || (!e.parameter.pin && !e.parameter.action)) {
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "ok",
+        message: "GAS Web App is alive",
+        version: "v15",
+        timestamp: new Date().toISOString(),
+        note: "Use ?pin=XXX to fetch list, or POST with type field"
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+    if (e.parameter.action === "ping") {
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "ok",
+        message: "pong",
+        timestamp: new Date().toISOString()
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+    var pin = e.parameter.pin;
+    var sheetName = PIN_MAP[pin];
+
+    if (!sheetName) {
+      return ContentService.createTextOutput(
+        JSON.stringify({error: "不明なPIN: " + pin})
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var ss = SpreadsheetApp.openById(SHEET_ID);
+    var sheet = ss.getSheetByName(sheetName);
+
+    if (!sheet) {
+      return ContentService.createTextOutput(
+        JSON.stringify({error: "シート「" + sheetName + "」が見つかりません"})
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) {
+      return ContentService.createTextOutput(
+        JSON.stringify({error: "データが空です", rows: [], cm: {}})
+      ).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var hdr = data[0];
+    var rows = [];
+    for (var i = 1; i < data.length; i++) {
+      var hasContent = false;
+      for (var j = 0; j < data[i].length; j++) {
+        if (data[i][j] !== "") { hasContent = true; break; }
+      }
+      if (hasContent) rows.push(data[i]);
+    }
+
+    var lh = hdr.map(function(h) { return String(h).toLowerCase(); });
+    function findCol(patterns) {
+      for (var i = 0; i < lh.length; i++) {
+        for (var j = 0; j < patterns.length; j++) {
+          if (lh[i].indexOf(patterns[j]) >= 0) return i;
+        }
+      }
+      return -1;
+    }
+
+    var cm = {
+      co: findCol(["施設", "会社", "法人", "名称", "名前"]),
+      ph: findCol(["電話", "tel", "番号"]),
+      pe: findCol(["担当", "氏名", "施設長"]),
+      ad: findCol(["住所", "所在地"])
+    };
+
+    return ContentService.createTextOutput(
+      JSON.stringify({rows: rows, cm: cm})
+    ).setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    return ContentService.createTextOutput(
+      JSON.stringify({error: String(err)})
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// 勤怠 / 架電結果 / 再架電 / アポ詳細 / シフト申請 / 退勤レポート の書き込み
+function doPost(e) {
+  try {
+    // 防御的パース: postData がない場合は parameter からも取得を試みる
+    var raw = "";
+    if (e && e.postData && e.postData.contents) {
+      raw = e.postData.contents;
+    } else if (e && e.parameter && e.parameter.payload) {
+      raw = e.parameter.payload;
+    }
+    if (!raw) {
+      return ContentService.createTextOutput("error: no payload")
+        .setMimeType(ContentService.MimeType.TEXT);
+    }
+    var d;
+    try {
+      d = JSON.parse(raw);
+    } catch (parseErr) {
+      Logger.log("JSON parse error. raw: " + String(raw).slice(0, 200));
+      return ContentService.createTextOutput("error: invalid JSON: " + parseErr.message)
+        .setMimeType(ContentService.MimeType.TEXT);
+    }
+    if (!d || !d.type) {
+      return ContentService.createTextOutput("error: missing type")
+        .setMimeType(ContentService.MimeType.TEXT);
+    }
+
+    // 接続テスト用 (v15追加)
+    if (d.type === "ping") {
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "ok",
+        message: "GAS connected",
+        timestamp: new Date().toISOString(),
+        version: "v24"
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // ===== v20: idempotency チェック (write系のみ) =====
+    // fetch_state は読み取りなのでスキップ (毎回最新を返す必要)
+    var READ_ONLY_TYPES = ["fetch_state"];
+    if (d.clientReqId && READ_ONLY_TYPES.indexOf(d.type) < 0) {
+      var idempCache = CacheService.getScriptCache();
+      var idempKey = "req:" + d.clientReqId;
+      var idempSeen = idempCache.get(idempKey);
+      if (idempSeen) {
+        Logger.log("Duplicate request detected: " + d.clientReqId + " (type=" + d.type + ")");
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "duplicate",
+          type: d.type,
+          message: "already processed",
+          firstSeenAt: idempSeen
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+      idempCache.put(idempKey, new Date().toISOString(), 21600);
+    }
+
+    // ===== v18: アポインターの全データを取得 =====
+    // クライアントがログイン時に呼び出して、最新のリスト・履歴・アポ・シフト等を取得
+    if (d.type === "fetch_state") {
+      if (!d.pin) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: "pin required"
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+      var sheetName = PIN_MAP[d.pin];
+      var staffName = sheetName; // 柏木・園田・堀内・河野・福田
+      var fullName = FULL_NAME_MAP[d.pin] || sheetName; // 柏木幸代・園田絵里・堀内真紀子・河野由香・福田貴美恵
+      // 名前マッチング関数 (どちらの名前形式でもヒット)
+      var nameMatches = function(v) {
+        var s = String(v||"");
+        return s === staffName || s === fullName;
+      };
+      var ss2 = SpreadsheetApp.openById(SHEET_ID);
+      var result = {
+        status: "ok",
+        pin: d.pin,
+        name: fullName,
+        timestamp: new Date().toISOString()
+      };
+      // 1. 架電リスト (アポインター個別シート)
+      try {
+        var listSh = ss2.getSheetByName(sheetName);
+        if (listSh && listSh.getLastRow() > 1) {
+          var listData = listSh.getRange(2, 1, listSh.getLastRow() - 1, 4).getValues();
+          // 空行除外
+          result.list = listData.filter(function(r){
+            return r.some(function(c){return c!==null&&c!==""})
+          });
+        } else {
+          result.list = [];
+        }
+      } catch (e) { result.list = []; result.listError = String(e); }
+
+      // 2. 勤怠 (att) - 名前で絞り込み、最近30日分
+      try {
+        var attSh = ss2.getSheetByName("勤怠");
+        result.att = {};
+        if (attSh && attSh.getLastRow() > 1) {
+          var attRows = attSh.getDataRange().getValues();
+          for (var i = 1; i < attRows.length; i++) {
+            if (nameMatches(attRows[i][0])) {
+              var dateKey = formatDateKey(attRows[i][1]);
+              if (!dateKey) continue;
+              if (!result.att[dateKey]) result.att[dateKey] = {};
+              result.att[dateKey].ci = formatTimeStr(attRows[i][2]);
+              result.att[dateKey].co = formatTimeStr(attRows[i][3]);
+              result.att[dateKey].bs = formatTimeStr(attRows[i][4]);
+              result.att[dateKey].be = formatTimeStr(attRows[i][5]);
+            }
+          }
+        }
+      } catch (e) { result.att = {}; result.attError = String(e); }
+
+      // 3. 架電履歴 (hist) - 名前で絞り込み、最近1000件
+      try {
+        var histSh = ss2.getSheetByName("架電結果");
+        result.hist = [];
+        if (histSh && histSh.getLastRow() > 1) {
+          var histRows = histSh.getDataRange().getValues();
+          for (var i = histRows.length - 1; i >= 1 && result.hist.length < 1000; i--) {
+            if (nameMatches(histRows[i][0])) {
+              result.hist.push({
+                d: formatDateKey(histRows[i][1]),
+                tm: formatTimeStr(histRows[i][2]),
+                co: histRows[i][3] || "",
+                ph: histRows[i][4] || "",
+                pe: histRows[i][5] || "",
+                r: mapResultLabelToId(histRows[i][6]),
+                dur: histRows[i][7] || "",
+                ck: histRows[i][8] || "",
+                bs: histRows[i][9] || "",
+                out: histRows[i][10] || "",
+                memo: histRows[i][11] || "",
+                endStep: histRows[i][12] || ""
+              });
+            }
+          }
+        }
+      } catch (e) { result.hist = []; result.histError = String(e); }
+
+      // 4. アポ (appos)
+      try {
+        var apoSh = ss2.getSheetByName("アポイント");
+        result.appos = [];
+        if (apoSh && apoSh.getLastRow() > 1) {
+          var apoRows = apoSh.getDataRange().getValues();
+          for (var i = 1; i < apoRows.length; i++) {
+            if (nameMatches(apoRows[i][1])) {  // B列=報告者
+              result.appos.push({
+                date: formatDateKey(apoRows[i][0]),
+                reporter: apoRows[i][1] || "",
+                project: apoRows[i][2] || "",
+                meetingDate: formatDateKey(apoRows[i][3]),
+                meetingTime: formatTimeStr(apoRows[i][4]),
+                company: apoRows[i][5] || "",
+                phone: apoRows[i][6] || "",
+                person: apoRows[i][7] || "",
+                gender: apoRows[i][8] || "",
+                role: apoRows[i][9] || "",
+                email: apoRows[i][10] || "",
+                address: apoRows[i][11] || "",
+                personality: apoRows[i][13] || ""
+              });
+            }
+          }
+        }
+      } catch (e) { result.appos = []; result.apposError = String(e); }
+
+      // 5. 再架電 (cb)
+      try {
+        var cbSh = ss2.getSheetByName("再架電予定");
+        result.cb = [];
+        if (cbSh && cbSh.getLastRow() > 1) {
+          var cbRows = cbSh.getDataRange().getValues();
+          for (var i = 1; i < cbRows.length; i++) {
+            if (nameMatches(cbRows[i][1])) {
+              result.cb.push({
+                regAt: formatDateKey(cbRows[i][0]),
+                schedule: cbRows[i][2] || "",
+                co: cbRows[i][3] || "",
+                ph: cbRows[i][4] || "",
+                pe: cbRows[i][5] || "",
+                memo: cbRows[i][6] || "",
+                done: String(cbRows[i][7]) === "完了"
+              });
+            }
+          }
+        }
+      } catch (e) { result.cb = []; result.cbError = String(e); }
+
+      // 6. シフト (shiftDays) - 申請履歴の最新月分のみ取得
+      try {
+        var shftSh = ss2.getSheetByName("シフト申請");
+        result.shiftHistory = [];
+        if (shftSh && shftSh.getLastRow() > 1) {
+          var shftRows = shftSh.getDataRange().getValues();
+          for (var i = shftRows.length - 1; i >= 1 && result.shiftHistory.length < 12; i--) {
+            if (String(shftRows[i][3]) === d.pin || nameMatches(shftRows[i][2])) {
+              result.shiftHistory.push({
+                ts: shftRows[i][0],
+                mode: shftRows[i][1],
+                month: shftRows[i][4],
+                workCount: shftRows[i][5],
+                offCount: shftRows[i][6],
+                totalMins: shftRows[i][7]
+              });
+            }
+          }
+        }
+      } catch (e) { result.shiftHistory = []; result.shiftError = String(e); }
+
+      return ContentService.createTextOutput(JSON.stringify(result))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // ===== v18: アポインターのリストをサーバーに保存 =====
+    // クライアントがリスト読込時に呼び出して、GASスプレッドシートに上書き保存
+    // → 他の端末・他のアカウントからもこのリストが見える
+    // ===== v20: チャンク分割アップロード (大量データを安全に送信) =====
+    // 1セッション内で複数のリクエストに分割して受信、最後のチャンクで完了
+    if (d.type === "upload_list_chunk") {
+      if (!d.pin || !d.sessionId || d.rows === undefined) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: "pin, sessionId, rows required"
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+      var sheetName_c = PIN_MAP[d.pin];
+      if (!sheetName_c) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: "unknown pin"
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+      // セッションロック (同一PINで複数セッションが並行しないように)
+      var lock_c = LockService.getScriptLock();
+      var lockOk_c = false;
+      try { lockOk_c = lock_c.tryLock(15000); } catch (e) {}
+      if (!lockOk_c) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: "lock timeout - retry later"
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+      try {
+        var ss_c = SpreadsheetApp.openById(SHEET_ID);
+        var sh_c = ss_c.getSheetByName(sheetName_c);
+        if (!sh_c) {
+          sh_c = ss_c.insertSheet(sheetName_c);
+        }
+        // 最初のチャンク → シートをクリアしてヘッダーを書く
+        if (d.isFirst) {
+          sh_c.clear();
+          sh_c.getRange(1, 1, 1, 4).setValues([["会社名", "電話番号", "担当者", "住所"]])
+            .setFontWeight("bold").setBackground("#e8eaf6");
+          sh_c.setFrozenRows(1);
+          // セッション情報をキャッシュに保存
+          var cache_c = CacheService.getScriptCache();
+          cache_c.put("upload_session_" + d.sessionId, JSON.stringify({
+            pin: d.pin,
+            sheetName: sheetName_c,
+            chunksReceived: 0,
+            totalChunks: d.totalChunks,
+            startedAt: new Date().toISOString()
+          }), 3600);
+        }
+        // データ書込み (現在の最終行の次から)
+        if (d.rows && d.rows.length > 0) {
+          var normalized_c = d.rows.map(function(r) {
+            return [r[0] || "", r[1] || "", r[2] || "", r[3] || ""];
+          });
+          var startRow = sh_c.getLastRow() + 1;
+          sh_c.getRange(startRow, 1, normalized_c.length, 4).setValues(normalized_c);
+        }
+        // セッション進捗を更新
+        var cache_c2 = CacheService.getScriptCache();
+        var sessKey = "upload_session_" + d.sessionId;
+        var sessRaw = cache_c2.get(sessKey);
+        var sess = sessRaw ? JSON.parse(sessRaw) : { chunksReceived: 0, totalChunks: d.totalChunks };
+        sess.chunksReceived = (sess.chunksReceived || 0) + 1;
+        cache_c2.put(sessKey, JSON.stringify(sess), 3600);
+
+        // 最後のチャンクなら完了応答 (実際の合計件数を返す)
+        if (d.isLast) {
+          var totalRowsWritten = sh_c.getLastRow() - 1;  // ヘッダー除く
+          Logger.log("upload_list_chunk DONE: " + sheetName_c + " - " + totalRowsWritten + " rows total");
+          return ContentService.createTextOutput(JSON.stringify({
+            status: "ok",
+            sheet: sheetName_c,
+            chunkIndex: d.chunkIndex,
+            isLast: true,
+            totalRows: totalRowsWritten,
+            chunksReceived: sess.chunksReceived
+          })).setMimeType(ContentService.MimeType.JSON);
+        } else {
+          return ContentService.createTextOutput(JSON.stringify({
+            status: "ok",
+            sheet: sheetName_c,
+            chunkIndex: d.chunkIndex,
+            isLast: false,
+            chunksReceived: sess.chunksReceived
+          })).setMimeType(ContentService.MimeType.JSON);
+        }
+      } finally {
+        if (lockOk_c) {
+          try { lock_c.releaseLock(); } catch (e) {}
+        }
+      }
+    }
+
+    if (d.type === "upload_list") {
+      if (!d.pin || !d.rows) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: "pin and rows required"
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+      var sheetName_u = PIN_MAP[d.pin];
+      if (!sheetName_u) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: "unknown pin"
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+      var ss_u = SpreadsheetApp.openById(SHEET_ID);
+      var sh_u = ss_u.getSheetByName(sheetName_u);
+      if (!sh_u) {
+        sh_u = ss_u.insertSheet(sheetName_u);
+      }
+      // 既存内容を全削除してから書き直し
+      sh_u.clear();
+      // ヘッダー
+      sh_u.getRange(1, 1, 1, 4).setValues([["会社名", "電話番号", "担当者", "住所"]])
+        .setFontWeight("bold").setBackground("#e8eaf6");
+      sh_u.setFrozenRows(1);
+      // データ書込み
+      if (d.rows.length > 0) {
+        // 4列に揃える
+        var normalized = d.rows.map(function(r) {
+          return [
+            r[0] || "",
+            r[1] || "",
+            r[2] || "",
+            r[3] || ""
+          ];
+        });
+        sh_u.getRange(2, 1, normalized.length, 4).setValues(normalized);
+      }
+      Logger.log("upload_list: " + sheetName_u + " - " + d.rows.length + " rows");
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "ok",
+        sheet: sheetName_u,
+        rows: d.rows.length
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // ===== v18: 単発で行を更新 (スキップ・架電状態の同期は別の方法で扱う) =====
+    // (将来拡張用、現状は使わない)
+
+    var ss = SpreadsheetApp.openById(SHEET_ID);
+
+    // ===== 勤怠記録 =====
+    if (d.type === "attendance") {
+      var sh = ensureSheet(ss, "勤怠",
+        ["名前", "日付", "出勤", "退勤", "休憩開始", "休憩終了"]);
+      var rows = sh.getDataRange().getValues();
+      var found = -1;
+      for (var i = 1; i < rows.length; i++) {
+        if (String(rows[i][0]) === String(d.name) && String(rows[i][1]) === String(d.date)) {
+          found = i + 1; break;
+        }
+      }
+      var values = [d.name, d.date, d.clockIn, d.clockOut, d.breakStart, d.breakEnd];
+      if (found > 0) {
+        sh.getRange(found, 1, 1, values.length).setValues([values]);
+      } else {
+        sh.appendRow(values);
+      }
+    }
+
+    // ===== 架電結果 =====
+    if (d.type === "callResult") {
+      var sh2 = ensureSheet(ss, "架電結果",
+        ["名前", "日付", "時刻", "会社名", "電話番号", "担当者",
+         "結果", "通話時間", "チェック数", "暴走", "切り返しアウト", "メモ", "終話ステップ"]);
+      sh2.appendRow([
+        d.name, d.date, d.time,
+        d.company, d.phone, d.person,
+        d.result, d.duration, d.checkedCount,
+        d.bousou, d.outText, d.memo,
+        d.endStep || ""
+      ]);
+    }
+
+    // ===== 再架電予定 =====
+    if (d.type === "callback") {
+      var sh3 = ensureSheet(ss, "再架電予定",
+        ["登録日時", "名前", "再架電予定日時", "会社名", "電話番号", "担当者", "メモ", "状態"]);
+      sh3.appendRow([
+        new Date(), d.name, d.scheduledAt,
+        d.company, d.phone, d.person, d.memo, "未対応"
+      ]);
+    }
+
+    // ===== アポイント詳細 (v11: 商談日付/時間 追加) =====
+    if (d.type === "appointment") {
+      var sh4 = ensureSheet(ss, "アポイント",
+        ["登録日", "報告者", "案件名", "商談日付", "商談時間",
+         "法人名", "電話番号", "担当者", "性別", "役職",
+         "メール", "住所", "アポ日時", "人柄"]);
+      sh4.appendRow([
+        d.date, d.reporter, d.project, d.meetingDate || "", d.meetingTime || "",
+        d.company, d.phone, d.person, d.gender, d.role,
+        d.email, d.address, d.datetime, d.personality
+      ]);
+    }
+
+    // ===== シフト申請 (v12: 時間範囲対応) =====
+    if (d.type === "shift_apply" || d.type === "shift_modify") {
+      var isModify = d.type === "shift_modify";
+      var sh5 = ensureSheet(ss, "シフト申請",
+        ["申請日時", "種別", "申請者", "PIN", "対象月",
+         "出勤予定日数", "休み日数", "合計時間(分)", "詳細", "状態"]);
+      var detail = "";
+      if (d.days) {
+        var keys = Object.keys(d.days).sort();
+        detail = keys.map(function(k){
+          var v = d.days[k];
+          if (v === "off") return k + ": 休み";
+          if (v && typeof v === "object" && v.start && v.end) {
+            return k + ": " + v.start + "〜" + v.end;
+          }
+          return k + ": " + String(v);
+        }).join(" / ");
+      }
+      sh5.appendRow([
+        new Date(),
+        isModify ? "修正" : "申請",
+        d.name, d.pin, d.month,
+        d.workCount || 0,
+        d.offCount || 0,
+        d.totalMins || 0,
+        detail,
+        isModify ? "修正受付" : "受付"
+      ]);
+      // メール送信 (v15: フォールバック付き)
+      try {
+        var to = d.to || SHIFT_NOTIFY_TO;
+        var subject = d.subject || ((isModify ? "【シフト修正申請】" : "【シフト申請】") + d.month + " " + d.name);
+        var body = d.body || ("申請者: " + d.name + "\n対象月: " + d.month + "\n\n" + detail);
+        try {
+          MailApp.sendEmail({to: to, subject: subject, body: body});
+          Logger.log("Shift mail sent via MailApp to " + to);
+        } catch (e1) {
+          try {
+            GmailApp.sendEmail(to, subject, body);
+            Logger.log("Shift mail sent via GmailApp to " + to);
+          } catch (e2) {
+            Logger.log("Shift mail failed (both): " + e1 + " | " + e2);
+          }
+        }
+      } catch (mailErr) {
+        Logger.log("Shift mail wrapper error: " + mailErr);
+      }
+    }
+
+    // ===== 退勤レポート (v14追加, v17: LockService追加) =====
+    // 管理者用スプレッドシートに書込＋メール通知
+    if (d.type === "daily_report") {
+      // v17: 4人同時退勤時のシート競合を防ぐため LockService で排他制御
+      // 「日次サマリー」のupsert (検索→更新) は read-then-write でrace conditionが起きうる
+      var lock = LockService.getScriptLock();
+      var lockAcquired = false;
+      try {
+        lockAcquired = lock.tryLock(10000); // 10秒待つ
+      } catch (lockErr) {
+        Logger.log("Lock acquisition failed: " + lockErr);
+      }
+      if (!lockAcquired) {
+        // ロック取れなくても処理は続行 (最悪重複行ができる程度)
+        Logger.log("WARNING: proceeding without lock for daily_report");
+      }
+      try {
+      var adminSs = SpreadsheetApp.openById(ADMIN_SHEET_ID);
+      var sh6 = ensureSheet(adminSs, "退勤レポート", [
+        "日付", "アポインター", "PIN",
+        "出勤", "退勤", "休憩開始", "休憩終了",
+        "実働時間", "実働(分)",
+        "架電数", "アポ数", "アポ率(%)", "通話時間", "通話(秒)",
+        "稼働時間あたり",
+        "9時", "10時", "11時", "12時", "13時", "14時", "15時", "16時", "17時",
+        "9時アポ", "10時アポ", "11時アポ", "12時アポ", "13時アポ", "14時アポ", "15時アポ", "16時アポ", "17時アポ",
+        "アポ獲得", "再架電", "不在", "断り", "不通", "その他",
+        // v19: ボトルネック分析
+        "暴走S1", "暴走S3", "暴走S4", "暴走S5", "暴走最多",
+        "終話S1", "終話S2", "終話S3", "終話S4", "終話S5", "終話最多",
+        "アウト件数",
+        "送信日時"
+      ]);
+      sh6.appendRow([
+        d.date || "", d.name || "", d.pin || "",
+        d.clockIn || "", d.clockOut || "", d.breakStart || "", d.breakEnd || "",
+        d.workDuration || "", d.workMinutes || 0,
+        d.totalCalls || 0, d.totalApos || 0, d.apoRate || 0,
+        d.totalCallTime || "", d.totalCallSec || 0,
+        d.avgPerHour || 0,
+        d.h9 || 0, d.h10 || 0, d.h11 || 0, d.h12 || 0, d.h13 || 0,
+        d.h14 || 0, d.h15 || 0, d.h16 || 0, d.h17 || 0,
+        d.a9 || 0, d.a10 || 0, d.a11 || 0, d.a12 || 0, d.a13 || 0,
+        d.a14 || 0, d.a15 || 0, d.a16 || 0, d.a17 || 0,
+        d.byResultAppo || 0, d.byResultCb || 0, d.byResultAbsent || 0,
+        d.byResultRefused || 0, d.byResultWrong || 0, d.byResultOther || 0,
+        // v19: ボトルネック
+        d.bousouS1 || 0, d.bousouS3 || 0, d.bousouS4 || 0, d.bousouS5 || 0,
+        (d.bousouMax ? d.bousouMax.replace("s","ステップ") : ""),
+        d.endStep1 || 0, d.endStep2 || 0, d.endStep3 || 0, d.endStep4 || 0, d.endStep5 || 0,
+        (d.endStepMax ? d.endStepMax.replace("S","ステップ") : ""),
+        d.outsCount || 0,
+        new Date()
+      ]);
+      // v19: アウト詳細シート (各日の切り返しできなかった発言を保存 - コーチング材料)
+      if (d.outsList && d.outsList.length > 0) {
+        var outsSh = ensureSheet(adminSs, "アウト詳細", [
+          "日付", "アポインター", "時刻", "会社名", "アウト発言", "送信日時"
+        ]);
+        d.outsList.forEach(function(o) {
+          outsSh.appendRow([
+            d.date || "", d.name || "",
+            o.tm || "", o.co || "", o.text || "",
+            new Date()
+          ]);
+        });
+      }
+      // 「日次サマリー」シートにも当日の最新を upsert (同じアポインター×日付の行は上書き)
+      var sh7 = ensureSheet(adminSs, "日次サマリー", [
+        "日付", "アポインター", "出勤", "退勤", "実働時間",
+        "架電数", "アポ数", "アポ率(%)", "通話時間",
+        "9時", "10時", "11時", "12時", "13時", "14時", "15時", "16時", "17時",
+        "更新日時"
+      ]);
+      var sumRows = sh7.getDataRange().getValues();
+      var foundRow = -1;
+      for (var i = 1; i < sumRows.length; i++) {
+        if (String(sumRows[i][0]) === String(d.date) &&
+            String(sumRows[i][1]) === String(d.name)) {
+          foundRow = i + 1; break;
+        }
+      }
+      var sumValues = [
+        d.date || "", d.name || "",
+        d.clockIn || "", d.clockOut || "", d.workDuration || "",
+        d.totalCalls || 0, d.totalApos || 0, d.apoRate || 0, d.totalCallTime || "",
+        d.h9 || 0, d.h10 || 0, d.h11 || 0, d.h12 || 0, d.h13 || 0,
+        d.h14 || 0, d.h15 || 0, d.h16 || 0, d.h17 || 0,
+        new Date()
+      ];
+      if (foundRow > 0) {
+        sh7.getRange(foundRow, 1, 1, sumValues.length).setValues([sumValues]);
+      } else {
+        sh7.appendRow(sumValues);
+      }
+      // メール通知 (v16: クォータチェック + 実用的なフォールバック)
+      try {
+        var to = d.to || DAILY_REPORT_TO;
+        var subject = d.subject || ("【退勤通知】" + d.date + " " + d.name);
+        var body = d.body || ("退勤通知\n\nアポインター: " + d.name + "\n架電: " + d.totalCalls + "件 / アポ: " + d.totalApos + "件");
+        var remainingQuota = -1;
+        try { remainingQuota = MailApp.getRemainingDailyQuota(); } catch(e) {}
+        if (remainingQuota === 0) {
+          // クォータ枯渇 → スプレッドシートに記録だけ残し、後続処理は続ける
+          Logger.log("Daily report mail SKIPPED for " + d.name + " on " + d.date + " - mail quota exhausted (try again tomorrow)");
+          // 「未送信メール」シートに記録 (翌日手動再送可能にする)
+          try {
+            var unsentSh = ensureSheet(adminSs, "未送信メール", ["記録日時", "宛先", "件名", "本文", "理由"]);
+            unsentSh.appendRow([new Date(), to, subject, body, "クォータ枯渇"]);
+          } catch (logErr) {
+            Logger.log("Failed to log unsent: " + logErr);
+          }
+        } else {
+          var mailSent = false;
+          try {
+            MailApp.sendEmail({to: to, subject: subject, body: body});
+            mailSent = true;
+            Logger.log("Daily report mail sent via MailApp to " + to + " (remaining: " + (remainingQuota - 1) + ")");
+          } catch (mailErr1) {
+            Logger.log("MailApp failed: " + mailErr1 + " - retrying with GmailApp");
+            // GmailApp は同じクォータだがエラーメッセージが違うことがあるので一応試す
+            try {
+              GmailApp.sendEmail(to, subject, body);
+              mailSent = true;
+              Logger.log("Daily report mail sent via GmailApp to " + to);
+            } catch (mailErr2) {
+              Logger.log("GmailApp also failed: " + mailErr2);
+              // 失敗でも未送信シートに記録
+              try {
+                var unsentSh2 = ensureSheet(adminSs, "未送信メール", ["記録日時", "宛先", "件名", "本文", "理由"]);
+                unsentSh2.appendRow([new Date(), to, subject, body, "送信エラー: " + mailErr1 + " | " + mailErr2]);
+              } catch (e3) {}
+            }
+          }
+        }
+      } catch (mailErr) {
+        Logger.log("Daily report mail wrapper error: " + mailErr);
+      }
+      } finally {
+        // v17: ロック解放 (取得していたら)
+        if (lockAcquired) {
+          try { lock.releaseLock(); } catch (e) {}
+        }
+      }
+    }
+
+    // ===== 発信件数通知 (v26追加) =====
+    // 退勤時に発信ボタン押下回数を tereapo01.sukima へ通知
+    // 送信元: このGASの実行アカウント (hr.ashikaga@gmail.com)
+    if (d.type === "dial_count_notify") {
+      try {
+        var adminSsD = SpreadsheetApp.openById(ADMIN_SHEET_ID);
+        var dialSh = ensureSheet(adminSsD, "発信件数", [
+          "日付", "アポインター", "PIN", "発信件数", "架電結果数", "アポ数", "実働時間", "送信日時"
+        ]);
+        // upsert: 同じ日付×アポインターがあれば更新
+        var dialData = dialSh.getDataRange().getValues();
+        var dialKey = formatDateKey(d.date);
+        var dialFoundRow = -1;
+        for (var di = 1; di < dialData.length; di++) {
+          if (formatDateKey(dialData[di][0]) === dialKey && String(dialData[di][1]) === String(d.name)) {
+            dialFoundRow = di + 1; break;
+          }
+        }
+        var dialRow = [
+          d.date || "", d.name || "", d.pin || "",
+          d.dialCount || 0, d.totalCalls || 0, d.totalApos || 0,
+          d.workDuration || "", new Date()
+        ];
+        if (dialFoundRow > 0) {
+          dialSh.getRange(dialFoundRow, 1, 1, dialRow.length).setValues([dialRow]);
+        } else {
+          dialSh.appendRow(dialRow);
+        }
+        // メール通知 (送信元=実行アカウント hr.ashikaga, 宛先=tereapo01.sukima)
+        var dialTo = d.to || DIAL_COUNT_NOTIFY_TO;
+        var dialSubject = d.subject || ("【発信件数】" + d.date + " " + d.name + " - " + (d.dialCount || 0) + "件");
+        var dialBody = d.body || (
+          "発信件数通知\n\n" +
+          "アポインター: " + d.name + " (PIN:" + d.pin + ")\n" +
+          "日付: " + d.date + "\n" +
+          "発信件数: " + (d.dialCount || 0) + "件\n" +
+          "架電結果数: " + (d.totalCalls || 0) + "件\n" +
+          "アポ数: " + (d.totalApos || 0) + "件\n"
+        );
+        var dialQuota = -1;
+        try { dialQuota = MailApp.getRemainingDailyQuota(); } catch (e) {}
+        if (dialQuota === 0) {
+          Logger.log("Dial count mail SKIPPED for " + d.name + " - quota exhausted");
+          try {
+            var unsentD = ensureSheet(adminSsD, "未送信メール", ["記録日時", "宛先", "件名", "本文", "理由"]);
+            unsentD.appendRow([new Date(), dialTo, dialSubject, dialBody, "クォータ枯渇(発信件数)"]);
+          } catch (e) {}
+        } else {
+          try {
+            MailApp.sendEmail({to: dialTo, subject: dialSubject, body: dialBody});
+            Logger.log("Dial count mail sent via MailApp to " + dialTo);
+          } catch (de1) {
+            try {
+              GmailApp.sendEmail(dialTo, dialSubject, dialBody);
+              Logger.log("Dial count mail sent via GmailApp to " + dialTo);
+            } catch (de2) {
+              Logger.log("Dial count mail failed (both): " + de1 + " | " + de2);
+              try {
+                var unsentD2 = ensureSheet(adminSsD, "未送信メール", ["記録日時", "宛先", "件名", "本文", "理由"]);
+                unsentD2.appendRow([new Date(), dialTo, dialSubject, dialBody, "送信エラー(発信件数): " + de1]);
+              } catch (e) {}
+            }
+          }
+        }
+      } catch (dialErr) {
+        Logger.log("dial_count_notify error: " + dialErr);
+      }
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({status:"ok", type: d.type}))
+      .setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    Logger.log("doPost ERROR: " + err + "\nStack: " + (err.stack || "no stack"));
+    return ContentService.createTextOutput(JSON.stringify({status:"error", message: String(err)}))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+// シートが無ければヘッダー付きで作成
+// v18: 日付・時刻フォーマット用ヘルパー
+function formatDateKey(v) {
+  if (!v) return "";
+  if (v instanceof Date) {
+    return Utilities.formatDate(v, "Asia/Tokyo", "yyyy-MM-dd");
+  }
+  var s = String(v);
+  // "2026/5/4" → "2026-05-04"
+  var m = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+  if (m) {
+    return m[1] + "-" + ("0"+m[2]).slice(-2) + "-" + ("0"+m[3]).slice(-2);
+  }
+  return s;
+}
+function formatTimeStr(v) {
+  if (!v) return "";
+  if (v instanceof Date) {
+    return Utilities.formatDate(v, "Asia/Tokyo", "HH:mm:ss");
+  }
+  var s = String(v);
+  // "9:00" → "09:00:00", "9:00:00" → そのまま
+  var m = s.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?/);
+  if (m) {
+    return ("0"+m[1]).slice(-2) + ":" + ("0"+m[2]).slice(-2) + ":" + (m[3]?("0"+m[3]).slice(-2):"00");
+  }
+  return s;
+}
+function mapResultLabelToId(label) {
+  if (!label) return "";
+  var s = String(label).trim();
+  // 絵文字付きラベルにも対応
+  if (s.indexOf("アポ") >= 0) return "appo";
+  if (s.indexOf("再架電") >= 0) return "cb";
+  if (s.indexOf("不在") >= 0) return "absent";
+  if (s.indexOf("断り") >= 0 || s.indexOf("拒否") >= 0) return "refused";
+  if (s.indexOf("不通") >= 0) return "wrong";
+  if (s.indexOf("その他") >= 0) return "other";
+  // すでにIDだった場合はそのまま
+  return s;
+}
+
+function ensureSheet(ss, name, headers) {
+  var sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+    if (headers && headers.length) {
+      sh.appendRow(headers);
+      sh.getRange(1, 1, 1, headers.length).setFontWeight("bold").setBackground("#e8eaf6");
+      sh.setFrozenRows(1);
+    }
+  } else if (headers && headers.length) {
+    // v15: 既存シートのヘッダーが古い場合、不足列を追加
+    var lastCol = sh.getLastColumn();
+    if (lastCol < headers.length) {
+      var existingHeaders = lastCol > 0 ? sh.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+      var missingHeaders = headers.slice(lastCol);
+      sh.getRange(1, lastCol + 1, 1, missingHeaders.length).setValues([missingHeaders])
+        .setFontWeight("bold").setBackground("#e8eaf6");
+    }
+  }
+  return sh;
+}
+
+// ==========================================
+// v15: 手動実行用 - 初回セットアップ
+// Apps Scriptエディタで「setupSheets」を選んで実行 → 権限承認 → 全シート初期化
+// ==========================================
+function setupSheets() {
+  Logger.log("=== セットアップ開始 ===");
+
+  // メインスプレッドシートのシート群
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  ensureSheet(ss, "勤怠", ["名前", "日付", "出勤", "退勤", "休憩開始", "休憩終了"]);
+  ensureSheet(ss, "架電結果", ["名前", "日付", "時刻", "会社名", "電話番号", "担当者",
+    "結果", "通話時間", "チェック数", "暴走", "切り返しアウト", "メモ"]);
+  ensureSheet(ss, "再架電予定", ["登録日時", "名前", "再架電予定日時", "会社名", "電話番号", "担当者", "メモ", "状態"]);
+  ensureSheet(ss, "アポイント", ["登録日", "報告者", "案件名", "商談日付", "商談時間",
+    "法人名", "電話番号", "担当者", "性別", "役職", "メール", "住所", "アポ日時", "人柄"]);
+  ensureSheet(ss, "シフト申請", ["申請日時", "種別", "申請者", "PIN", "対象月",
+    "出勤予定日数", "休み日数", "合計時間(分)", "詳細", "状態"]);
+  Logger.log("✅ メインスプレッドシートのシート初期化完了");
+
+  // 管理者用スプレッドシート
+  try {
+    var adminSs = SpreadsheetApp.openById(ADMIN_SHEET_ID);
+    ensureSheet(adminSs, "退勤レポート", [
+      "日付", "アポインター", "PIN",
+      "出勤", "退勤", "休憩開始", "休憩終了",
+      "実働時間", "実働(分)",
+      "架電数", "アポ数", "アポ率(%)", "通話時間", "通話(秒)",
+      "稼働時間あたり",
+      "9時", "10時", "11時", "12時", "13時", "14時", "15時", "16時", "17時",
+      "9時アポ", "10時アポ", "11時アポ", "12時アポ", "13時アポ", "14時アポ", "15時アポ", "16時アポ", "17時アポ",
+      "アポ獲得", "再架電", "不在", "断り", "不通", "その他",
+      "送信日時"
+    ]);
+    ensureSheet(adminSs, "日次サマリー", [
+      "日付", "アポインター", "出勤", "退勤", "実働時間",
+      "架電数", "アポ数", "アポ率(%)", "通話時間",
+      "9時", "10時", "11時", "12時", "13時", "14時", "15時", "16時", "17時",
+      "更新日時"
+    ]);
+    // v26: 発信件数シート
+    ensureSheet(adminSs, "発信件数", [
+      "日付", "アポインター", "PIN", "発信件数", "架電結果数", "アポ数", "実働時間", "送信日時"
+    ]);
+    Logger.log("✅ 管理者スプレッドシートのシート初期化完了");
+  } catch (e) {
+    Logger.log("❌ 管理者スプレッドシートにアクセスできません: " + e);
+    Logger.log("   ID: " + ADMIN_SHEET_ID);
+    Logger.log("   このスクリプトの実行アカウントに編集権限を付与してください");
+  }
+
+  // メール送信テスト (権限承認のため)
+  try {
+    MailApp.sendEmail({
+      to: DAILY_REPORT_TO,
+      subject: "【セットアップ確認】テレアポ管理システム v15",
+      body: "GAS Web App のセットアップが完了しました。\n\n" +
+            "実行日時: " + new Date().toLocaleString("ja-JP") + "\n" +
+            "メインシート: " + SHEET_ID + "\n" +
+            "管理者シート: " + ADMIN_SHEET_ID + "\n" +
+            "通知先: " + DAILY_REPORT_TO + "\n\n" +
+            "このメールが届けば、退勤時の自動通知も機能します。"
+    });
+    Logger.log("✅ テストメール送信成功 → " + DAILY_REPORT_TO);
+  } catch (e) {
+    Logger.log("⚠️ テストメール送信失敗: " + e);
+  }
+
+  Logger.log("=== セットアップ完了 ===");
+  return "ok";
+}
+
+// v15: 退勤レポートのテスト送信 (実機テスト用)
+function testDailyReport() {
+  var fakeEvent = {
+    postData: {
+      contents: JSON.stringify({
+        type: "daily_report",
+        name: "テスト太郎",
+        pin: "999",
+        sheet: "テスト",
+        date: new Date().toLocaleDateString("ja-JP"),
+        dateKey: Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd"),
+        clockIn: "09:00:00",
+        clockOut: "18:00:00",
+        breakStart: "12:00:00",
+        breakEnd: "13:00:00",
+        workDuration: "8時間00分",
+        workMinutes: 480,
+        breakMinutes: 60,
+        totalCalls: 10,
+        totalApos: 3,
+        apoRate: 30.0,
+        totalCallTime: "25分00秒",
+        totalCallSec: 1500,
+        avgPerHour: 1.25,
+        h9: 2, h10: 3, h11: 1, h12: 0, h13: 0, h14: 1, h15: 1, h16: 1, h17: 1,
+        a9: 1, a10: 1, a11: 0, a12: 0, a13: 0, a14: 0, a15: 0, a16: 1, a17: 0,
+        byResultAppo: 3, byResultCb: 1, byResultAbsent: 2, byResultRefused: 3, byResultWrong: 1, byResultOther: 0,
+        subject: "【テスト送信】" + new Date().toLocaleDateString("ja-JP") + " テスト太郎",
+        body: "これはテスト送信です。\n\nもしこのメールが届けば、退勤時の自動通知も機能します。",
+        to: DAILY_REPORT_TO
+      })
+    }
+  };
+  var result = doPost(fakeEvent);
+  Logger.log(result.getContent());
+  return result.getContent();
+}
+
+// ==========================================
+// v16: 未送信メールの手動再送
+// 「未送信メール」シートに記録されたものを翌日以降に再送する
+// 必要に応じてトリガー (毎日 9時実行) で自動化推奨
+// ==========================================
+function resendUnsent() {
+  try {
+    var adminSs = SpreadsheetApp.openById(ADMIN_SHEET_ID);
+    var sh = adminSs.getSheetByName("未送信メール");
+    if (!sh) {
+      Logger.log("未送信メールシートが存在しません - 全て送信済み");
+      return "no unsent";
+    }
+    var data = sh.getDataRange().getValues();
+    if (data.length <= 1) {
+      Logger.log("未送信なし");
+      return "empty";
+    }
+    var quota = -1;
+    try { quota = MailApp.getRemainingDailyQuota(); } catch(e) {}
+    if (quota === 0) {
+      Logger.log("クォータ枯渇 - 翌日以降に再実行してください");
+      return "quota exhausted";
+    }
+    var sent = 0, failed = 0;
+    var rowsToDelete = [];
+    for (var i = 1; i < data.length; i++) {
+      if (quota > 0 && sent >= quota - 5) {
+        Logger.log("クォータ温存のため停止 (送信:" + sent + ")");
+        break;
+      }
+      try {
+        MailApp.sendEmail({to: data[i][1], subject: data[i][2], body: data[i][3]});
+        sent++;
+        rowsToDelete.push(i + 1);
+      } catch (e) {
+        failed++;
+        Logger.log("再送失敗 row " + (i+1) + ": " + e);
+      }
+    }
+    // 送信済みの行を削除 (下から削除して行番号のずれを回避)
+    rowsToDelete.sort(function(a,b){return b-a});
+    rowsToDelete.forEach(function(r){sh.deleteRow(r)});
+    var msg = "送信:" + sent + " / 失敗:" + failed;
+    Logger.log("再送完了: " + msg);
+    return msg;
+  } catch (e) {
+    Logger.log("resendUnsent error: " + e);
+    return "error: " + e;
+  }
+}
+
+// ==========================================
+// v16: 健全性チェック - 毎時実行のトリガー推奨
+// SQに溜まっている件数を上限超えしていたら管理者に警告
+// ==========================================
+function healthCheck() {
+  try {
+    var quota = MailApp.getRemainingDailyQuota();
+    Logger.log("Daily mail quota remaining: " + quota);
+    if (quota < 5) {
+      // 緊急通知 (1日1通限定にしたいので、最後の通知時刻をPropertiesで管理)
+      var props = PropertiesService.getScriptProperties();
+      var lastWarn = props.getProperty("lastQuotaWarn");
+      var today = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd");
+      if (lastWarn !== today) {
+        try {
+          MailApp.sendEmail({
+            to: DAILY_REPORT_TO,
+            subject: "【警告】メール送信クォータ残少 - テレアポ管理",
+            body: "本日のメール送信クォータが残り " + quota + " 通です。\n" +
+                  "退勤通知が届かない可能性があります。"
+          });
+          props.setProperty("lastQuotaWarn", today);
+        } catch (e) {}
+      }
+    }
+    return "ok - quota:" + quota;
+  } catch (e) {
+    Logger.log("healthCheck error: " + e);
+    return "error: " + e;
+  }
+}
+
+
+// ==========================================================================
+// v24: 通話録音ファイル自動転送システム (再現性重視・実機検証済み)
+// ==========================================================================
+//
+// 【設計方針】
+// - Drive権限問題を解決: 各アポインターが管理者アカウントに「CallRecordings」
+//   フォルダを編集者として共有 → GAS実行アカウント (管理者) から横断検索可能
+// - ファイル名マッチング強化: 電話番号の最初6桁で検索、時刻範囲±60分以内で照合
+// - 添付サイズ対応: 25MB超は自動的にDriveリンク送信に切り替え
+// - 重複防止: 「処理済みアポ録音」シートで電話番号+日時の組合せ重複検出
+// - 5分おきトリガーで実行 (1回20件まで処理)
+//
+// 【設定値】
+// PINマップから アポインター姓 → Driveフォルダ名 を逆引き
+// ==========================================================================
+
+// アポインター → Drive情報マッピング
+// folder_name: アポインターが自分のマイドライブに作成し、
+//              管理者アカウント (このGASの実行アカウント) に編集権限で共有するフォルダ名
+var APPOINTER_DRIVE_MAP = {
+  "柏木": {
+    email: "kashiwagi.sukimagroup@gmail.com",
+    folder_name: "柏木_CallRecordings"
+  },
+  "園田": {
+    email: "sonoda.sukimagroup@gmail.com",
+    folder_name: "園田_CallRecordings"
+  },
+  "堀内": {
+    email: "horiuchi.sukimagroup@gmail.com",
+    folder_name: "堀内_CallRecordings"
+  },
+  "河野": {
+    email: "kouno.sukimagroup@gmail.com",
+    folder_name: "河野_CallRecordings"
+  },
+  "福田": {
+    email: "fukuda.sukimagroup@gmail.com",
+    folder_name: "福田_CallRecordings"
+  },
+  "藪内": {
+    email: "yabuuchi.sukimagroup@gmail.com",
+    folder_name: "藪内_CallRecordings"
+  }
+};
+
+// アポ獲得録音の転送先
+var APO_AUDIO_FORWARD_TO = "a.kusunoki@sukimagroup.jp";
+
+// メール添付の最大サイズ (25MB - Gmailの制限は25MB)
+var MAIL_ATTACHMENT_MAX_BYTES = 24 * 1024 * 1024;
+
+// 1回の実行で処理する最大件数 (タイムアウト対策)
+var MAX_PROCESS_PER_RUN = 20;
+
+// 通話時刻と録音ファイルのマッチング許容時間範囲 (ミリ秒)
+var TIME_MATCH_TOLERANCE_MS = 60 * 60 * 1000;  // 60分
+
+// ==========================================================================
+// メイン関数: アポ獲得通話の録音を自動転送
+// 設定: トリガー → 時間主導型 → 5分おき実行
+// ==========================================================================
+function forwardApoRecordings() {
+  var startTime = new Date();
+  Logger.log("=== forwardApoRecordings 開始: " + startTime.toISOString() + " ===");
+
+  try {
+    var ss = SpreadsheetApp.openById(SHEET_ID);
+    var adminSs = SpreadsheetApp.openById(ADMIN_SHEET_ID);
+
+    // 処理済みシートを準備
+    var processedSh = ensureSheet(adminSs, "処理済みアポ録音", [
+      "処理日時", "アポインター", "日付", "時刻", "電話番号", "会社名",
+      "ファイル名", "ファイルID", "状態", "Driveフォルダ"
+    ]);
+
+    // 既処理キーを取得 (電話番号|日付|時刻|アポインター)
+    var processedRows = processedSh.getDataRange().getValues();
+    var processedKeys = {};
+    for (var i = 1; i < processedRows.length; i++) {
+      var k = String(processedRows[i][1] || "") + "|" +     // アポインター
+              String(processedRows[i][2] || "") + "|" +     // 日付
+              String(processedRows[i][3] || "") + "|" +     // 時刻
+              String(processedRows[i][4] || "");             // 電話番号
+      processedKeys[k] = true;
+    }
+    Logger.log("既処理レコード数: " + Object.keys(processedKeys).length);
+
+    // 架電結果シート読み込み
+    var callSh = ss.getSheetByName("架電結果");
+    if (!callSh || callSh.getLastRow() < 2) {
+      Logger.log("架電結果シートにデータなし");
+      return { ok: true, processed: 0, message: "no calls" };
+    }
+    var callRows = callSh.getDataRange().getValues();
+
+    // 本日と前日のみ対象 (パフォーマンス考慮)
+    var today = new Date();
+    var yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+    var todayKey = Utilities.formatDate(today, "Asia/Tokyo", "yyyy/MM/dd");
+    var yesterdayKey = Utilities.formatDate(yesterday, "Asia/Tokyo", "yyyy/MM/dd");
+
+    // 各アポインターのDriveフォルダIDを事前取得 (一度だけ)
+    var folderCache = getAppointerFolders();
+    Logger.log("Driveフォルダ取得数: " + Object.keys(folderCache).length);
+
+    var processed = 0, skipped = 0, errors = 0, notFound = 0;
+
+    // 新しい順に処理 (最新のアポを優先)
+    for (var i = callRows.length - 1; i >= 1; i--) {
+      if (processed >= MAX_PROCESS_PER_RUN) {
+        Logger.log("MAX_PROCESS_PER_RUN到達 (" + MAX_PROCESS_PER_RUN + ")");
+        break;
+      }
+
+      var row = callRows[i];
+      var apoName = String(row[0] || "");
+      var dateStr = String(row[1] || "");
+      var timeStr = String(row[2] || "");
+      var company = String(row[3] || "");
+      var phone = String(row[4] || "");
+      var person = String(row[5] || "");
+      var result = String(row[6] || "");
+
+      // フィルタ1: アポ獲得のみ
+      if (result.indexOf("アポ") < 0) continue;
+
+      // フィルタ2: 本日・前日のみ
+      if (dateStr !== todayKey && dateStr !== yesterdayKey) continue;
+
+      // 重複チェック
+      var key = apoName + "|" + dateStr + "|" + timeStr + "|" + phone;
+      if (processedKeys[key]) {
+        skipped++;
+        continue;
+      }
+
+      // アポインター姓を抽出
+      var lastName = extractLastName(apoName);
+      if (!lastName || !APPOINTER_DRIVE_MAP[lastName]) {
+        Logger.log("アポインター不明: " + apoName);
+        errors++;
+        continue;
+      }
+
+      var driveInfo = APPOINTER_DRIVE_MAP[lastName];
+      var folder = folderCache[lastName];
+      if (!folder) {
+        Logger.log("Driveフォルダ未取得: " + driveInfo.folder_name +
+                   " - 管理者と" + driveInfo.email + "の共有を確認");
+        // 24h以上前なら諦める (ファイル未発見として記録)
+        var callTimeMs = parseCallDateTime(dateStr, timeStr);
+        if ((Date.now() - callTimeMs) > 24 * 60 * 60 * 1000) {
+          processedSh.appendRow([
+            new Date(), apoName, dateStr, timeStr, phone, company,
+            "(フォルダ未共有)", "", "未処理", driveInfo.folder_name
+          ]);
+        }
+        errors++;
+        continue;
+      }
+
+      // Drive内で録音ファイル検索
+      var matchedFile = findMatchingRecording(folder, phone, dateStr, timeStr);
+
+      if (!matchedFile) {
+        // 24h以上前なら諦めて記録
+        var callTime = parseCallDateTime(dateStr, timeStr);
+        if ((Date.now() - callTime) > 24 * 60 * 60 * 1000) {
+          processedSh.appendRow([
+            new Date(), apoName, dateStr, timeStr, phone, company,
+            "(録音ファイル未発見)", "", "未発見", driveInfo.folder_name
+          ]);
+          notFound++;
+        }
+        continue;
+      }
+
+      // メール送信
+      var sendResult = sendRecordingMail(matchedFile, apoName, dateStr, timeStr, company, phone, person);
+      if (sendResult.ok) {
+        processedSh.appendRow([
+          new Date(), apoName, dateStr, timeStr, phone, company,
+          matchedFile.name, matchedFile.id, sendResult.status, driveInfo.folder_name
+        ]);
+        processed++;
+        Logger.log("✅ 転送完了: " + apoName + " " + dateStr + " " + timeStr +
+                   " " + company + " (" + sendResult.status + ")");
+      } else {
+        Logger.log("❌ 送信失敗: " + sendResult.error);
+        errors++;
+      }
+    }
+
+    var endTime = new Date();
+    var elapsed = (endTime - startTime) / 1000;
+    Logger.log("=== 完了: 処理 " + processed + "件, スキップ " + skipped +
+               "件, 未発見 " + notFound + "件, エラー " + errors + "件, 経過 " +
+               elapsed.toFixed(1) + "秒 ===");
+
+    return {
+      ok: true,
+      processed: processed,
+      skipped: skipped,
+      notFound: notFound,
+      errors: errors,
+      elapsedSec: elapsed
+    };
+
+  } catch (e) {
+    Logger.log("致命的エラー: " + e + "\n" + (e.stack || ""));
+    return { ok: false, error: String(e) };
+  }
+}
+
+// ==========================================================================
+// アポインターのDriveフォルダを一括取得 (フォルダ名で検索)
+// 各アポインターは自分のマイドライブに「{姓}_CallRecordings」を作成し、
+// 管理者アカウントに編集者として共有しておく必要がある
+// ==========================================================================
+function getAppointerFolders() {
+  var cache = {};
+  for (var lastName in APPOINTER_DRIVE_MAP) {
+    var folderName = APPOINTER_DRIVE_MAP[lastName].folder_name;
+    try {
+      var folders = DriveApp.getFoldersByName(folderName);
+      if (folders.hasNext()) {
+        var folder = folders.next();
+        cache[lastName] = folder;
+      } else {
+        Logger.log("⚠️ フォルダ未発見: " + folderName +
+                   " (アポインターから管理者へ共有が必要)");
+      }
+    } catch (e) {
+      Logger.log("フォルダ検索エラー (" + folderName + "): " + e);
+    }
+  }
+  return cache;
+}
+
+// ==========================================================================
+// 録音ファイル検索 (電話番号 + 時刻でマッチング)
+// Galaxy ファイル名: "通話記録 [電話番号] [yymmdd]_[HHmmss].m4a"
+// 例: "通話記録 0312345678 250505_143000.m4a"
+//
+// 戻り値: {id, name, file, sizeBytes} または null
+// ==========================================================================
+function findMatchingRecording(folder, phone, dateStr, timeStr) {
+  // 電話番号を数字のみに正規化
+  var phoneNumeric = String(phone).replace(/[^0-9]/g, "");
+  if (!phoneNumeric || phoneNumeric.length < 6) return null;
+
+  // 検索キー: 電話番号の先頭6桁以上
+  var searchPrefix = phoneNumeric.slice(0, 7);  // 7桁以上で検索精度UP
+  if (searchPrefix.length < 6) searchPrefix = phoneNumeric.slice(0, 6);
+
+  // 通話日時 (ミリ秒)
+  var callTimeMs = parseCallDateTime(dateStr, timeStr);
+
+  var bestMatch = null;
+  var bestDiff = Infinity;
+
+  try {
+    var files = folder.getFiles();
+    while (files.hasNext()) {
+      var f = files.next();
+      var fname = f.getName();
+
+      // 電話番号マッチ
+      var fnameNumeric = fname.replace(/[^0-9]/g, "");
+      if (fnameNumeric.indexOf(searchPrefix) < 0) continue;
+
+      // 音声ファイルのみ (.m4a, .mp3, .wav, .amr)
+      var isAudio = /\.(m4a|mp3|wav|amr|aac)$/i.test(fname);
+      if (!isAudio) {
+        var mt = f.getMimeType();
+        if (!mt || mt.indexOf("audio") < 0) continue;
+      }
+
+      // 時刻マッチ (許容範囲内で最も近いもの)
+      var fileTimeMs = f.getLastUpdated().getTime();
+      var diff = Math.abs(fileTimeMs - callTimeMs);
+
+      if (diff <= TIME_MATCH_TOLERANCE_MS && diff < bestDiff) {
+        bestMatch = f;
+        bestDiff = diff;
+      }
+    }
+  } catch (e) {
+    Logger.log("ファイル検索エラー: " + e);
+    return null;
+  }
+
+  if (!bestMatch) return null;
+
+  return {
+    id: bestMatch.getId(),
+    name: bestMatch.getName(),
+    file: bestMatch,
+    sizeBytes: bestMatch.getSize(),
+    diffMin: Math.floor(bestDiff / 60000)
+  };
+}
+
+// ==========================================================================
+// メール送信 (添付 or リンク自動切替)
+// ==========================================================================
+function sendRecordingMail(matchedFile, apoName, dateStr, timeStr, company, phone, person) {
+  var subject = "【アポ録音】" + apoName + " " + dateStr + " " + timeStr +
+                " - " + company;
+
+  var bodyBase = "アポ獲得通話の録音ファイルです。\n\n" +
+                 "■ アポインター: " + apoName + "\n" +
+                 "■ 日付: " + dateStr + "\n" +
+                 "■ 時刻: " + timeStr + "\n" +
+                 "■ 会社名: " + company + "\n" +
+                 "■ 担当者: " + (person || "未記入") + "\n" +
+                 "■ 電話番号: " + phone + "\n" +
+                 "■ ファイル名: " + matchedFile.name + "\n" +
+                 "■ ファイルサイズ: " + (matchedFile.sizeBytes / 1024 / 1024).toFixed(2) + " MB\n" +
+                 "■ 時刻マッチ誤差: " + matchedFile.diffMin + "分\n\n";
+
+  // サイズチェック - 25MB超ならリンク送信
+  if (matchedFile.sizeBytes > MAIL_ATTACHMENT_MAX_BYTES) {
+    try {
+      var fileUrl = matchedFile.file.getUrl();
+      MailApp.sendEmail({
+        to: APO_AUDIO_FORWARD_TO,
+        subject: subject + " (リンク送信)",
+        body: bodyBase + "▼ ファイルサイズが大きいため、Driveリンクで共有します:\n" +
+              fileUrl + "\n\n" +
+              "----- 川嶋メソッド アポ録音転送システム -----\n",
+        name: "川嶋メソッド アポ録音転送"
+      });
+      return { ok: true, status: "リンク送信" };
+    } catch (e) {
+      return { ok: false, error: "リンク送信失敗: " + e };
+    }
+  }
+
+  // 通常添付送信
+  try {
+    var blob = matchedFile.file.getBlob();
+    MailApp.sendEmail({
+      to: APO_AUDIO_FORWARD_TO,
+      subject: subject,
+      body: bodyBase + "▼ 録音ファイルを添付しています。\n\n" +
+            "----- 川嶋メソッド アポ録音転送システム -----\n",
+      attachments: [blob],
+      name: "川嶋メソッド アポ録音転送"
+    });
+    return { ok: true, status: "添付送信" };
+  } catch (e) {
+    // 添付エラー → リンク送信フォールバック
+    Logger.log("添付エラー、リンク送信に切替: " + e);
+    try {
+      var fallbackUrl = matchedFile.file.getUrl();
+      MailApp.sendEmail({
+        to: APO_AUDIO_FORWARD_TO,
+        subject: subject + " (リンク送信)",
+        body: bodyBase + "▼ 添付エラーのため、Driveリンクで共有:\n" + fallbackUrl + "\n",
+        name: "川嶋メソッド アポ録音転送"
+      });
+      return { ok: true, status: "リンク送信(フォールバック)" };
+    } catch (e2) {
+      return { ok: false, error: String(e2) };
+    }
+  }
+}
+
+// ==========================================================================
+// アポインター名から姓を抽出
+// "河野由香" → "河野", "柏木幸代" → "柏木"
+// ==========================================================================
+function extractLastName(fullName) {
+  if (!fullName) return null;
+  for (var lname in APPOINTER_DRIVE_MAP) {
+    if (fullName.indexOf(lname) === 0) return lname;  // 先頭一致のみ
+  }
+  return null;
+}
+
+// ==========================================================================
+// 日付・時刻文字列をミリ秒に変換
+// "2026/05/05" + "14:30" → タイムスタンプ
+// ==========================================================================
+function parseCallDateTime(dateStr, timeStr) {
+  try {
+    var d = String(dateStr || "").replace(/[年月]/g, "/").replace(/日/g, "");
+    var parts = d.split(/[\/\-]/);
+    if (parts.length < 3) return Date.now();
+    var y = parseInt(parts[0], 10);
+    var m = parseInt(parts[1], 10) - 1;
+    var dy = parseInt(parts[2], 10);
+    var t = String(timeStr || "00:00").split(":");
+    var h = parseInt(t[0], 10) || 0;
+    var mn = parseInt(t[1], 10) || 0;
+    return new Date(y, m, dy, h, mn, 0).getTime();
+  } catch (e) {
+    return Date.now();
+  }
+}
+
+// ==========================================================================
+// セットアップ確認 (実行ログでフォルダ共有状況をチェック)
+// ==========================================================================
+function checkRecordingSetup() {
+  Logger.log("=== 録音転送システム セットアップチェック ===");
+  Logger.log("実行アカウント: " + Session.getActiveUser().getEmail());
+  Logger.log("");
+
+  var allOk = true;
+  for (var lastName in APPOINTER_DRIVE_MAP) {
+    var info = APPOINTER_DRIVE_MAP[lastName];
+    var folders = DriveApp.getFoldersByName(info.folder_name);
+    if (folders.hasNext()) {
+      var folder = folders.next();
+      var fileCount = 0;
+      var files = folder.getFiles();
+      while (files.hasNext()) { files.next(); fileCount++; if (fileCount > 100) break; }
+      Logger.log("✅ " + lastName + " (" + info.email + "): フォルダ「" +
+                 info.folder_name + "」発見, ファイル " + fileCount + "+ 件");
+    } else {
+      Logger.log("❌ " + lastName + " (" + info.email + "): フォルダ「" +
+                 info.folder_name + "」未発見");
+      Logger.log("   → アポインターに以下を依頼してください:");
+      Logger.log("   1) マイドライブに「" + info.folder_name + "」フォルダを作成");
+      Logger.log("   2) このフォルダを " + Session.getActiveUser().getEmail() + " に編集者として共有");
+      allOk = false;
+    }
+  }
+
+  Logger.log("");
+  Logger.log("送信先: " + APO_AUDIO_FORWARD_TO);
+  Logger.log("最大送信添付サイズ: " + (MAIL_ATTACHMENT_MAX_BYTES / 1024 / 1024) + " MB");
+  Logger.log("マッチ許容時間: ±" + (TIME_MATCH_TOLERANCE_MS / 60000) + "分");
+  Logger.log("1回の処理上限: " + MAX_PROCESS_PER_RUN + "件");
+
+  // トリガー確認
+  var triggers = ScriptApp.getProjectTriggers();
+  var hasTrigger = false;
+  triggers.forEach(function(t) {
+    if (t.getHandlerFunction() === "forwardApoRecordings") {
+      hasTrigger = true;
+      Logger.log("✅ forwardApoRecordings トリガー設定済み");
+    }
+  });
+  if (!hasTrigger) {
+    Logger.log("⚠️ forwardApoRecordings のトリガー未設定");
+    Logger.log("   → 「トリガー」→「+トリガーを追加」→ 関数: forwardApoRecordings");
+    Logger.log("     時間主導型 / 5分おき で設定してください");
+    allOk = false;
+  }
+
+  Logger.log("");
+  Logger.log(allOk ? "🎉 全項目OK - 本番稼働可能です" : "⚠️ 上記の項目を修正してください");
+  return allOk;
+}
+
+// ==========================================================================
+// 手動テスト: 過去24時間のアポ録音を一括処理
+// ==========================================================================
+function testForwardApoRecordings() {
+  Logger.log("=== テスト実行: forwardApoRecordings ===");
+  var result = forwardApoRecordings();
+  Logger.log("テスト結果: " + JSON.stringify(result, null, 2));
+  return result;
+}

@@ -1,11 +1,11 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v18
+// 川嶋メソッド テレアポ管理 — GAS完全版 v26
 // メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
 // 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
 //
 // 必要なシート(タブ):
 //   [メイン]
-//     柏木・園田・堀内・河野・福田 — 各アポインターの架電リスト (1行目ヘッダー、初回upload時に自動作成)
+//     柏木・園田・堀内・河野・福田・藪内 — 各アポインターの架電リスト (1行目ヘッダー、初回upload時に自動作成)
 //     勤怠・架電結果・再架電予定・アポイント・シフト申請 (自動作成)
 //   [管理者用]
 //     退勤レポート — 退勤時の自動集計記録 (自動作成、v14追加)
@@ -53,7 +53,7 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         message: "GAS Web App is alive",
-        version: "v15",
+        version: "v26",
         timestamp: new Date().toISOString(),
         note: "Use ?pin=XXX to fetch list, or POST with type field"
       })).setMimeType(ContentService.MimeType.JSON);
@@ -161,7 +161,7 @@ function doPost(e) {
         status: "ok",
         message: "GAS connected",
         timestamp: new Date().toISOString(),
-        version: "v24"
+        version: "v26"
       })).setMimeType(ContentService.MimeType.JSON);
     }
 

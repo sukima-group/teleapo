@@ -80,8 +80,15 @@ kbd{display:inline-block;padding:1px 6px;border:1px solid #cbd5e1;border-bottom-
 <div id="root"></div>
 <script>
 /* ==========================================================================
-   川嶋メソッド テレアポ管理 PWA  v20 (実機で確実に動く同期 - キュー経由ではなく即時送信)
+   川嶋メソッド テレアポ管理 PWA  v26 (藪内追加 + オートコール + 発信件数通知 + キャッシュ対策)
    ==========================================================================
+   v26 変更:
+   - 097 藪内亜希 アカウント追加 (6人目)
+   - 通話チェックリストのステップ見出し (S1/S3/S4) 削除 → フラット表示
+   - オートコール(連続発信モード): 応答なし自動スキップ + 次番号自動セット
+   - 発信件数を退勤時に管理者通知 (dial_count_notify, 送信元 hr.ashikaga)
+   - 結果入力画面・ヘッダーの通話タイマー(03:58)表示を削除
+   - キャッシュ問題対策: 起動時旧キャッシュ自動削除 + SW強制更新 + フォーカス時更新チェック
    v20 重要修正 (実機で「Aアカウントでアップロードした → Bアカウントで見えない」問題を根本解決):
    - リストアップロードを directGasPost (即時送信) に変更 - キュー経由ではない
    - 200件ずつチャンク分割 (keepalive 64KB制限を回避)
@@ -92,7 +99,6 @@ kbd{display:inline-block;padding:1px 6px;border:1px solid #cbd5e1;border-bottom-
    - 完了するまでユーザーに「送信完了」と表示しない
    - 失敗時はDLQに退避 + 明確な赤いトースト
    - タイムアウト90秒/チャンク
-   - 自動再同期 (5分おき) は今後の拡張で
    v19:
    - 5ステップ式チェックリスト + ボトルネック分析 + アウト詳細シート
    v18:
@@ -1897,7 +1903,7 @@ if(showShiftDay){
 
 /* ========== ログイン ========== */
 if(V==="login"){
-  h+='<div style="min-height:100vh;background:linear-gradient(135deg,#0d1b2a,#1a237e);display:flex;align-items:center;justify-content:center;padding:20px"><div style="background:#fff;border-radius:20px;padding:32px 24px;max-width:340px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.4)"><div style="text-align:center;margin-bottom:20px"><div style="font-size:42px">📞</div><div style="font-size:20px;font-weight:800;color:#1a237e">川嶋メソッド</div><div style="font-size:11px;color:#94a3b8;margin-top:2px">テレアポ管理 v26</div></div><div style="text-align:center;font-size:13px;color:#455a64;margin-bottom:14px">従業員番号を入力</div><div style="display:flex;justify-content:center;gap:8px;margin-bottom:14px">';
+  h+='<div style="min-height:100vh;background:linear-gradient(135deg,#0d1b2a,#1a237e);display:flex;align-items:center;justify-content:center;padding:20px"><div style="background:#fff;border-radius:20px;padding:32px 24px;max-width:340px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.4)"><div style="text-align:center;margin-bottom:20px"><div style="font-size:42px">📞</div><div style="font-size:20px;font-weight:800;color:#1a237e">川嶋メソッド</div><div style="font-size:11px;color:#94a3b8;margin-top:2px">テレアポ管理</div><div style="display:inline-block;margin-top:6px;padding:3px 12px;background:#10b981;color:#fff;font-size:12px;font-weight:800;border-radius:12px;letter-spacing:.05em">'+APP_VERSION+'</div></div><div style="text-align:center;font-size:13px;color:#455a64;margin-bottom:14px">従業員番号を入力</div><div style="display:flex;justify-content:center;gap:8px;margin-bottom:14px">';
   for(var i=0;i<4;i++){var f=pin.length>i;h+='<div style="width:46px;height:54px;border-radius:12px;border:2px solid '+(f?"#1a237e":"#e0e0e0")+';background:'+(f?"#e8eaf6":"#fafafa")+';display:flex;align-items:center;justify-content:center;font-size:24px;color:#1a237e">'+(f?"●":"")+'</div>'}
   h+='</div><div id="pp" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;max-width:240px;margin:0 auto 12px"></div>';
   if(pinErr)h+='<div style="text-align:center;font-size:12px;color:#e53935;font-weight:700;margin-top:6px">'+pinErr+'</div>';

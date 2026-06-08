@@ -80,7 +80,7 @@ kbd{display:inline-block;padding:1px 6px;border:1px solid #cbd5e1;border-bottom-
 <div id="root"></div>
 <script>
 /* ==========================================================================
-   川嶋メソッド テレアポ管理 PWA  v26 (藪内追加 + オートコール + 発信件数通知 + キャッシュ対策)
+   川嶋メソッド テレアポ管理 PWA  v27 (再架電改善 + プログレッシブダイヤラー + 手入力発信 + 管理者リスト位置表示 + 最終架電会社通知)
    ==========================================================================
    v26 変更:
    - 097 藪内亜希 アカウント追加 (6人目)
@@ -164,7 +164,7 @@ var SHIFT_NOTIFY_TO = "tereapo01.sukima@gmail.com";
 var DAILY_REPORT_TO = "tereapo01.sukima@gmail.com";  /* v14: 退勤レポート通知先 */
 
 /* v26: 起動時キャッシュクリア - 旧バージョンのキャッシュを強制削除 */
-var APP_VERSION="v26";
+var APP_VERSION="v27";
 (function(){
   try{
     var prev=localStorage.getItem("app_ver");
@@ -230,16 +230,18 @@ var END_STEP_OPTS=[
 ];
 
 var RESULTS=[
-  {id:"appo",l:"アポ獲得",i:"🎯",c:"#10b981"},
-  {id:"cb",l:"再架電",i:"📞",c:"#f59e0b"},
-  {id:"absent",l:"不在",i:"🚫",c:"#6b7280"},
-  {id:"refused",l:"断り",i:"✋",c:"#ef4444"},
-  {id:"wrong",l:"不通",i:"❌",c:"#9ca3af"},
-  {id:"other",l:"その他",i:"📝",c:"#64748b"}
+  {id:"appo",l:"アポ獲得",i:"🎯",c:"#10b981",sub:"商談取れた"},
+  {id:"cb",l:"再架電",i:"📞",c:"#f59e0b",sub:"かけ直し予定"},
+  {id:"absent",l:"不在",i:"🚫",c:"#6b7280",sub:"誰も出ない"},
+  {id:"refused",l:"断り",i:"✋",c:"#ef4444",sub:"断られた"},
+  {id:"wrong",l:"不通",i:"❌",c:"#9ca3af",sub:"番号繋がらず"},
+  {id:"other",l:"その他",i:"📝",c:"#64748b",sub:""}
 ];
 
-/* 再架電プリセット */
+/* 再架電プリセット (v27: 時間指定なしオプション追加) */
 var CB_PRESETS=[
+  {l:"⏰ 時間未定（後でまた）",mode:"later"},
+  {l:"本日中にまた",mode:"today"},
   {l:"30分後",mode:"add",min:30},
   {l:"1時間後",mode:"add",min:60},
   {l:"2時間後",mode:"add",min:120},
@@ -485,6 +487,15 @@ var AUTO_MODE=false;         /* 連続発信モードのON/OFF */
 var AUTO_NO_ANSWER_SEC=15;   /* この秒数未満で復帰=不発(相手出ない)と判定。TFT/ルーダス基準5-25秒 */
 var autoCallCount=0;         /* 本日の発信回数(オートコール含む、退勤通知用) */
 var autoCallDate="";         /* autoCallCount の対象日 (日付変わりでリセット) */
+/* v27: プログレッシブダイヤラー (ラップアップ後の自動発信) */
+var AUTO_DIAL_DELAY=10;      /* 通話終了後この秒数後に次の番号へ自動発信 (ラップアップ時間) */
+var autoDialTimer=null;      /* カウントダウンのsetInterval ID */
+var autoDialRemain=0;        /* カウントダウン残り秒数 */
+var autoDialPhone="";        /* 自動発信する電話番号 (tel:) */
+var autoDialCo="";           /* 自動発信先の会社名 (表示用) */
+/* v27: 手入力発信 */
+var manualDialNum="";        /* 手入力された電話番号 */
+var lastCalledCo="";         /* 最後に架電した会社名 (退勤通知⑤用) */
 
 /* コールバック作成ダイアログ */
 var showCB=false;
@@ -505,6 +516,10 @@ function loadUser(id){
   AUTO_NO_ANSWER_SEC=ld("autoSec-"+id)||15;
   autoCallDate=ld("acDate-"+id)||"";
   autoCallCount=(autoCallDate===dateStr())?(ld("acCount-"+id)||0):0;
+  /* v27: 自動発信遅延と最終架電会社を復元 */
+  AUTO_DIAL_DELAY=ld("autoDelay-"+id)||10;
+  lastCalledCo=ld("lastCo-"+id)||"";
+  cancelAutoDial();
   shiftDays=ld("sft-"+id+"-"+shiftMonth)||{};
   /* v11→v12 シフト形式マイグレーション (string→object) */
   var migrated=false;
@@ -744,6 +759,114 @@ function loadFromGAS(staff,cb){
   });
 }
 
+/* v27: 管理者用 - 1人のアポインターの状態をlocalStorageのみに保存 (グローバル状態は変更しない) */
+function fetchAppointerStateToLocal(staff,cb){
+  if(!GAS||!navigator.onLine){if(cb)cb(false,"オフライン");return}
+  var ctrl=("AbortController" in window)?new AbortController():null;
+  var tmout=ctrl?setTimeout(function(){ctrl.abort()},25000):null;
+  fetch(GAS,{
+    method:"POST",
+    headers:{"Content-Type":"text/plain;charset=utf-8"},
+    body:JSON.stringify({type:"fetch_state",pin:staff.pin}),
+    redirect:"follow",
+    signal:ctrl?ctrl.signal:undefined
+  })
+  .then(function(r){if(tmout)clearTimeout(tmout);if(!r.ok)throw new Error("HTTP "+r.status);return r.text()})
+  .then(function(t){
+    var d;
+    try{d=JSON.parse(t)}catch(e){throw new Error("Invalid JSON")}
+    if(d.status!=="ok")throw new Error(d.message||"GAS error");
+    /* リスト */
+    if(d.list!==undefined){
+      sv("l-"+staff.id,d.list.length>0?d.list:[]);
+      if(d.list.length>0)sv("c-"+staff.id,{co:0,ph:1,pe:2,ad:3});
+    }
+    /* 出退勤マージ */
+    if(d.att){
+      var localAtt=ld("at-"+staff.id)||{};
+      for(var dk in d.att){
+        var srvA=d.att[dk],locA=localAtt[dk]||{};
+        localAtt[dk]={ci:srvA.ci||locA.ci||"",co:srvA.co||locA.co||"",bs:srvA.bs||locA.bs||"",be:srvA.be||locA.be||""};
+      }
+      sv("at-"+staff.id,localAtt);
+    }
+    /* 履歴マージ */
+    if(d.hist&&d.hist.length>0){
+      var localHist=ld("h-"+staff.id)||[];
+      var seenKeys={},merged=[];
+      d.hist.forEach(function(h){
+        h.u=staff.id;if(!h.id)h.id=Date.now()+Math.random();
+        var key=(h.d||"")+"|"+(h.tm||"")+"|"+(h.ph||"")+"|"+(h.r||"");
+        if(!seenKeys[key]){seenKeys[key]=true;merged.push(h)}
+      });
+      localHist.forEach(function(h){
+        var key=(h.d||"")+"|"+(h.tm||"")+"|"+(h.ph||"")+"|"+(h.r||"");
+        if(!seenKeys[key]){seenKeys[key]=true;merged.push(h)}
+      });
+      merged.sort(function(a,b){var ad=(a.d||"")+"_"+(a.tm||""),bd=(b.d||"")+"_"+(b.tm||"");return bd.localeCompare(ad)});
+      sv("h-"+staff.id,merged.slice(0,1000));
+    }
+    if(d.appos&&d.appos.length>0)sv("a-"+staff.id,d.appos);
+    if(d.cb&&d.cb.length>0)sv("cb-"+staff.id,d.cb);
+    if(cb)cb(true,{list:(d.list||[]).length,hist:(d.hist||[]).length});
+  })
+  .catch(function(err){
+    if(tmout)clearTimeout(tmout);
+    if(cb)cb(false,String(err.message||err));
+  });
+}
+
+/* v27: 管理者用 - 全アポインターの状態を順次同期 */
+var adminSyncing=false;
+function adminSyncAll(){
+  if(adminSyncing)return;
+  adminSyncing=true;
+  var idx=0,okCount=0;
+  flash("🔄 全アポインターの状況を同期中... (0/"+STAFF.length+")");
+  render();
+  function syncNext(){
+    if(idx>=STAFF.length){
+      adminSyncing=false;
+      flash("✅ 同期完了 ("+okCount+"/"+STAFF.length+"名)");
+      vib([40,30,40]);
+      render();
+      return;
+    }
+    var staff=STAFF[idx];
+    flash("🔄 同期中... ("+(idx+1)+"/"+STAFF.length+") "+staff.nm);
+    render();
+    fetchAppointerStateToLocal(staff,function(ok){
+      if(ok)okCount++;
+      idx++;
+      syncNext();
+    });
+  }
+  syncNext();
+}
+
+/* v27: 各アポインターの本日のリスト進捗を計算 (最後に架電した会社 + 進捗) */
+function appointerProgress(staffId){
+  var todStr=td();
+  var li=ld("l-"+staffId)||[];
+  var cl=ld("h-"+staffId)||[];
+  var todCalls=cl.filter(function(c){return c.d===todStr});
+  /* 最後に架電した会社 (今日の最新エントリ) */
+  var lastCo="";
+  for(var i=0;i<cl.length;i++){
+    if(cl[i].d===todStr){lastCo=cl[i].co||"";break}
+  }
+  /* 架電済みのリスト内インデックス数 (i>=0 のユニーク) */
+  var calledIdx={};
+  todCalls.forEach(function(c){if(typeof c.i==="number"&&c.i>=0)calledIdx[c.i]=true});
+  var doneInList=Object.keys(calledIdx).length;
+  return {
+    total:li.length,
+    doneInList:doneInList,
+    todCalls:todCalls.length,
+    lastCo:lastCo
+  };
+}
+
 /* ---------- ログイン (v12: 保存済みリストを上書きしない) ---------- */
 function tryLogin(){
   if(pin.length===3){
@@ -806,10 +929,16 @@ function bumpCallCount(){
   autoCallCount++;
   sv("acCount-"+U.id,autoCallCount);
 }
+/* v27: 最後に架電した会社名を記録 (退勤通知⑤用) */
+function setLastCalled(co){
+  if(co){lastCalledCo=co;sv("lastCo-"+U.id,co)}
+}
 function onPhoneTap(){
   CALL_INIT_AT=Date.now();
   CALL_PENDING=true;
   bumpCallCount();  /* v26: 発信回数を記録 */
+  var cur=rows[ci]||null;
+  if(cur)setLastCalled(gf(cur,"co"));  /* v27: 最終架電会社 */
   vib(40);
   /* 自動でチェックリストを準備しておく */
   ck={};selRes=null;bousou=[];endStep="";tsec=0;clearInterval(tref);
@@ -863,12 +992,56 @@ function autoRecordAbsentAndNext(dur){
   if(moved){
     vib(40);
     flash("📵 応答なし→次の番号へ ("+autoCallCount+"件目)");
+    startAutoDialCountdown();  /* v27: 10秒後に自動発信 */
   }else{
     AUTO_MODE=false;
     vib([60,40,60]);
     flash("✅ リスト完了 - オートコール終了");
   }
   render();
+}
+
+/* v27: プログレッシブダイヤラー - ラップアップ後に次の番号へ自動発信 */
+function startAutoDialCountdown(){
+  cancelAutoDial();  /* 既存タイマーをクリア */
+  if(!AUTO_MODE)return;
+  var cur=rows[ci]||null;
+  if(!cur)return;
+  var phone=gf(cur,"ph");
+  if(!phone)return;
+  autoDialPhone=telPhone(phone);
+  autoDialCo=gf(cur,"co")||"(会社名なし)";
+  autoDialRemain=AUTO_DIAL_DELAY;
+  render();
+  autoDialTimer=setInterval(function(){
+    autoDialRemain--;
+    var el=document.getElementById("autoDialCount");
+    if(el)el.textContent=autoDialRemain;
+    if(autoDialRemain<=0){
+      doAutoDial();
+    }
+  },1000);
+}
+function doAutoDial(){
+  clearInterval(autoDialTimer);autoDialTimer=null;
+  if(!AUTO_MODE){autoDialRemain=0;render();return}
+  var phone=autoDialPhone;
+  autoDialRemain=0;
+  /* 発信記録 */
+  CALL_INIT_AT=Date.now();
+  CALL_PENDING=true;
+  bumpCallCount();
+  var cur=rows[ci]||null;
+  if(cur)setLastCalled(gf(cur,"co"));
+  ck={};selRes=null;bousou=[];endStep="";tsec=0;clearInterval(tref);
+  vib([40,30,60]);
+  render();
+  /* tel: で自動発信 (Android Chromeはタイマー発信OK) */
+  try{window.location.href="tel:"+phone}catch(e){}
+}
+function cancelAutoDial(){
+  if(autoDialTimer){clearInterval(autoDialTimer);autoDialTimer=null}
+  autoDialRemain=0;autoDialPhone="";autoDialCo="";
 }
 
 /* ---------- 結果保存 ---------- */
@@ -917,7 +1090,7 @@ function saveCall(){
   }else{
     goNext();V="home";vib(60);
     /* v26: オートコールモードなら次の発信を促す */
-    if(AUTO_MODE){flash("✅ 保存→次へ ("+autoCallCount+"件発信済)")}
+    if(AUTO_MODE){flash("✅ 保存→次へ ("+autoCallCount+"件発信済)");startAutoDialCountdown()}
     else{flash("✅ 保存→次へ")}
     render()
   }
@@ -926,7 +1099,16 @@ function saveCall(){
 /* コールバック確定 */
 function confirmCB(preset){
   var d=new Date();
-  if(preset.mode==="add"){d=new Date(Date.now()+preset.min*60000)}
+  var noTime=false;
+  if(preset.mode==="later"){
+    /* v27: 時間未定 - 今日の終業時刻(18:00)を仮セットするが「未定」フラグ */
+    d=new Date();d.setHours(18,0,0,0);noTime=true;
+  }
+  else if(preset.mode==="today"){
+    /* 本日中 - 現在から2時間後を目安にセット */
+    d=new Date(Date.now()+120*60000);
+  }
+  else if(preset.mode==="add"){d=new Date(Date.now()+preset.min*60000)}
   else if(preset.mode==="tomorrow"){d=new Date();d.setDate(d.getDate()+1);d.setHours(preset.h,preset.m,0,0)}
   else if(preset.mode==="plus"){d=new Date();d.setDate(d.getDate()+preset.d);d.setHours(preset.h,preset.m,0,0)}
   else if(preset.mode==="custom"){
@@ -934,11 +1116,11 @@ function confirmCB(preset){
     d=new Date(cbCustomDt);if(isNaN(d.getTime())){flash("⚠️ 不正な日時");return}
   }
   var cur=rows[ci]||null;
-  var entry={id:Date.now(),at:d.toISOString(),
+  var entry={id:Date.now(),at:d.toISOString(),noTime:noTime,
     co:cur?gf(cur,"co"):"",pe:cur?gf(cur,"pe"):"",ph:cur?gf(cur,"ph"):"",
     memo:cbMemo,createdAt:new Date().toISOString(),done:false,rowIdx:ci};
   cbs.unshift(entry);sv("cb-"+U.id,cbs);
-  gasPost({type:"callback",name:U.nm,pin:U.pin,sheet:U.sh,scheduledAt:dtJP(d),company:entry.co,person:entry.pe,phone:entry.ph,memo:entry.memo});
+  gasPost({type:"callback",name:U.nm,pin:U.pin,sheet:U.sh,scheduledAt:noTime?(dtJP(d).slice(0,10)+" 時間未定"):dtJP(d),company:entry.co,person:entry.pe,phone:entry.ph,memo:entry.memo});
   showCB=false;
   /* そのまま結果保存も進める */
   selRes="cb";saveCall();
@@ -1013,6 +1195,12 @@ function doPunch(type){
     var avgPerHr=activeHours>0?Math.round(rep.totalCalls*10/activeHours)/10:0;
     var bodyDetail="";
     hr.forEach(function(b){bodyDetail+=b.label+": "+b.count+"件"+(b.sec?" ("+fmtSec(b.sec)+")":"")+(b.apo?" 🎯"+b.apo:"")+"\n"});
+    /* v27: 本日最後に架電した会社名 (今日のhist先頭=最新) */
+    var lastCoToday="";
+    for(var lci=0;lci<hist.length;lci++){
+      if(hist[lci].d===td()){lastCoToday=hist[lci].co||"";break}
+    }
+    if(!lastCoToday)lastCoToday=lastCalledCo||"(記録なし)";
     var subject="【退勤通知】"+dateJP()+" "+U.nm+" - 架電"+rep.totalCalls+"件 / アポ"+rep.totalApos+"件";
     /* v17: hist 0件で勤務時間が長い場合の警告バナー */
     var emptyWarning="";
@@ -1031,10 +1219,12 @@ function doPunch(type){
       "■ 実働時間: "+workStr+"\n\n"+
       "----- 本日の架電実績 -----\n"+
       "架電数: "+rep.totalCalls+"件\n"+
+      "発信ボタン回数: "+autoCallCount+"件\n"+
       "アポ獲得: "+rep.totalApos+"件\n"+
       "アポ率: "+rate+"%\n"+
       "通話時間合計: "+fmtSec(rep.totalSec)+"\n"+
-      "稼働時間あたり平均: "+avgPerHr+"件/時\n\n"+
+      "稼働時間あたり平均: "+avgPerHr+"件/時\n"+
+      "📍 最後に架電した会社: "+lastCoToday+"\n\n"+
       "----- 1時間ごと内訳 -----\n"+
       bodyDetail+"\n"+
       "----- 結果別内訳 -----\n"+
@@ -1128,6 +1318,7 @@ function doPunch(type){
       endStepMax:rep.endStepMax,endStepMaxCount:rep.endStepMaxCount,
       outsCount:rep.outTexts.length,
       outsList:rep.outTexts.slice(0,30),  /* 最大30件まで送信 */
+      lastCompany:lastCoToday,  /* v27: 最後に架電した会社名 */
       subject:subject,body:body,to:DAILY_REPORT_TO
     });
     /* v26: 発信件数の別途通知 (hr.ashikaga@gmail.com → tereapo01.sukima@gmail.com) */
@@ -1141,6 +1332,7 @@ function doPunch(type){
       "■ 発信件数(発信ボタン押下回数): "+autoCallCount+"件\n"+
       "■ 架電結果記録数: "+rep.totalCalls+"件\n"+
       "■ アポ獲得: "+rep.totalApos+"件\n"+
+      "■ 最後に架電した会社: "+lastCoToday+"\n"+
       "■ 実働時間: "+workStr+"\n\n"+
       "※ この通知は発信件数の集計用です。\n"+
       "送信日時: "+dateJP()+" "+now().slice(0,5)+"\n";
@@ -1151,6 +1343,7 @@ function doPunch(type){
       dialCount:autoCallCount,
       totalCalls:rep.totalCalls,
       totalApos:rep.totalApos,
+      lastCompany:lastCoToday,
       workDuration:workStr,
       subject:dialSubject,body:dialBody
     });
@@ -1818,13 +2011,26 @@ if(showConfirm){
 }
 
 /* コールバックダイアログ */
+/* v27: プログレッシブダイヤラー カウントダウンオーバーレイ */
+if(autoDialRemain>0){
+  h+='<div style="position:fixed;inset:0;background:rgba(15,23,42,.85);z-index:300;display:flex;align-items:center;justify-content:center;padding:24px"><div style="background:#fff;border-radius:24px;padding:32px 24px;max-width:340px;width:100%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5)">';
+  h+='<div style="font-size:13px;color:#f59e0b;font-weight:800;letter-spacing:.05em">⚡ 連続発信モード</div>';
+  h+='<div style="font-size:60px;font-weight:800;color:#f59e0b;line-height:1.1;margin:8px 0;font-family:monospace">'+'<span id="autoDialCount">'+autoDialRemain+'</span><span style="font-size:24px">秒</span></div>';
+  h+='<div style="font-size:13px;color:#64748b;margin-bottom:4px">後に自動で発信します</div>';
+  h+='<div style="font-size:16px;font-weight:800;color:#1a237e;margin-bottom:4px">'+autoDialCo+'</div>';
+  h+='<div style="font-size:18px;font-weight:700;color:#059669;font-family:monospace;margin-bottom:20px">'+fmtPhone(autoDialPhone)+'</div>';
+  h+='<button id="autoDialNow" style="width:100%;padding:16px;border:none;border-radius:14px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;font-size:16px;font-weight:800;margin-bottom:8px">📞 今すぐ発信</button>';
+  h+='<button id="autoDialStop" style="width:100%;padding:14px;border:2px solid #ef4444;border-radius:14px;background:#fef2f2;color:#dc2626;font-size:14px;font-weight:800">■ 停止（オートコールOFF）</button>';
+  h+='</div></div>';
+}
 if(showCB){
   h+='<div class="bottomSheet" style="position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:280;display:flex;align-items:flex-end;justify-content:center"><div class="glass" style="background:#fff;border-radius:20px 20px 0 0;width:100%;max-width:480px;max-height:85vh;overflow-y:auto" onclick="event.stopPropagation()">';
-  h+='<div style="padding:14px 16px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center"><b style="color:#f59e0b;font-size:16px">📞 再架電をいつにしますか？</b><button id="cbClose" style="font-size:22px;color:#94a3b8;background:none;border:none;width:32px;height:32px">✕</button></div>';
+  h+='<div style="padding:14px 16px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center"><b style="color:#f59e0b;font-size:16px">📞 再架電（かけ直し）の登録</b><button id="cbClose" style="font-size:22px;color:#94a3b8;background:none;border:none;width:32px;height:32px">✕</button></div>';
   h+='<div style="padding:14px 16px">';
-  h+='<div style="font-size:11px;color:#64748b;margin-bottom:6px">⚡ クイック設定</div>';
+  h+='<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px;margin-bottom:14px;font-size:11px;color:#92400e;line-height:1.6">💡 <b>かけ直しの予定として記録します。</b><br>時間が決まっていなくても「⏰ 時間未定」で保存できます。後で「再架電」一覧から確認できます。</div>';
+  h+='<div style="font-size:11px;color:#64748b;margin-bottom:6px">いつかけ直しますか？（タップで保存）</div>';
   h+='<div id="cbPresets" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:14px"></div>';
-  h+='<div style="font-size:11px;color:#64748b;margin-bottom:4px">📅 カスタム日時</div>';
+  h+='<div style="font-size:11px;color:#64748b;margin-bottom:4px">📅 日時を細かく指定する場合</div>';
   h+='<input id="cbCustom" type="datetime-local" value="'+(cbCustomDt||"")+'" style="width:100%;padding:12px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:15px;box-sizing:border-box;margin-bottom:6px">';
   h+='<button id="cbSubmit" style="width:100%;padding:12px;border:none;border-radius:10px;background:#f59e0b;color:#fff;font-weight:800;font-size:14px;margin-bottom:14px">📞 この日時で登録</button>';
   h+='<div style="font-size:11px;color:#64748b;margin-bottom:4px">📝 メモ（任意：相手の状況、伝言内容など）</div>';
@@ -1999,6 +2205,7 @@ h+='<main style="flex:1;overflow-y:auto;padding:10px">';
 if(V==="admin"){
   h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap"><div style="font-size:17px;font-weight:800;color:#1a237e;flex:1">👑 管理者ダッシュボード</div>';
   h+='<button id="testGasA" style="padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#475569;font-size:11px;font-weight:700">🌐 GAS接続テスト</button>';
+  h+='<button id="adSyncAll" style="padding:8px 12px;border:1.5px solid #10b981;border-radius:8px;background:#ecfdf5;color:#059669;font-size:11px;font-weight:700">'+(adminSyncing?"⏳ 同期中...":"🔄 全員の状況を同期")+'</button>';
   h+='<button id="adClrAll" style="padding:8px 12px;border:1.5px solid #ef4444;border-radius:8px;background:#fef2f2;color:#dc2626;font-size:11px;font-weight:700">🗑 全員リストクリア</button>';
   h+='</div>';
   /* 全体KPI (本日) */
@@ -2077,6 +2284,14 @@ if(V==="admin"){
     h+='<div style="text-align:center;padding:6px 3px;background:#fef3c7;border-radius:6px"><div style="font-size:16px;font-weight:800;color:#f59e0b">'+pendingCB+'</div><div style="color:#94a3b8">CB</div></div>';
     h+='</div>';
     h+='<div style="font-size:11px;color:#64748b;margin-bottom:8px;padding:6px 8px;background:#f8fafc;border-radius:6px">⏱ 出:'+(ta.ci?ta.ci.slice(0,5):"—")+' / 退:'+(ta.co?ta.co.slice(0,5):"—")+' / 休:'+(ta.bs?ta.bs.slice(0,5):"—")+'〜'+(ta.be?ta.be.slice(0,5):"—")+'</div>';
+    /* v27: リスト進捗・最後に架電した会社 */
+    var prog=appointerProgress(s.id);
+    var progPct=prog.total>0?Math.round(prog.doneInList*100/prog.total):0;
+    h+='<div style="font-size:11px;margin-bottom:8px;padding:8px;background:#eff6ff;border-radius:6px;border:1px solid #dbeafe">';
+    h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span style="color:#1d4ed8;font-weight:800">📍 リスト進捗</span><span style="color:#1d4ed8;font-weight:800">'+prog.doneInList+' / '+prog.total+'件 ('+progPct+'%)</span></div>';
+    h+='<div style="background:#dbeafe;border-radius:4px;height:8px;margin-bottom:5px"><div style="background:#3b82f6;height:100%;width:'+progPct+'%;border-radius:4px"></div></div>';
+    h+='<div style="color:#475569;font-size:10px">最後に架電: <b style="color:#1a237e">'+(prog.lastCo||"—")+'</b></div>';
+    h+='</div>';
     /* v15: 退勤レポート送信状態 */
     var ldrA=ld("lastDailyReport-"+s.id);
     if(ldrA){
@@ -2151,7 +2366,10 @@ else if(V==="home"&&!isA){
       if(AUTO_MODE){
         h+='<div style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:10px;color:#92400e">応答なし判定: <select id="autoSec" style="padding:3px 6px;border:1px solid #fcd34d;border-radius:6px;background:#fff;font-size:11px;font-weight:700;color:#92400e">';
         [10,15,20,25].forEach(function(s){h+='<option value="'+s+'"'+(AUTO_NO_ANSWER_SEC===s?" selected":"")+'>'+s+'秒</option>'});
-        h+='</select> 未満で切れたら次へ <span style="margin-left:auto;font-weight:800">📞 本日'+autoCallCount+'件</span></div>';
+        h+='</select> 未満で次へ</div>';
+        h+='<div style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:10px;color:#92400e">次の発信まで: <select id="autoDelay" style="padding:3px 6px;border:1px solid #fcd34d;border-radius:6px;background:#fff;font-size:11px;font-weight:700;color:#92400e">';
+        [5,10,15,20].forEach(function(s){h+='<option value="'+s+'"'+(AUTO_DIAL_DELAY===s?" selected":"")+'>'+s+'秒後</option>'});
+        h+='</select> に自動発信 <span style="margin-left:auto;font-weight:800">📞 本日'+autoCallCount+'件</span></div>';
       }
       h+='</div>';
       h+='<a id="phLnk" href="tel:'+telPhone(phone)+'" style="display:block;margin-top:10px;padding:24px 14px;background:linear-gradient(135deg,#10b981,#059669);border:none;border-radius:16px;text-align:center;text-decoration:none;box-shadow:0 8px 22px rgba(16,185,129,.32)">';
@@ -2184,6 +2402,15 @@ else if(V==="home"&&!isA){
   h+='<button id="mst" style="padding:14px 8px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;font-size:11px;font-weight:700;text-align:center"><div style="font-size:20px">📊</div>架電集計</button>';
   h+='<button id="mhist" style="padding:14px 8px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;font-size:11px;font-weight:700;text-align:center"><div style="font-size:20px">📜</div>履歴</button>';
   h+='<button id="msh" style="padding:14px 8px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;font-size:11px;font-weight:700;text-align:center"><div style="font-size:20px">📅</div>シフト</button>';
+  h+='</div>';
+  /* v27: 手入力発信 (リストにない番号へ発信・カウントされる) */
+  h+='<div style="background:#fff;border-radius:14px;padding:12px;border:1px solid #e2e8f0;margin-bottom:10px">';
+  h+='<div style="font-size:12px;font-weight:800;color:#475569;margin-bottom:8px">⌨️ 手入力で発信（リスト外の番号）</div>';
+  h+='<div style="display:flex;gap:6px">';
+  h+='<input id="manualNum" type="tel" inputmode="tel" value="'+(manualDialNum||"")+'" placeholder="例: 0312345678" style="flex:1;padding:11px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:15px;font-family:monospace;box-sizing:border-box">';
+  h+='<button id="manualDialBtn" style="padding:11px 18px;border:none;border-radius:10px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;font-size:14px;font-weight:800;white-space:nowrap">📞 発信</button>';
+  h+='</div>';
+  h+='<div style="font-size:9px;color:#94a3b8;margin-top:5px">※ ここからの発信も本日の発信件数にカウントされます</div>';
   h+='</div>';
 }
 
@@ -2630,6 +2857,7 @@ B("clrCur",function(){if(U&&U!=="admin"){showImp=false;clearList(U.id)}});
 B("clrAll",function(){showImp=false;clearList("all")});
 B("adClrAll",function(){clearList("all")});
 B("testGasA",testGasConnection);
+B("adSyncAll",function(){adminSyncAll()});
 document.querySelectorAll("[data-clr]").forEach(function(el){
   el.addEventListener("click",function(){clearList(el.getAttribute("data-clr"))});
 });
@@ -2657,6 +2885,39 @@ document.querySelectorAll("[data-vap]").forEach(function(el){
 
 /* v12: 番号コピー */
 B("cpPh",function(){var btn=document.getElementById("cpPh");if(btn)copyPhoneNum(btn.getAttribute("data-cpph"))});
+
+/* v27: 手入力発信ハンドラ */
+var manualNumEl=document.getElementById("manualNum");
+if(manualNumEl)manualNumEl.addEventListener("input",function(){manualDialNum=manualNumEl.value});
+B("manualDialBtn",function(){
+  var el=document.getElementById("manualNum");
+  var raw=el?el.value.trim():"";
+  if(!raw){flash("⚠️ 電話番号を入力してください");return}
+  var tel=telPhone(raw);
+  if(tel.length<8){flash("⚠️ 正しい電話番号を入力してください");return}
+  manualDialNum=raw;
+  /* 発信カウント */
+  bumpCallCount();
+  setLastCalled("手入力: "+raw);
+  /* 履歴に手入力発信として記録 */
+  var entry={id:Date.now(),u:U.id,co:"(手入力)"+raw,pe:"",ph:raw,
+    r:"other",dur:"0:00",ck:"0/"+CHECKS.length,bs:"なし",bsArr:[],
+    endStep:"",out:"",memo:"手入力発信",
+    d:td(),tm:now().slice(0,5),i:-1,manual:true};
+  hist.unshift(entry);
+  if(hist.length>1000)hist=hist.slice(0,1000);
+  sv("h-"+U.id,hist);
+  gasPost({type:"callResult",name:U.nm,pin:U.pin,sheet:U.sh,
+    date:dateJP(),time:now().slice(0,5),
+    company:"(手入力)"+raw,phone:raw,person:"",
+    result:"その他",duration:"0:00",checkedCount:"0/"+CHECKS.length,
+    bousou:"なし",bousouArr:[],endStep:"",outText:"",memo:"手入力発信"});
+  vib([40,30,60]);
+  flash("📞 手入力発信 ("+autoCallCount+"件目)");
+  render();
+  /* tel: で発信 */
+  try{window.location.href="tel:"+tel}catch(e){}
+});
 
 B("sc",function(){
   /* 手動でチェックリストへ：タイマーは0から（手動の場合は通話自動検出無し） */
@@ -2816,6 +3077,7 @@ if(phLnk)phLnk.addEventListener("click",onPhoneTap);
 B("autoToggle",function(){
   AUTO_MODE=!AUTO_MODE;
   sv("autoMode-"+U.id,AUTO_MODE);
+  if(!AUTO_MODE)cancelAutoDial();  /* v27: OFFにしたらカウントダウン停止 */
   vib(AUTO_MODE?[40,30,40]:30);
   flash(AUTO_MODE?"⚡ オートコールON - 連続発信できます":"オートコールOFF");
   render();
@@ -2824,6 +3086,21 @@ var autoSecEl=document.getElementById("autoSec");
 if(autoSecEl)autoSecEl.addEventListener("change",function(){
   AUTO_NO_ANSWER_SEC=parseInt(autoSecEl.value)||15;
   sv("autoSec-"+U.id,AUTO_NO_ANSWER_SEC);
+});
+var autoDelayEl=document.getElementById("autoDelay");
+if(autoDelayEl)autoDelayEl.addEventListener("change",function(){
+  AUTO_DIAL_DELAY=parseInt(autoDelayEl.value)||10;
+  sv("autoDelay-"+U.id,AUTO_DIAL_DELAY);
+});
+/* v27: プログレッシブダイヤラー カウントダウンのボタン */
+B("autoDialNow",function(){doAutoDial()});
+B("autoDialStop",function(){
+  cancelAutoDial();
+  AUTO_MODE=false;
+  sv("autoMode-"+U.id,false);
+  vib([60,40,60]);
+  flash("■ オートコールを停止しました");
+  render();
 });
 
 /* 確認ダイアログ */
@@ -2898,8 +3175,8 @@ if(rb){
   RESULTS.forEach(function(r,idx){
     var b=document.createElement("button");
     var sel=selRes===r.id;
-    b.style.cssText="position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;padding:12px 4px;border:2px solid "+(sel?r.c:"#e2e8f0")+";border-radius:12px;background:"+(sel?r.c+"15":"#fff")+";min-height:62px;font-family:inherit";
-    b.innerHTML='<span class="pc-only" style="position:absolute;top:3px;right:5px;font-size:9px;color:'+(sel?r.c:"#94a3b8")+';font-weight:700;background:'+(sel?"#fff":"#f1f5f9")+';border-radius:3px;padding:1px 4px;border:1px solid '+(sel?r.c+"40":"#e2e8f0")+'">'+(idx+1)+'</span><span style="font-size:22px">'+r.i+'</span><span style="font-size:11px;font-weight:700;color:'+(sel?r.c:"#64748b")+'">'+r.l+'</span>';
+    b.style.cssText="position:relative;display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 4px;border:2px solid "+(sel?r.c:"#e2e8f0")+";border-radius:12px;background:"+(sel?r.c+"15":"#fff")+";min-height:64px;font-family:inherit";
+    b.innerHTML='<span class="pc-only" style="position:absolute;top:3px;right:5px;font-size:9px;color:'+(sel?r.c:"#94a3b8")+';font-weight:700;background:'+(sel?"#fff":"#f1f5f9")+';border-radius:3px;padding:1px 4px;border:1px solid '+(sel?r.c+"40":"#e2e8f0")+'">'+(idx+1)+'</span><span style="font-size:20px">'+r.i+'</span><span style="font-size:11px;font-weight:700;color:'+(sel?r.c:"#64748b")+'">'+r.l+'</span>'+(r.sub?'<span style="font-size:8px;color:'+(sel?r.c:"#94a3b8")+'">'+r.sub+'</span>':'');
     b.onclick=function(){selRes=r.id;vib(20);render()};
     rb.appendChild(b);
   });

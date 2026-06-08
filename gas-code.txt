@@ -1,5 +1,5 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v26
+// 川嶋メソッド テレアポ管理 — GAS完全版 v27
 // メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
 // 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
 //
@@ -53,7 +53,7 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         message: "GAS Web App is alive",
-        version: "v26",
+        version: "v27",
         timestamp: new Date().toISOString(),
         note: "Use ?pin=XXX to fetch list, or POST with type field"
       })).setMimeType(ContentService.MimeType.JSON);
@@ -161,7 +161,7 @@ function doPost(e) {
         status: "ok",
         message: "GAS connected",
         timestamp: new Date().toISOString(),
-        version: "v26"
+        version: "v27"
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -620,7 +620,8 @@ function doPost(e) {
         "暴走S1", "暴走S3", "暴走S4", "暴走S5", "暴走最多",
         "終話S1", "終話S2", "終話S3", "終話S4", "終話S5", "終話最多",
         "アウト件数",
-        "送信日時"
+        "送信日時",
+        "発信件数", "最後の架電会社"
       ]);
       sh6.appendRow([
         d.date || "", d.name || "", d.pin || "",
@@ -641,7 +642,8 @@ function doPost(e) {
         d.endStep1 || 0, d.endStep2 || 0, d.endStep3 || 0, d.endStep4 || 0, d.endStep5 || 0,
         (d.endStepMax ? d.endStepMax.replace("S","ステップ") : ""),
         d.outsCount || 0,
-        new Date()
+        new Date(),
+        d.dialCount || 0, d.lastCompany || ""
       ]);
       // v19: アウト詳細シート (各日の切り返しできなかった発言を保存 - コーチング材料)
       if (d.outsList && d.outsList.length > 0) {
@@ -742,7 +744,7 @@ function doPost(e) {
       try {
         var adminSsD = SpreadsheetApp.openById(ADMIN_SHEET_ID);
         var dialSh = ensureSheet(adminSsD, "発信件数", [
-          "日付", "アポインター", "PIN", "発信件数", "架電結果数", "アポ数", "実働時間", "送信日時"
+          "日付", "アポインター", "PIN", "発信件数", "架電結果数", "アポ数", "実働時間", "最後の架電会社", "送信日時"
         ]);
         // upsert: 同じ日付×アポインターがあれば更新
         var dialData = dialSh.getDataRange().getValues();
@@ -756,7 +758,7 @@ function doPost(e) {
         var dialRow = [
           d.date || "", d.name || "", d.pin || "",
           d.dialCount || 0, d.totalCalls || 0, d.totalApos || 0,
-          d.workDuration || "", new Date()
+          d.workDuration || "", d.lastCompany || "", new Date()
         ];
         if (dialFoundRow > 0) {
           dialSh.getRange(dialFoundRow, 1, 1, dialRow.length).setValues([dialRow]);
@@ -772,7 +774,8 @@ function doPost(e) {
           "日付: " + d.date + "\n" +
           "発信件数: " + (d.dialCount || 0) + "件\n" +
           "架電結果数: " + (d.totalCalls || 0) + "件\n" +
-          "アポ数: " + (d.totalApos || 0) + "件\n"
+          "アポ数: " + (d.totalApos || 0) + "件\n" +
+          "最後に架電した会社: " + (d.lastCompany || "(記録なし)") + "\n"
         );
         var dialQuota = -1;
         try { dialQuota = MailApp.getRemainingDailyQuota(); } catch (e) {}
@@ -917,9 +920,9 @@ function setupSheets() {
       "9時", "10時", "11時", "12時", "13時", "14時", "15時", "16時", "17時",
       "更新日時"
     ]);
-    // v26: 発信件数シート
+    // v26: 発信件数シート (v27: 最後の架電会社を追加)
     ensureSheet(adminSs, "発信件数", [
-      "日付", "アポインター", "PIN", "発信件数", "架電結果数", "アポ数", "実働時間", "送信日時"
+      "日付", "アポインター", "PIN", "発信件数", "架電結果数", "アポ数", "実働時間", "最後の架電会社", "送信日時"
     ]);
     Logger.log("✅ 管理者スプレッドシートのシート初期化完了");
   } catch (e) {

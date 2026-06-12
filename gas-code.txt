@@ -1,11 +1,11 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v27
+// 川嶋メソッド テレアポ管理 — GAS完全版 v31
 // メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
 // 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
 //
 // 必要なシート(タブ):
 //   [メイン]
-//     柏木・園田・堀内・河野・福田・藪内 — 各アポインターの架電リスト (1行目ヘッダー、初回upload時に自動作成)
+//     柏木・園田・堀内・河野・福田・藪内・竹之内 — 各アポインターの架電リスト (1行目ヘッダー、初回upload時に自動作成)
 //     勤怠・架電結果・再架電予定・アポイント・シフト申請 (自動作成)
 //   [管理者用]
 //     退勤レポート — 退勤時の自動集計記録 (自動作成、v14追加)
@@ -34,11 +34,11 @@
 
 var SHEET_ID = "1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM";
 var ADMIN_SHEET_ID = "1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ";  // v14: 管理者用 退勤レポート用
-var PIN_MAP = {"091":"柏木", "092":"園田", "093":"堀内", "094":"河野", "095":"福田", "097":"藪内"};
+var PIN_MAP = {"091":"柏木", "092":"園田", "093":"堀内", "094":"河野", "095":"福田", "097":"藪内", "098":"竹之内"};
 // v18: 全名マップ - 出退勤・履歴・アポでは "河野由香" のような全名で記録される
 // v25: 福田貴美恵 PIN 095 追加
 // v26: 藪内亜希 PIN 097 追加 / 発信件数通知 (dial_count_notify) 追加
-var FULL_NAME_MAP = {"091":"柏木幸代", "092":"園田絵里", "093":"堀内真紀子", "094":"河野由香", "095":"福田貴美恵", "097":"藪内亜希"};
+var FULL_NAME_MAP = {"091":"柏木幸代", "092":"園田絵里", "093":"堀内真紀子", "094":"河野由香", "095":"福田貴美恵", "097":"藪内亜希", "098":"竹之内優子"};
 var SHIFT_NOTIFY_TO = "tereapo01.sukima@gmail.com";
 var DAILY_REPORT_TO = "tereapo01.sukima@gmail.com";  // v14: 退勤レポート通知先
 // v26: 発信件数の通知先 (送信元はGAS実行アカウント hr.ashikaga@gmail.com → この宛先へ)
@@ -53,7 +53,7 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         message: "GAS Web App is alive",
-        version: "v27",
+        version: "v31",
         timestamp: new Date().toISOString(),
         note: "Use ?pin=XXX to fetch list, or POST with type field"
       })).setMimeType(ContentService.MimeType.JSON);
@@ -161,13 +161,13 @@ function doPost(e) {
         status: "ok",
         message: "GAS connected",
         timestamp: new Date().toISOString(),
-        version: "v27"
+        version: "v31"
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
     // ===== v20: idempotency チェック (write系のみ) =====
     // fetch_state は読み取りなのでスキップ (毎回最新を返す必要)
-    var READ_ONLY_TYPES = ["fetch_state"];
+    var READ_ONLY_TYPES = ["fetch_state", "fetch_live", "status_update"];  // v29: 現況系もidempotencyスキップ(常に最新を処理)
     if (d.clientReqId && READ_ONLY_TYPES.indexOf(d.type) < 0) {
       var idempCache = CacheService.getScriptCache();
       var idempKey = "req:" + d.clientReqId;
@@ -317,6 +317,25 @@ function doPost(e) {
           }
         }
       } catch (e) { result.cb = []; result.cbError = String(e); }
+
+      // v28: NGリスト (全アポインター共有) - 最新2000件
+      try {
+        var ngSh = ss2.getSheetByName("NGリスト");
+        result.ngList = [];
+        if (ngSh && ngSh.getLastRow() > 1) {
+          var ngRows = ngSh.getDataRange().getValues();
+          for (var i = ngRows.length - 1; i >= 1 && result.ngList.length < 2000; i--) {
+            // 削除済み(状態=削除)はスキップ
+            if (String(ngRows[i][5] || "") === "削除") continue;
+            result.ngList.push({
+              ph: String(ngRows[i][2] || ""),
+              co: String(ngRows[i][3] || ""),
+              reason: String(ngRows[i][4] || ""),
+              at: ngRows[i][0] ? new Date(ngRows[i][0]).toISOString() : ""
+            });
+          }
+        }
+      } catch (e) { result.ngList = []; result.ngError = String(e); }
 
       // 6. シフト (shiftDays) - 申請履歴の最新月分のみ取得
       try {
@@ -737,6 +756,135 @@ function doPost(e) {
       }
     }
 
+    // ===== v29: リアルタイム現況 (ハートビート受信) =====
+    // アポインター端末から2分ごと+操作時に送信される現況を「現況」シートにupsert
+    // 管理者は別端末・別エリアからでも fetch_live で全員の状況を取得できる
+    if (d.type === "status_update") {
+      try {
+        var lvSs = SpreadsheetApp.openById(ADMIN_SHEET_ID);
+        var lvSh = ensureSheet(lvSs, "現況", [
+          "アポインター", "PIN", "日付", "状態",
+          "リスト総数", "消化数", "現在位置", "現在の会社", "最後の架電会社",
+          "発信件数", "結果数", "アポ数",
+          "9時", "10時", "11時", "12時", "13時", "14時", "15時", "16時", "17時", "18時",
+          "更新日時"
+        ]);
+        // upsert: アポインター名で1行を維持 (日付が変わっても上書き=常に最新)
+        var lvData = lvSh.getDataRange().getValues();
+        var lvRow = -1;
+        for (var li = 1; li < lvData.length; li++) {
+          if (String(lvData[li][0]) === String(d.name)) { lvRow = li + 1; break; }
+        }
+        var lvVals = [
+          d.name || "", d.pin || "", d.date || "", d.status || "",
+          d.listTotal || 0, d.listDone || 0, d.curIdx || 0,
+          d.curCo || "", d.lastCo || "",
+          d.dialCount || 0, d.resultCount || 0, d.apoCount || 0,
+          d.h9 || 0, d.h10 || 0, d.h11 || 0, d.h12 || 0, d.h13 || 0,
+          d.h14 || 0, d.h15 || 0, d.h16 || 0, d.h17 || 0, d.h18 || 0,
+          d.ts || new Date().toISOString()
+        ];
+        if (lvRow > 0) {
+          lvSh.getRange(lvRow, 1, 1, lvVals.length).setValues([lvVals]);
+        } else {
+          lvSh.appendRow(lvVals);
+        }
+      } catch (lvErr) {
+        Logger.log("status_update error: " + lvErr);
+      }
+    }
+
+    // ===== v29: 全員の現況取得 (管理者ダッシュボード用・1リクエストで全員分) =====
+    if (d.type === "fetch_live") {
+      try {
+        var flSs = SpreadsheetApp.openById(ADMIN_SHEET_ID);
+        var flSh = flSs.getSheetByName("現況");
+        var live = [];
+        var todayKey = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd");
+        if (flSh && flSh.getLastRow() > 1) {
+          var flData = flSh.getDataRange().getValues();
+          for (var fi = 1; fi < flData.length; fi++) {
+            var r = flData[fi];
+            // 本日のデータのみ返す (日付列はJP形式 yyyy/MM/dd なので正規化して比較)
+            var rowDateKey = formatDateKey(r[2]);
+            var isToday = (rowDateKey === todayKey);
+            live.push({
+              name: String(r[0] || ""), pin: String(r[1] || ""),
+              date: String(r[2] || ""), status: isToday ? String(r[3] || "") : "未出勤",
+              listTotal: isToday ? (r[4] || 0) : 0, listDone: isToday ? (r[5] || 0) : 0,
+              curIdx: isToday ? (r[6] || 0) : 0,
+              curCo: isToday ? String(r[7] || "") : "", lastCo: isToday ? String(r[8] || "") : "",
+              dialCount: isToday ? (r[9] || 0) : 0, resultCount: isToday ? (r[10] || 0) : 0,
+              apoCount: isToday ? (r[11] || 0) : 0,
+              h9: isToday?(r[12]||0):0, h10: isToday?(r[13]||0):0, h11: isToday?(r[14]||0):0,
+              h12: isToday?(r[15]||0):0, h13: isToday?(r[16]||0):0, h14: isToday?(r[17]||0):0,
+              h15: isToday?(r[18]||0):0, h16: isToday?(r[19]||0):0, h17: isToday?(r[20]||0):0,
+              h18: isToday?(r[21]||0):0,
+              ts: isToday ? String(r[22] || "") : ""
+            });
+          }
+        }
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "ok", live: live, timestamp: new Date().toISOString()
+        })).setMimeType(ContentService.MimeType.JSON);
+      } catch (flErr) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: String(flErr)
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v28: NGリスト登録 (全アポインター共有・架電禁止) =====
+    if (d.type === "ng_add") {
+      try {
+        var ngSs = SpreadsheetApp.openById(SHEET_ID);
+        var ngSheet = ensureSheet(ngSs, "NGリスト", [
+          "登録日時", "登録者", "電話番号", "会社名", "理由", "状態"
+        ]);
+        // 重複チェック (番号の数字のみ比較)
+        var ngNorm = String(d.phone || "").replace(/[^\d]/g, "");
+        var existing = ngSheet.getDataRange().getValues();
+        var found = false;
+        for (var ni = 1; ni < existing.length; ni++) {
+          var exNorm = String(existing[ni][2] || "").replace(/[^\d]/g, "");
+          if (exNorm === ngNorm && String(existing[ni][5] || "") !== "削除") { found = true; break; }
+        }
+        if (!found) {
+          ngSheet.appendRow([
+            new Date(), d.name || "", d.phone || "", d.company || "", d.reason || "", "有効"
+          ]);
+          Logger.log("NG added: " + d.phone + " by " + d.name);
+        } else {
+          Logger.log("NG already exists: " + d.phone);
+        }
+      } catch (ngErr) {
+        Logger.log("ng_add error: " + ngErr);
+      }
+    }
+
+    // ===== v28: NGリスト解除 =====
+    if (d.type === "ng_remove") {
+      try {
+        var ngSs2 = SpreadsheetApp.openById(SHEET_ID);
+        var ngSheet2 = ngSs2.getSheetByName("NGリスト");
+        if (ngSheet2) {
+          var ngNorm2 = String(d.phone || "").replace(/[^\d]/g, "");
+          var ngData2 = ngSheet2.getDataRange().getValues();
+          for (var nj = 1; nj < ngData2.length; nj++) {
+            var exN2 = String(ngData2[nj][2] || "").replace(/[^\d]/g, "");
+            if (exN2 === ngNorm2) {
+              // 状態列(6列目)を「削除」に更新 (物理削除しない=監査用)
+              ngSheet2.getRange(nj + 1, 6).setValues([["削除"]]);
+              Logger.log("NG removed: " + d.phone + " by " + d.name);
+              break;
+            }
+          }
+        }
+      } catch (ngErr2) {
+        Logger.log("ng_remove error: " + ngErr2);
+      }
+    }
+
     // ===== 発信件数通知 (v26追加) =====
     // 退勤時に発信ボタン押下回数を tereapo01.sukima へ通知
     // 送信元: このGASの実行アカウント (hr.ashikaga@gmail.com)
@@ -894,6 +1042,8 @@ function setupSheets() {
   ensureSheet(ss, "架電結果", ["名前", "日付", "時刻", "会社名", "電話番号", "担当者",
     "結果", "通話時間", "チェック数", "暴走", "切り返しアウト", "メモ"]);
   ensureSheet(ss, "再架電予定", ["登録日時", "名前", "再架電予定日時", "会社名", "電話番号", "担当者", "メモ", "状態"]);
+  // v28: NGリスト (全アポインター共有・架電禁止)
+  ensureSheet(ss, "NGリスト", ["登録日時", "登録者", "電話番号", "会社名", "理由", "状態"]);
   ensureSheet(ss, "アポイント", ["登録日", "報告者", "案件名", "商談日付", "商談時間",
     "法人名", "電話番号", "担当者", "性別", "役職", "メール", "住所", "アポ日時", "人柄"]);
   ensureSheet(ss, "シフト申請", ["申請日時", "種別", "申請者", "PIN", "対象月",
@@ -923,6 +1073,14 @@ function setupSheets() {
     // v26: 発信件数シート (v27: 最後の架電会社を追加)
     ensureSheet(adminSs, "発信件数", [
       "日付", "アポインター", "PIN", "発信件数", "架電結果数", "アポ数", "実働時間", "最後の架電会社", "送信日時"
+    ]);
+    // v29: 現況シート (リアルタイムモニタリング - アポインター毎1行upsert)
+    ensureSheet(adminSs, "現況", [
+      "アポインター", "PIN", "日付", "状態",
+      "リスト総数", "消化数", "現在位置", "現在の会社", "最後の架電会社",
+      "発信件数", "結果数", "アポ数",
+      "9時", "10時", "11時", "12時", "13時", "14時", "15時", "16時", "17時", "18時",
+      "更新日時"
     ]);
     Logger.log("✅ 管理者スプレッドシートのシート初期化完了");
   } catch (e) {
@@ -1118,6 +1276,10 @@ var APPOINTER_DRIVE_MAP = {
   "藪内": {
     email: "yabuuchi.sukimagroup@gmail.com",
     folder_name: "藪内_CallRecordings"
+  },
+  "竹之内": {
+    email: "takenouchi.sukimagroup@gmail.com",
+    folder_name: "竹之内_CallRecordings"
   }
 };
 

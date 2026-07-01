@@ -1,5 +1,5 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v35
+// 川嶋メソッド テレアポ管理 — GAS完全版 v38
 // メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
 // 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
 //
@@ -53,7 +53,7 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         message: "GAS Web App is alive",
-        version: "v35",
+        version: "v38",
         timestamp: new Date().toISOString(),
         note: "Use ?pin=XXX to fetch list, or POST with type field"
       })).setMimeType(ContentService.MimeType.JSON);
@@ -161,7 +161,7 @@ function doPost(e) {
         status: "ok",
         message: "GAS connected",
         timestamp: new Date().toISOString(),
-        version: "v35"
+        version: "v38"
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -489,6 +489,7 @@ function doPost(e) {
             (d.note ? "\n差戻理由: " + d.note : "")
           );
         } catch (apMailErr) {}
+        logAudit("シフト" + newStatus, "管理者", (d.name || FULL_NAME_MAP[d.pin] || d.pin) + " / " + d.month, d.note || "");
         return ContentService.createTextOutput(JSON.stringify({
           status: "ok", pin: d.pin, month: d.month, newStatus: newStatus
         })).setMimeType(ContentService.MimeType.JSON);
@@ -577,6 +578,7 @@ function doPost(e) {
         } else {
           mlSh.appendRow(mlRow);
         }
+        logAudit("面談記録", d.name || "", (d.meetingDate || "") + " / " + (d.partner || ""), d.mstatus || "");
         return ContentService.createTextOutput(JSON.stringify({
           status: "ok", mid: d.mid || "", updated: mlFound > 0
         })).setMimeType(ContentService.MimeType.JSON);
@@ -674,6 +676,7 @@ function doPost(e) {
         }
         if (anFound > 0) { anSh.getRange(anFound, 1, 1, anRow.length).setValues([anRow]); }
         else { anSh.appendRow(anRow); }
+        logAudit(anFound > 0 ? "お知らせ更新" : "お知らせ掲載", "管理者", d.title || "", "重要度:" + (d.importance || "normal") + (d.publish === false ? " / 非掲載" : ""));
         return ContentService.createTextOutput(JSON.stringify({
           status: "ok", aid: d.aid || "", updated: anFound > 0
         })).setMimeType(ContentService.MimeType.JSON);
@@ -692,7 +695,10 @@ function doPost(e) {
         if (adSh && adSh.getLastRow() > 1 && d.aid) {
           var adData = adSh.getDataRange().getValues();
           for (var adi = adData.length - 1; adi >= 1; adi--) {
-            if (String(adData[adi][5]) === String(d.aid)) { adSh.deleteRow(adi + 1); break; }
+            if (String(adData[adi][5]) === String(d.aid)) {
+              logAudit("お知らせ削除", "管理者", String(adData[adi][1] || d.aid), "");
+              adSh.deleteRow(adi + 1); break;
+            }
           }
         }
         return ContentService.createTextOutput(JSON.stringify({ status: "ok", aid: d.aid || "" }))
@@ -725,6 +731,94 @@ function doPost(e) {
       } catch (faErr) {
         return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(faErr) }))
           .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v37: 監査ログ取得 (管理者) - 誰がいつ何をしたかの記録 =====
+    if (d.type === "fetch_audit") {
+      try {
+        var auSs = SpreadsheetApp.openById(SHEET_ID);
+        var auSh = auSs.getSheetByName("監査ログ");
+        var auOut = [];
+        if (auSh && auSh.getLastRow() > 1) {
+          var auRows = auSh.getDataRange().getValues();
+          var auLimit = d.limit ? Number(d.limit) : 300;
+          var auStart = Math.max(1, auRows.length - auLimit);
+          // 列: 0日時,1種別,2実行者,3対象,4詳細
+          for (var aui = auRows.length - 1; aui >= auStart; aui--) {
+            auOut.push({
+              ts: formatDateTimeStr(auRows[aui][0]),
+              action: String(auRows[aui][1] || ""),
+              actor: String(auRows[aui][2] || ""),
+              target: String(auRows[aui][3] || ""),
+              detail: String(auRows[aui][4] || "")
+            });
+          }
+        }
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok", audit: auOut }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (auErr) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(auErr) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v38: 月次勤怠(実働時間)集計 (管理者・報酬計算用) =====
+    // 「退勤レポート」(ADMIN_SHEET_ID)を名前×当月で集計。同一日は重複排除(後勝ち)
+    if (d.type === "fetch_attendance_summary") {
+      try {
+        var asMonth = String(d.month || "");
+        var asSs = SpreadsheetApp.openById(ADMIN_SHEET_ID);
+        var asSh = asSs.getSheetByName("退勤レポート");
+        var asSummary = [];
+        if (asSh && asSh.getLastRow() > 1) {
+          var asRows = asSh.getDataRange().getValues();
+          // 列: 0日付,1アポインター,2PIN,3出勤,4退勤,...,8実働(分),9架電数,10アポ数,...,13通話(秒)
+          var asByName = {};
+          for (var asi = 1; asi < asRows.length; asi++) {
+            var ar = asRows[asi];
+            var anm = String(ar[1] || "").trim();
+            if (!anm) continue;
+            var adk = normalizeYMD(ar[0]); // "yyyy-MM-dd"
+            if (adk.slice(0, 7) !== asMonth) continue;
+            if (!asByName[anm]) {
+              asByName[anm] = { name: anm, pin: String(ar[2] || "") || pinForName(anm), days: {} };
+            }
+            // 同一日は後勝ち(upsert失敗時の重複行を排除)
+            asByName[anm].days[adk] = {
+              min: Number(ar[8]) || 0,
+              calls: Number(ar[9]) || 0,
+              appos: Number(ar[10]) || 0,
+              talkSec: Number(ar[13]) || 0,
+              ci: String(ar[3] || ""), co: String(ar[4] || "")
+            };
+          }
+          Object.keys(asByName).forEach(function(k) {
+            var o = asByName[k];
+            var dkeys = Object.keys(o.days);
+            var workMin = 0, calls = 0, appos = 0, talkSec = 0;
+            dkeys.forEach(function(dk) {
+              workMin += o.days[dk].min;
+              calls += o.days[dk].calls;
+              appos += o.days[dk].appos;
+              talkSec += o.days[dk].talkSec;
+            });
+            o.workDays = dkeys.length;
+            o.workMin = workMin;
+            o.calls = calls;
+            o.appos = appos;
+            o.talkSec = talkSec;
+            asSummary.push(o);
+          });
+          asSummary.sort(function(a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); });
+        }
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "ok", month: asMonth, summary: asSummary
+        })).setMimeType(ContentService.MimeType.JSON);
+      } catch (asErr) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: String(asErr)
+        })).setMimeType(ContentService.MimeType.JSON);
       }
     }
 
@@ -891,14 +985,43 @@ function doPost(e) {
     if (d.type === "callResult") {
       var sh2 = ensureSheet(ss, "架電結果",
         ["名前", "日付", "時刻", "会社名", "電話番号", "担当者",
-         "結果", "通話時間", "チェック数", "暴走", "切り返しアウト", "メモ", "終話ステップ"]);
+         "結果", "通話時間", "チェック数", "暴走", "切り返しアウト", "メモ", "終話ステップ", "CID"]);
       sh2.appendRow([
         d.name, d.date, d.time,
         d.company, d.phone, d.person,
         d.result, d.duration, d.checkedCount,
         d.bousou, d.outText, d.memo,
-        d.endStep || ""
+        d.endStep || "", d.cid || ""
       ]);
+    }
+
+    // ===== v36: 架電結果の取消 (誤タップ復旧) - CIDで直近行を削除 =====
+    if (d.type === "callResult_undo") {
+      try {
+        var cuSs = SpreadsheetApp.openById(SHEET_ID);
+        var cuSh = cuSs.getSheetByName("架電結果");
+        var cuDeleted = false;
+        if (cuSh && cuSh.getLastRow() > 1 && d.cid) {
+          var cuData = cuSh.getDataRange().getValues();
+          // CIDは末尾列(index 13)。名前も一致する直近行を末尾優先で削除
+          for (var cui = cuData.length - 1; cui >= 1; cui--) {
+            if (String(cuData[cui][13]) === String(d.cid) &&
+                (!d.name || String(cuData[cui][0]) === String(d.name))) {
+              logAudit("架電結果取消", d.name || String(cuData[cui][0] || ""), String(cuData[cui][3] || ""), "結果:" + String(cuData[cui][6] || ""));
+              cuSh.deleteRow(cui + 1);
+              cuDeleted = true;
+              break;
+            }
+          }
+        }
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "ok", cid: d.cid || "", deleted: cuDeleted
+        })).setMimeType(ContentService.MimeType.JSON);
+      } catch (cuErr) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: String(cuErr)
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
     }
 
     // ===== 再架電予定 =====
@@ -1373,6 +1496,18 @@ function mapResultLabelToId(label) {
 }
 
 // v32: 申請日時を "YYYY-MM-DD HH:MM" に整形
+// v37: 監査ログ記録 - 誰がいつ何をしたかを「監査ログ」シートに追記
+function logAudit(action, actor, target, detail) {
+  try {
+    var auSs = SpreadsheetApp.openById(SHEET_ID);
+    var auSh = ensureSheet(auSs, "監査ログ", ["日時", "種別", "実行者", "対象", "詳細"]);
+    auSh.appendRow([new Date(), action || "", actor || "", target || "", detail || ""]);
+    // 上限管理: 5500行を超えたら古い1000行をまとめて削除 (稀にしか走らない)
+    var auLast = auSh.getLastRow();
+    if (auLast > 5500) { auSh.deleteRows(2, 1000); }
+  } catch (e) {}
+}
+
 function formatDateTimeStr(v) {
   if (!v) return "";
   try {
@@ -1488,6 +1623,7 @@ function setupSheets() {
   ensureSheet(ss, "面談記録", ["記録日時", "アポインター", "PIN", "面談日", "面談相手",
     "サイクル", "事前メモ", "事後メモ", "ステータス", "ID"]);
   ensureSheet(ss, "お知らせ", ["投稿日時", "タイトル", "本文", "重要度", "掲載", "ID"]);
+  ensureSheet(ss, "監査ログ", ["日時", "種別", "実行者", "対象", "詳細"]);
   Logger.log("✅ メインスプレッドシートのシート初期化完了");
 
   // 管理者用スプレッドシート

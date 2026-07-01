@@ -1,5 +1,5 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v31
+// 川嶋メソッド テレアポ管理 — GAS完全版 v35
 // メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
 // 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
 //
@@ -53,7 +53,7 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         message: "GAS Web App is alive",
-        version: "v31",
+        version: "v35",
         timestamp: new Date().toISOString(),
         note: "Use ?pin=XXX to fetch list, or POST with type field"
       })).setMimeType(ContentService.MimeType.JSON);
@@ -161,7 +161,7 @@ function doPost(e) {
         status: "ok",
         message: "GAS connected",
         timestamp: new Date().toISOString(),
-        version: "v31"
+        version: "v35"
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -351,18 +351,383 @@ function doPost(e) {
                 month: shftRows[i][4],
                 workCount: shftRows[i][5],
                 offCount: shftRows[i][6],
-                totalMins: shftRows[i][7]
+                totalMins: shftRows[i][7],
+                status: String(shftRows[i][9] || "受付")
               });
             }
           }
         }
       } catch (e) { result.shiftHistory = []; result.shiftError = String(e); }
 
+      // 7. v34: 面談(1on1)履歴 - 自分の記録を最新順で返す
+      try {
+        var mtgSh = ss2.getSheetByName("面談記録");
+        result.meetingHistory = [];
+        if (mtgSh && mtgSh.getLastRow() > 1) {
+          var mtgRows = mtgSh.getDataRange().getValues();
+          for (var mmi = mtgRows.length - 1; mmi >= 1; mmi--) {
+            if (String(mtgRows[mmi][2]) === d.pin || nameMatches(mtgRows[mmi][1])) {
+              result.meetingHistory.push({
+                date: normalizeYMD(mtgRows[mmi][3]),
+                partner: String(mtgRows[mmi][4] || ""),
+                cycle: String(mtgRows[mmi][5] || ""),
+                preNote: String(mtgRows[mmi][6] || ""),
+                postNote: String(mtgRows[mmi][7] || ""),
+                status: String(mtgRows[mmi][8] || ""),
+                mid: String(mtgRows[mmi][9] || "")
+              });
+              if (result.meetingHistory.length >= 24) break;
+            }
+          }
+        }
+      } catch (e) { result.meetingHistory = []; }
+
+      // 8. v35: お知らせ (掲載中のみ・新しい順) - 全アポインター共通
+      try {
+        var annSh = ss2.getSheetByName("お知らせ");
+        result.announcements = [];
+        if (annSh && annSh.getLastRow() > 1) {
+          var annRows = annSh.getDataRange().getValues();
+          for (var aii = annRows.length - 1; aii >= 1; aii--) {
+            if (String(annRows[aii][4]) === "false") continue; // 非掲載はスキップ
+            result.announcements.push({
+              ts: formatDateTimeStr(annRows[aii][0]),
+              title: String(annRows[aii][1] || ""),
+              bodyText: String(annRows[aii][2] || ""),
+              importance: String(annRows[aii][3] || "normal"),
+              aid: String(annRows[aii][5] || "")
+            });
+            if (result.announcements.length >= 20) break;
+          }
+        }
+      } catch (e) { result.announcements = []; }
+
       return ContentService.createTextOutput(JSON.stringify(result))
         .setMimeType(ContentService.MimeType.JSON);
     }
 
-    // ===== v18: アポインターのリストをサーバーに保存 =====
+    // ===== v32: 管理者用 全アポインターの当月シフト取得 =====
+    // 「シフト申請」シートから対象月(d.month="YYYY-MM")の最新申請を全員分返す
+    if (d.type === "fetch_all_shifts") {
+      var targetMonth = String(d.month || "");
+      var shSs = SpreadsheetApp.openById(SHEET_ID);
+      var shSh = shSs.getSheetByName("シフト申請");
+      var shiftResult = { status: "ok", month: targetMonth, shifts: [] };
+      if (shSh && shSh.getLastRow() > 1) {
+        var shRows = shSh.getDataRange().getValues();
+        // 列: 0申請日時,1種別,2申請者,3PIN,4対象月,5出勤予定日数,6休み日数,7合計時間(分),8詳細,9状態
+        // 申請者×対象月でグループ化し、後勝ち(appendRowは末尾追加=新しい)で最新のみ採用
+        var latestMap = {};
+        for (var si = 1; si < shRows.length; si++) {
+          var sr = shRows[si];
+          var rowMonth = String(sr[4] || "");
+          if (targetMonth && rowMonth !== targetMonth) continue;
+          var applicant = String(sr[2] || "");
+          if (!applicant) continue;
+          latestMap[applicant + "|" + rowMonth] = sr; // 上書き→最新が残る
+        }
+        Object.keys(latestMap).forEach(function(k){
+          var sr = latestMap[k];
+          shiftResult.shifts.push({
+            name: String(sr[2] || ""),
+            pin: String(sr[3] || ""),
+            month: String(sr[4] || ""),
+            workCount: Number(sr[5] || 0),
+            offCount: Number(sr[6] || 0),
+            totalMins: Number(sr[7] || 0),
+            mode: String(sr[1] || "申請"),
+            appliedAt: formatDateTimeStr(sr[0]),
+            status: String(sr[9] || "受付"),
+            days: parseShiftDetail(sr[8])
+          });
+        });
+        shiftResult.shifts.sort(function(a,b){ return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); });
+      }
+      return ContentService.createTextOutput(JSON.stringify(shiftResult))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // ===== v33: 管理者がシフトを承認/差戻し =====
+    // d.pin, d.month, d.action("approve"|"reject"), d.name, d.note(任意)
+    if (d.type === "shift_approve") {
+      try {
+        var apSs = SpreadsheetApp.openById(SHEET_ID);
+        var apSh = apSs.getSheetByName("シフト申請");
+        if (!apSh || apSh.getLastRow() < 2) {
+          return ContentService.createTextOutput(JSON.stringify({
+            status: "error", message: "シフト申請シートが空です"
+          })).setMimeType(ContentService.MimeType.JSON);
+        }
+        var apRows = apSh.getDataRange().getValues();
+        // 末尾優先(最新)で PIN(列3) & 対象月(列4) が一致する行を探す
+        var targetRow = -1;
+        for (var ai = apRows.length - 1; ai >= 1; ai--) {
+          if (String(apRows[ai][3]) === String(d.pin) && String(apRows[ai][4]) === String(d.month)) {
+            targetRow = ai + 1; // シートは1始まり
+            break;
+          }
+        }
+        if (targetRow < 0) {
+          return ContentService.createTextOutput(JSON.stringify({
+            status: "error", message: "該当するシフト申請が見つかりません (" + d.pin + " / " + d.month + ")"
+          })).setMimeType(ContentService.MimeType.JSON);
+        }
+        var newStatus = (d.action === "approve") ? "承認済" : "差戻し";
+        apSh.getRange(targetRow, 10).setValue(newStatus); // 状態列(10列目)
+        // 差戻し理由を詳細列(9列目)の末尾に追記
+        if (d.action === "reject" && d.note) {
+          var curDetail = String(apSh.getRange(targetRow, 9).getValue() || "");
+          apSh.getRange(targetRow, 9).setValue(curDetail + " ／【差戻理由】" + d.note);
+        }
+        // 通知メール(フォールバック付き)
+        try {
+          var apName = d.name || FULL_NAME_MAP[d.pin] || d.pin;
+          MailApp.sendEmail(
+            SHIFT_NOTIFY_TO,
+            "[シフト" + newStatus + "] " + apName + " " + d.month,
+            apName + " さんの " + d.month + " シフトを「" + newStatus + "」にしました。" +
+            (d.note ? "\n差戻理由: " + d.note : "")
+          );
+        } catch (apMailErr) {}
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "ok", pin: d.pin, month: d.month, newStatus: newStatus
+        })).setMimeType(ContentService.MimeType.JSON);
+      } catch (apErr) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: String(apErr)
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v33: 管理者が当月の架電実績を全アポインター分集計 (顧客請求・報酬計算用) =====
+    // d.month = "YYYY-MM"。「架電結果」シートを名前×当月で集計しアポ率まで算出
+    if (d.type === "fetch_call_summary") {
+      try {
+        var csMonth = String(d.month || "");
+        var csSs = SpreadsheetApp.openById(SHEET_ID);
+        var csSh = csSs.getSheetByName("架電結果");
+        var csSummary = [];
+        if (csSh && csSh.getLastRow() > 1) {
+          var csRows = csSh.getDataRange().getValues();
+          // 列: 0名前,1日付,2時刻,3会社名,4電話番号,5担当者,6結果,7通話時間,...
+          var csByName = {};
+          for (var ci = 1; ci < csRows.length; ci++) {
+            var crow = csRows[ci];
+            var cnm = String(crow[0] || "").trim();
+            if (!cnm) continue;
+            var cdk = normalizeYMD(crow[1]); // "yyyy-MM-dd"
+            if (cdk.slice(0, 7) !== csMonth) continue; // 当月のみ
+            var cres = mapResultLabelToId(crow[6]);
+            var ctalk = parseDurToSec(crow[7]);
+            if (!csByName[cnm]) {
+              csByName[cnm] = {
+                name: cnm, pin: pinForName(cnm),
+                total: 0, appo: 0, cb: 0, absent: 0, refused: 0, wrong: 0, other: 0,
+                talkSec: 0, days: {}
+              };
+            }
+            var co = csByName[cnm];
+            co.total++;
+            if (co[cres] !== undefined && cres !== "name") { co[cres]++; } else { co.other++; }
+            co.talkSec += ctalk;
+            if (!co.days[cdk]) co.days[cdk] = { calls: 0, appo: 0, talkSec: 0 };
+            co.days[cdk].calls++;
+            if (cres === "appo") co.days[cdk].appo++;
+            co.days[cdk].talkSec += ctalk;
+          }
+          Object.keys(csByName).forEach(function(k) {
+            var co = csByName[k];
+            co.reached = co.total - co.absent - co.wrong; // 到達数(不在・不通を除外)
+            co.apoRate = co.reached > 0 ? Math.round(co.appo / co.reached * 1000) / 10 : 0;
+            csSummary.push(co);
+          });
+          csSummary.sort(function(a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); });
+        }
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "ok", month: csMonth, summary: csSummary
+        })).setMimeType(ContentService.MimeType.JSON);
+      } catch (csErr) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: String(csErr)
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v34: 面談(1on1)記録の保存 (予約/実施) - IDでupsert =====
+    // d.pin, d.name, d.mid(ID), d.meetingDate, d.partner, d.cycle, d.preNote, d.postNote, d.mstatus
+    if (d.type === "meeting_log") {
+      try {
+        var mlSs = SpreadsheetApp.openById(SHEET_ID);
+        var mlSh = ensureSheet(mlSs, "面談記録",
+          ["記録日時", "アポインター", "PIN", "面談日", "面談相手", "サイクル", "事前メモ", "事後メモ", "ステータス", "ID"]);
+        var mlRow = [
+          new Date(), d.name || "", d.pin || "", d.meetingDate || "", d.partner || "",
+          d.cycle || "", d.preNote || "", d.postNote || "", d.mstatus || "予約済", d.mid || ""
+        ];
+        // 既存ID行を探して upsert
+        var mlFound = -1;
+        if (d.mid && mlSh.getLastRow() > 1) {
+          var mlData = mlSh.getDataRange().getValues();
+          for (var mi = mlData.length - 1; mi >= 1; mi--) {
+            if (String(mlData[mi][9]) === String(d.mid)) { mlFound = mi + 1; break; }
+          }
+        }
+        if (mlFound > 0) {
+          mlSh.getRange(mlFound, 1, 1, mlRow.length).setValues([mlRow]);
+        } else {
+          mlSh.appendRow(mlRow);
+        }
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "ok", mid: d.mid || "", updated: mlFound > 0
+        })).setMimeType(ContentService.MimeType.JSON);
+      } catch (mlErr) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: String(mlErr)
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v34: 面談削除 (ID指定) =====
+    if (d.type === "meeting_delete") {
+      try {
+        var mdSs = SpreadsheetApp.openById(SHEET_ID);
+        var mdSh = mdSs.getSheetByName("面談記録");
+        if (mdSh && mdSh.getLastRow() > 1 && d.mid) {
+          var mdData = mdSh.getDataRange().getValues();
+          for (var di = mdData.length - 1; di >= 1; di--) {
+            if (String(mdData[di][9]) === String(d.mid)) { mdSh.deleteRow(di + 1); break; }
+          }
+        }
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "ok", mid: d.mid || ""
+        })).setMimeType(ContentService.MimeType.JSON);
+      } catch (mdErr) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: String(mdErr)
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v34: 管理者(SV/課長)が全アポインターの面談状況を取得 =====
+    // 面談記録を氏名でグループ化し、最新面談日・サイクル・件数・履歴を返す
+    if (d.type === "fetch_meetings") {
+      try {
+        var fmSs = SpreadsheetApp.openById(SHEET_ID);
+        var fmSh = fmSs.getSheetByName("面談記録");
+        var fmByName = {};
+        if (fmSh && fmSh.getLastRow() > 1) {
+          var fmRows = fmSh.getDataRange().getValues();
+          // 列: 0記録日時,1アポインター,2PIN,3面談日,4相手,5サイクル,6事前,7事後,8状態,9ID
+          for (var fi = 1; fi < fmRows.length; fi++) {
+            var fr = fmRows[fi];
+            var fnm = String(fr[1] || "").trim();
+            if (!fnm) continue;
+            var fdate = normalizeYMD(fr[3]);
+            if (!fmByName[fnm]) {
+              fmByName[fnm] = { name: fnm, pin: String(fr[2] || "") || pinForName(fnm),
+                lastDate: "", cycle: String(fr[5] || ""), count: 0, lastStatus: "", history: [] };
+            }
+            var fo = fmByName[fnm];
+            fo.count++;
+            fo.history.push({
+              date: fdate, partner: String(fr[4] || ""), cycle: String(fr[5] || ""),
+              preNote: String(fr[6] || ""), postNote: String(fr[7] || ""),
+              status: String(fr[8] || ""), mid: String(fr[9] || "")
+            });
+            if (fdate && fdate > fo.lastDate) { fo.lastDate = fdate; fo.lastStatus = String(fr[8] || ""); fo.cycle = String(fr[5] || fo.cycle); }
+          }
+        }
+        var fmOut = [];
+        Object.keys(fmByName).forEach(function(k) {
+          var fo = fmByName[k];
+          fo.history.sort(function(a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
+          fmOut.push(fo);
+        });
+        fmOut.sort(function(a, b) { return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0); });
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "ok", meetings: fmOut
+        })).setMimeType(ContentService.MimeType.JSON);
+      } catch (fmErr) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: String(fmErr)
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v35: お知らせ投稿 (経営層→アポインター) - IDでupsert =====
+    // d.title, d.bodyText, d.importance("normal"|"important"), d.publish(true/false), d.aid
+    if (d.type === "announce_post") {
+      try {
+        var anSs = SpreadsheetApp.openById(SHEET_ID);
+        var anSh = ensureSheet(anSs, "お知らせ",
+          ["投稿日時", "タイトル", "本文", "重要度", "掲載", "ID"]);
+        var anRow = [
+          new Date(), d.title || "", d.bodyText || "", d.importance || "normal",
+          (d.publish === false ? "false" : "true"), d.aid || ""
+        ];
+        var anFound = -1;
+        if (d.aid && anSh.getLastRow() > 1) {
+          var anData = anSh.getDataRange().getValues();
+          for (var ani = anData.length - 1; ani >= 1; ani--) {
+            if (String(anData[ani][5]) === String(d.aid)) { anFound = ani + 1; break; }
+          }
+        }
+        if (anFound > 0) { anSh.getRange(anFound, 1, 1, anRow.length).setValues([anRow]); }
+        else { anSh.appendRow(anRow); }
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "ok", aid: d.aid || "", updated: anFound > 0
+        })).setMimeType(ContentService.MimeType.JSON);
+      } catch (anErr) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: String(anErr)
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v35: お知らせ削除 =====
+    if (d.type === "announce_delete") {
+      try {
+        var adSs = SpreadsheetApp.openById(SHEET_ID);
+        var adSh = adSs.getSheetByName("お知らせ");
+        if (adSh && adSh.getLastRow() > 1 && d.aid) {
+          var adData = adSh.getDataRange().getValues();
+          for (var adi = adData.length - 1; adi >= 1; adi--) {
+            if (String(adData[adi][5]) === String(d.aid)) { adSh.deleteRow(adi + 1); break; }
+          }
+        }
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok", aid: d.aid || "" }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (adErr) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(adErr) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v35: 管理者が全お知らせを取得 (掲載中/非掲載を含む) =====
+    if (d.type === "fetch_announcements") {
+      try {
+        var faSs = SpreadsheetApp.openById(SHEET_ID);
+        var faSh = faSs.getSheetByName("お知らせ");
+        var faOut = [];
+        if (faSh && faSh.getLastRow() > 1) {
+          var faRows = faSh.getDataRange().getValues();
+          for (var fai = 1; fai < faRows.length; fai++) {
+            var far = faRows[fai];
+            faOut.push({
+              ts: formatDateTimeStr(far[0]), title: String(far[1] || ""), bodyText: String(far[2] || ""),
+              importance: String(far[3] || "normal"), publish: String(far[4]) !== "false", aid: String(far[5] || "")
+            });
+          }
+        }
+        faOut.reverse(); // 新しい順
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok", announcements: faOut }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (faErr) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(faErr) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
     // クライアントがリスト読込時に呼び出して、GASスプレッドシートに上書き保存
     // → 他の端末・他のアカウントからもこのリストが見える
     // ===== v20: チャンク分割アップロード (大量データを安全に送信) =====
@@ -1007,6 +1372,78 @@ function mapResultLabelToId(label) {
   return s;
 }
 
+// v32: 申請日時を "YYYY-MM-DD HH:MM" に整形
+function formatDateTimeStr(v) {
+  if (!v) return "";
+  try {
+    var d = (v instanceof Date) ? v : new Date(v);
+    if (isNaN(d.getTime())) return String(v);
+    return Utilities.formatDate(d, "Asia/Tokyo", "yyyy-MM-dd HH:mm");
+  } catch (e) { return String(v); }
+}
+
+// v32: 「シフト申請」シートの詳細文字列を日別オブジェクトに復元
+//   "2026-06-01: 09:30〜18:00 / 2026-06-02: 休み / 2026-06-03: 13:00〜16:45"
+//   → { "2026-06-01": {start:"09:30",end:"18:00"}, "2026-06-02": "off", ... }
+function parseShiftDetail(detail) {
+  var days = {};
+  if (!detail) return days;
+  String(detail).split(" / ").forEach(function(part) {
+    var idx = part.indexOf(": ");
+    if (idx < 0) return;
+    var key = part.slice(0, idx).trim();
+    var val = part.slice(idx + 2).trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return;
+    if (val === "休み" || val === "off") { days[key] = "off"; return; }
+    var pr = val.split("〜");
+    if (pr.length === 2) days[key] = { start: pr[0].trim(), end: pr[1].trim() };
+  });
+  return days;
+}
+
+// v33: 日付を "yyyy-MM-dd" に正規化 (Date / "2026/6/1" / "2026年6月1日" 対応)
+function normalizeYMD(v) {
+  if (!v) return "";
+  if (v instanceof Date) {
+    return Utilities.formatDate(v, "Asia/Tokyo", "yyyy-MM-dd");
+  }
+  var s = String(v);
+  var m = s.match(/^(\d{4})[\/\-年](\d{1,2})[\/\-月](\d{1,2})/);
+  if (m) {
+    return m[1] + "-" + ("0" + m[2]).slice(-2) + "-" + ("0" + m[3]).slice(-2);
+  }
+  return s;
+}
+
+// v33: 通話時間文字列 "M:SS" / "H:MM:SS" を秒に変換
+function parseDurToSec(v) {
+  if (!v) return 0;
+  if (typeof v === "number") return Math.round(v);
+  var parts = String(v).trim().split(":");
+  if (parts.length === 2) {
+    return (parseInt(parts[0], 10) || 0) * 60 + (parseInt(parts[1], 10) || 0);
+  }
+  if (parts.length === 3) {
+    return (parseInt(parts[0], 10) || 0) * 3600 + (parseInt(parts[1], 10) || 0) * 60 + (parseInt(parts[2], 10) || 0);
+  }
+  return 0;
+}
+
+// v33: 全名 → PIN (FULL_NAME_MAP の逆引き / 見つからなければ空)
+function pinForName(name) {
+  var n = String(name || "").trim();
+  var keys = Object.keys(FULL_NAME_MAP);
+  for (var i = 0; i < keys.length; i++) {
+    if (FULL_NAME_MAP[keys[i]] === n) return keys[i];
+  }
+  // 短縮名(PIN_MAP)でも照合
+  var k2 = Object.keys(PIN_MAP);
+  for (var j = 0; j < k2.length; j++) {
+    if (PIN_MAP[k2[j]] === n) return k2[j];
+  }
+  return "";
+}
+
 function ensureSheet(ss, name, headers) {
   var sh = ss.getSheetByName(name);
   if (!sh) {
@@ -1048,6 +1485,9 @@ function setupSheets() {
     "法人名", "電話番号", "担当者", "性別", "役職", "メール", "住所", "アポ日時", "人柄"]);
   ensureSheet(ss, "シフト申請", ["申請日時", "種別", "申請者", "PIN", "対象月",
     "出勤予定日数", "休み日数", "合計時間(分)", "詳細", "状態"]);
+  ensureSheet(ss, "面談記録", ["記録日時", "アポインター", "PIN", "面談日", "面談相手",
+    "サイクル", "事前メモ", "事後メモ", "ステータス", "ID"]);
+  ensureSheet(ss, "お知らせ", ["投稿日時", "タイトル", "本文", "重要度", "掲載", "ID"]);
   Logger.log("✅ メインスプレッドシートのシート初期化完了");
 
   // 管理者用スプレッドシート

@@ -1,7 +1,7 @@
 {
   "name": "川嶋メソッド テレアポ管理",
   "short_name": "川嶋メソッド",
-  "description": "Samsung A25 最適化版テレアポ管理 PWA",
+  "description": "川嶋メソッド テレアポ業務管理システム（スキマグループ合同会社）",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
@@ -10,7 +10,10 @@
   "theme_color": "#1a237e",
   "lang": "ja",
   "dir": "ltr",
-  "categories": ["business", "productivity"],
+  "categories": [
+    "business",
+    "productivity"
+  ],
   "icons": [
     {
       "src": "icon-192.png",
@@ -42,13 +45,23 @@
       "name": "アポ一覧",
       "short_name": "アポ",
       "url": "./?view=appolist",
-      "icons": [{"src":"icon-192.png","sizes":"192x192"}]
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
     },
     {
       "name": "再架電予定",
       "short_name": "再架電",
       "url": "./?view=cblist",
-      "icons": [{"src":"icon-192.png","sizes":"192x192"}]
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
     }
   ],
   "prefer_related_applications": false

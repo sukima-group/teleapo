@@ -1,5 +1,5 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v38
+// 川嶋メソッド テレアポ管理 — GAS完全版 v42
 // メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
 // 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
 //
@@ -53,7 +53,7 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         message: "GAS Web App is alive",
-        version: "v38",
+        version: "v42",
         timestamp: new Date().toISOString(),
         note: "Use ?pin=XXX to fetch list, or POST with type field"
       })).setMimeType(ContentService.MimeType.JSON);
@@ -161,7 +161,7 @@ function doPost(e) {
         status: "ok",
         message: "GAS connected",
         timestamp: new Date().toISOString(),
-        version: "v38"
+        version: "v42"
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -819,6 +819,159 @@ function doPost(e) {
         return ContentService.createTextOutput(JSON.stringify({
           status: "error", message: String(asErr)
         })).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v39: クライアント(案件)別アポ集計 (管理者・請求用) =====
+    // 「アポイント」シートを登録日の当月でフィルタし、案件名×報告者で集計＋明細を返す
+    if (d.type === "fetch_appo_billing") {
+      try {
+        var abMonth = String(d.month || "");
+        var abSs = SpreadsheetApp.openById(SHEET_ID);
+        var abSh = abSs.getSheetByName("アポイント");
+        var abByProj = {};
+        var abDetails = [];
+        if (abSh && abSh.getLastRow() > 1) {
+          var abRows = abSh.getDataRange().getValues();
+          // 列: 0登録日,1報告者,2案件名,3商談日付,4商談時間,5法人名,6電話番号,7担当者
+          for (var abi = 1; abi < abRows.length; abi++) {
+            var abr = abRows[abi];
+            var abdk = normalizeYMD(abr[0]); // 登録日 = 成果発生日
+            if (abdk.slice(0, 7) !== abMonth) continue;
+            var abProj = String(abr[2] || "").trim() || "(案件名なし)";
+            var abRep = String(abr[1] || "").trim();
+            if (!abByProj[abProj]) { abByProj[abProj] = { project: abProj, count: 0, byRep: {} }; }
+            abByProj[abProj].count++;
+            abByProj[abProj].byRep[abRep] = (abByProj[abProj].byRep[abRep] || 0) + 1;
+            abDetails.push({
+              date: abdk, reporter: abRep, project: abProj,
+              meetingDate: normalizeYMD(abr[3]) || String(abr[3] || ""),
+              meetingTime: String(abr[4] || ""),
+              company: String(abr[5] || ""), phone: String(abr[6] || ""),
+              person: String(abr[7] || "")
+            });
+          }
+        }
+        var abProjects = [];
+        Object.keys(abByProj).forEach(function(k) { abProjects.push(abByProj[k]); });
+        abProjects.sort(function(a, b) { return b.count - a.count || (a.project < b.project ? -1 : 1); });
+        abDetails.sort(function(a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "ok", month: abMonth, projects: abProjects, details: abDetails
+        })).setMimeType(ContentService.MimeType.JSON);
+      } catch (abErr) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: String(abErr)
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v42: アカウント認証 (暗証番号) - なりすましログイン防止 =====
+    // シート「アカウント認証」[PIN, 名前, ハッシュ, 設定日時]
+    if (d.type === "auth_status") {
+      try {
+        var atSs = SpreadsheetApp.openById(SHEET_ID);
+        var atSh = atSs.getSheetByName("アカウント認証");
+        var atSet = false;
+        if (atSh && atSh.getLastRow() > 1) {
+          var atRows = atSh.getDataRange().getValues();
+          for (var ati = 1; ati < atRows.length; ati++) {
+            if (String(atRows[ati][0]) === String(d.pin) && String(atRows[ati][2] || "")) { atSet = true; break; }
+          }
+        }
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok", set: atSet }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (atErr) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(atErr) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+    if (d.type === "auth_set") {
+      try {
+        var as2Ss = SpreadsheetApp.openById(SHEET_ID);
+        var as2Sh = ensureSheet(as2Ss, "アカウント認証", ["PIN", "名前", "ハッシュ", "設定日時"]);
+        var as2Rows = as2Sh.getDataRange().getValues();
+        for (var as2i = 1; as2i < as2Rows.length; as2i++) {
+          if (String(as2Rows[as2i][0]) === String(d.pin)) {
+            if (String(as2Rows[as2i][2] || "")) {
+              return ContentService.createTextOutput(JSON.stringify({ status: "error", code: "already", message: "設定済みです" }))
+                .setMimeType(ContentService.MimeType.JSON);
+            }
+            as2Sh.getRange(as2i + 1, 1, 1, 4).setValues([[d.pin, d.name || "", d.hash || "", new Date()]]);
+            logAudit("暗証番号設定", d.name || d.pin, "PIN:" + d.pin, "");
+            return ContentService.createTextOutput(JSON.stringify({ status: "ok" }))
+              .setMimeType(ContentService.MimeType.JSON);
+          }
+        }
+        as2Sh.appendRow([d.pin, d.name || "", d.hash || "", new Date()]);
+        logAudit("暗証番号設定", d.name || d.pin, "PIN:" + d.pin, "");
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok" }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (as2Err) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(as2Err) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+    if (d.type === "auth_check") {
+      try {
+        var ac2Ss = SpreadsheetApp.openById(SHEET_ID);
+        var ac2Sh = ac2Ss.getSheetByName("アカウント認証");
+        var ac2Ok = false;
+        if (ac2Sh && ac2Sh.getLastRow() > 1) {
+          var ac2Rows = ac2Sh.getDataRange().getValues();
+          for (var ac2i = 1; ac2i < ac2Rows.length; ac2i++) {
+            if (String(ac2Rows[ac2i][0]) === String(d.pin)) {
+              ac2Ok = (String(ac2Rows[ac2i][2] || "") !== "" && String(ac2Rows[ac2i][2]) === String(d.hash || ""));
+              break;
+            }
+          }
+        }
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok", ok: ac2Ok }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (ac2Err) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(ac2Err) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+    if (d.type === "auth_reset") {
+      try {
+        var ar2Ss = SpreadsheetApp.openById(SHEET_ID);
+        var ar2Sh = ar2Ss.getSheetByName("アカウント認証");
+        if (ar2Sh && ar2Sh.getLastRow() > 1) {
+          var ar2Rows = ar2Sh.getDataRange().getValues();
+          for (var ar2i = 1; ar2i < ar2Rows.length; ar2i++) {
+            if (String(ar2Rows[ar2i][0]) === String(d.pin)) {
+              ar2Sh.getRange(ar2i + 1, 3).setValue("");
+              break;
+            }
+          }
+        }
+        logAudit("暗証番号リセット", "管理者", (FULL_NAME_MAP[d.pin] || d.pin) + " (PIN:" + d.pin + ")", "");
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok" }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (ar2Err) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(ar2Err) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v42: 出勤通知 (退勤通知と同じ宛先へ即時メール) =====
+    if (d.type === "checkin_notify") {
+      try {
+        MailApp.sendEmail(
+          DAILY_REPORT_TO,
+          "【出勤通知】" + (d.date || "") + " " + (d.name || "") + " - " + (d.timeStr || "") + " 出勤",
+          "==========================\n 出勤通知\n==========================\n\n" +
+          "■ アポインター: " + (d.name || "") + " (PIN:" + (d.pin || "") + ")\n" +
+          "■ 日付: " + (d.date || "") + "\n" +
+          "■ 出勤時刻: " + (d.timeStr || "") + "\n\n" +
+          "送信日時: " + Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy/MM/dd HH:mm")
+        );
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok" }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (cnErr) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(cnErr) }))
+          .setMimeType(ContentService.MimeType.JSON);
       }
     }
 
@@ -1624,6 +1777,7 @@ function setupSheets() {
     "サイクル", "事前メモ", "事後メモ", "ステータス", "ID"]);
   ensureSheet(ss, "お知らせ", ["投稿日時", "タイトル", "本文", "重要度", "掲載", "ID"]);
   ensureSheet(ss, "監査ログ", ["日時", "種別", "実行者", "対象", "詳細"]);
+  ensureSheet(ss, "アカウント認証", ["PIN", "名前", "ハッシュ", "設定日時"]);
   Logger.log("✅ メインスプレッドシートのシート初期化完了");
 
   // 管理者用スプレッドシート

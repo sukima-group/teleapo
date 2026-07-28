@@ -1,5 +1,5 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v42
+// 川嶋メソッド テレアポ管理 — GAS完全版 v46
 // メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
 // 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
 //
@@ -34,11 +34,24 @@
 
 var SHEET_ID = "1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM";
 var ADMIN_SHEET_ID = "1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ";  // v14: 管理者用 退勤レポート用
-var PIN_MAP = {"091":"柏木", "092":"園田", "093":"堀内", "094":"河野", "095":"福田", "097":"藪内", "098":"竹之内"};
+var PIN_MAP = {"091":"柏木", "092":"園田", "093":"堀内", "094":"河野", "095":"福田", "097":"藪内", "098":"竹之内", "101":"藤田", "103":"本郷", "105":"小澤"};
 // v18: 全名マップ - 出退勤・履歴・アポでは "河野由香" のような全名で記録される
 // v25: 福田貴美恵 PIN 095 追加
 // v26: 藪内亜希 PIN 097 追加 / 発信件数通知 (dial_count_notify) 追加
-var FULL_NAME_MAP = {"091":"柏木幸代", "092":"園田絵里", "093":"堀内真紀子", "094":"河野由香", "095":"福田貴美恵", "097":"藪内亜希", "098":"竹之内優子"};
+var FULL_NAME_MAP = {"091":"柏木幸代", "092":"園田絵里", "093":"堀内真紀子", "094":"河野由香", "095":"福田貴美恵", "097":"藪内亜希", "098":"竹之内優子", "101":"藤田直美", "103":"本郷真弓", "105":"小澤幸枝"};
+// v45: 各アポインター本人のGmail (空欄=未登録・送信スキップ)
+var STAFF_EMAILS = {
+  "091":"", "092":"", "093":"", "094":"", "095":"", "097":"", "098":"",
+  "101":"fujita.sukimagroup@gmail.com",
+  "103":"hongo.sukimagroup@gmail.com",
+  "105":"ozawa.sukimagroup@gmail.com"
+};
+function personalEmailFor(pin){ return STAFF_EMAILS[String(pin)] || ""; }
+function broadcastEmails(){
+  var out = [];
+  for (var k in STAFF_EMAILS) { if (STAFF_EMAILS[k]) out.push(STAFF_EMAILS[k]); }
+  return out.join(",");
+}
 var SHIFT_NOTIFY_TO = "tereapo01.sukima@gmail.com";
 var DAILY_REPORT_TO = "tereapo01.sukima@gmail.com";  // v14: 退勤レポート通知先
 // v26: 発信件数の通知先 (送信元はGAS実行アカウント hr.ashikaga@gmail.com → この宛先へ)
@@ -53,7 +66,7 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         message: "GAS Web App is alive",
-        version: "v42",
+        version: "v46",
         timestamp: new Date().toISOString(),
         note: "Use ?pin=XXX to fetch list, or POST with type field"
       })).setMimeType(ContentService.MimeType.JSON);
@@ -78,8 +91,10 @@ function doGet(e) {
     var sheet = ss.getSheetByName(sheetName);
 
     if (!sheet) {
+      // v46: 新メンバーの初回ログイン - シートを自動作成し「リスト未登録」として正常応答 (エラーにしない)
+      try { sheet = ss.insertSheet(sheetName); } catch (mkErr) {}
       return ContentService.createTextOutput(
-        JSON.stringify({error: "シート「" + sheetName + "」が見つかりません"})
+        JSON.stringify({error: "データが空です", created: true, rows: [], cm: {}})
       ).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -161,7 +176,7 @@ function doPost(e) {
         status: "ok",
         message: "GAS connected",
         timestamp: new Date().toISOString(),
-        version: "v42"
+        version: "v46"
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -489,6 +504,20 @@ function doPost(e) {
             (d.note ? "\n差戻理由: " + d.note : "")
           );
         } catch (apMailErr) {}
+        // v45: 本人のGmailにも承認結果を通知
+        try {
+          var apPersonal = personalEmailFor(d.pin);
+          if (apPersonal) {
+            var apName2 = d.name || FULL_NAME_MAP[d.pin] || d.pin;
+            MailApp.sendEmail(
+              apPersonal,
+              "【シフト" + newStatus + "】" + d.month + " のシフトが" + newStatus + "になりました",
+              apName2 + " 様\n\n" + d.month + " のシフト申請が「" + newStatus + "」になりました。\n" +
+              (d.note ? "\n■ 差戻し理由:\n" + d.note + "\n\n修正のうえ、アプリから再申請をお願いします。\n" : "\nアプリのシフト画面からもご確認いただけます。\n") +
+              "\n川嶋メソッド テレアポ業務管理システム"
+            );
+          }
+        } catch (apPerErr) {}
         logAudit("シフト" + newStatus, "管理者", (d.name || FULL_NAME_MAP[d.pin] || d.pin) + " / " + d.month, d.note || "");
         return ContentService.createTextOutput(JSON.stringify({
           status: "ok", pin: d.pin, month: d.month, newStatus: newStatus
@@ -676,6 +705,20 @@ function doPost(e) {
         }
         if (anFound > 0) { anSh.getRange(anFound, 1, 1, anRow.length).setValues([anRow]); }
         else { anSh.appendRow(anRow); }
+        // v45: 「重要」お知らせは登録済みの本人Gmailへ一斉送信 (アプリを開かなくても届く)
+        try {
+          if ((d.importance === "important") && (d.publish !== false)) {
+            var anTo = broadcastEmails();
+            if (anTo) {
+              MailApp.sendEmail(
+                anTo,
+                "【重要なお知らせ】" + (d.title || ""),
+                "経営層からの重要なお知らせです。\n\n■ " + (d.title || "") + "\n\n" +
+                (d.bodyText || "") + "\n\n---\nアプリのホーム画面にも掲載されています。\n川嶋メソッド テレアポ業務管理システム"
+              );
+            }
+          }
+        } catch (anBcErr) {}
         logAudit(anFound > 0 ? "お知らせ更新" : "お知らせ掲載", "管理者", d.title || "", "重要度:" + (d.importance || "normal") + (d.publish === false ? " / 非掲載" : ""));
         return ContentService.createTextOutput(JSON.stringify({
           status: "ok", aid: d.aid || "", updated: anFound > 0
@@ -975,6 +1018,101 @@ function doPost(e) {
       }
     }
 
+    // ===== v44: 文字起こし一覧の取得 (管理者レビュー用・新しい順・最大100件) =====
+    if (d.type === "fetch_transcripts") {
+      try {
+        var ftSs = SpreadsheetApp.openById(SHEET_ID);
+        var ftSh = ftSs.getSheetByName("文字起こし");
+        var ftOut = [];
+        if (ftSh && ftSh.getLastRow() > 1) {
+          var ftRows = ftSh.getDataRange().getValues();
+          var ftLimit = d.limit ? Number(d.limit) : 100;
+          var ftStart = Math.max(1, ftRows.length - ftLimit);
+          for (var fti = ftRows.length - 1; fti >= ftStart; fti--) {
+            ftOut.push({
+              ts: formatDateTimeStr(ftRows[fti][0]),
+              name: String(ftRows[fti][1] || ""),
+              company: String(ftRows[fti][2] || ""),
+              phone: String(ftRows[fti][3] || ""),
+              result: String(ftRows[fti][4] || ""),
+              dur: String(ftRows[fti][5] || ""),
+              cid: String(ftRows[fti][6] || ""),
+              body: String(ftRows[fti][7] || "").slice(0, 4000)
+            });
+          }
+        }
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok", transcripts: ftOut }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (ftErr) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(ftErr) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v46: セットアップ診断 (管理者) - 全メンバーの利用可否を一括点検 =====
+    // 各PINについて: リストシート有無(無ければ自動作成)・行数・暗証番号設定・本人メール登録 を返す
+    // d.sendTest=true なら登録済み本人メールへテスト送信
+    if (d.type === "system_diag") {
+      try {
+        var dgSs = SpreadsheetApp.openById(SHEET_ID);
+        var dgAuth = dgSs.getSheetByName("アカウント認証");
+        var dgAuthSet = {};
+        if (dgAuth && dgAuth.getLastRow() > 1) {
+          var dgAr = dgAuth.getDataRange().getValues();
+          for (var dgi = 1; dgi < dgAr.length; dgi++) {
+            if (String(dgAr[dgi][2] || "")) dgAuthSet[String(dgAr[dgi][0])] = true;
+          }
+        }
+        var dgMembers = [];
+        var dgPins = Object.keys(FULL_NAME_MAP);
+        for (var dgp = 0; dgp < dgPins.length; dgp++) {
+          var pn = dgPins[dgp];
+          var shName = PIN_MAP[pn];
+          var mSh = dgSs.getSheetByName(shName);
+          var createdNow = false;
+          if (!mSh) {
+            try { mSh = dgSs.insertSheet(shName); createdNow = true; } catch (dgMkErr) {}
+          }
+          var rowCnt = 0;
+          try { rowCnt = mSh ? Math.max(0, mSh.getLastRow() - 1) : -1; } catch (e) { rowCnt = -1; }
+          dgMembers.push({
+            pin: pn,
+            name: FULL_NAME_MAP[pn],
+            sheet: shName,
+            sheetOk: !!mSh,
+            created: createdNow,
+            rows: rowCnt,
+            authSet: !!dgAuthSet[pn],
+            email: personalEmailFor(pn)
+          });
+        }
+        var dgSent = 0, dgSendErr = "";
+        if (d.sendTest === true) {
+          for (var dgt = 0; dgt < dgMembers.length; dgt++) {
+            var em = dgMembers[dgt].email;
+            if (!em) continue;
+            try {
+              MailApp.sendEmail(
+                em,
+                "【テスト送信】川嶋メソッド 通知テスト",
+                dgMembers[dgt].name + " 様\n\nこのメールが届いていれば、シフト承認・重要お知らせ・実績控えの通知を受け取れる状態です。\n返信は不要です。\n\n川嶋メソッド テレアポ業務管理システム"
+              );
+              dgSent++;
+            } catch (dgMailErr) { dgSendErr = String(dgMailErr); }
+          }
+          logAudit("通知テスト送信", "管理者", dgSent + "名へ送信", dgSendErr);
+        }
+        var dgQuota = -1;
+        try { dgQuota = MailApp.getRemainingDailyQuota(); } catch (e) {}
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "ok", members: dgMembers, testSent: dgSent, sendErr: dgSendErr, mailQuota: dgQuota
+        })).setMimeType(ContentService.MimeType.JSON);
+      } catch (dgErr) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(dgErr) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
     // クライアントがリスト読込時に呼び出して、GASスプレッドシートに上書き保存
     // → 他の端末・他のアカウントからもこのリストが見える
     // ===== v20: チャンク分割アップロード (大量データを安全に送信) =====
@@ -1138,14 +1276,26 @@ function doPost(e) {
     if (d.type === "callResult") {
       var sh2 = ensureSheet(ss, "架電結果",
         ["名前", "日付", "時刻", "会社名", "電話番号", "担当者",
-         "結果", "通話時間", "チェック数", "暴走", "切り返しアウト", "メモ", "終話ステップ", "CID"]);
+         "結果", "通話時間", "チェック数", "暴走", "切り返しアウト", "メモ", "終話ステップ", "CID", "通話秒"]);
       sh2.appendRow([
         d.name, d.date, d.time,
         d.company, d.phone, d.person,
         d.result, d.duration, d.checkedCount,
         d.bousou, d.outText, d.memo,
-        d.endStep || "", d.cid || ""
+        d.endStep || "", d.cid || "", Number(d.talkSec) || 0
       ]);
+      // v43: 文字起こし本文は専用シートへ (CIDで架電結果と紐づけ)
+      if (d.transcript) {
+        try {
+          var trSh = ensureSheet(ss, "文字起こし",
+            ["日時", "名前", "会社名", "電話番号", "結果", "通話時間", "CID", "本文"]);
+          trSh.appendRow([
+            new Date(), d.name || "", d.company || "", d.phone || "",
+            d.result || "", d.duration || "", d.cid || "",
+            String(d.transcript).slice(0, 45000)
+          ]);
+        } catch (trErr) {}
+      }
     }
 
     // ===== v36: 架電結果の取消 (誤タップ復旧) - CIDで直近行を削除 =====
@@ -1167,6 +1317,16 @@ function doPost(e) {
             }
           }
         }
+        // v43: 紐づく文字起こしも削除
+        try {
+          var cuTr = cuSs.getSheetByName("文字起こし");
+          if (cuTr && cuTr.getLastRow() > 1 && d.cid) {
+            var cuTrData = cuTr.getDataRange().getValues();
+            for (var cuti = cuTrData.length - 1; cuti >= 1; cuti--) {
+              if (String(cuTrData[cuti][6]) === String(d.cid)) { cuTr.deleteRow(cuti + 1); break; }
+            }
+          }
+        } catch (cuTrErr) {}
         return ContentService.createTextOutput(JSON.stringify({
           status: "ok", cid: d.cid || "", deleted: cuDeleted
         })).setMimeType(ContentService.MimeType.JSON);
@@ -1385,6 +1545,23 @@ function doPost(e) {
               } catch (e3) {}
             }
           }
+          // v45: 本人のGmailにも「本日の実績（控え）」を送信
+          try {
+            var drPersonal = personalEmailFor(d.pin);
+            if (drPersonal && mailSent) {
+              MailApp.sendEmail(
+                drPersonal,
+                "【本日の実績】" + (d.date || "") + " おつかれさまでした",
+                (d.name || "") + " 様\n\n本日もおつかれさまでした。実績の控えをお送りします。\n\n" +
+                "■ 日付: " + (d.date || "") + "\n" +
+                "■ 勤務: " + (d.clockIn || "—") + " 〜 " + (d.clockOut || "—") + "（実働 " + (d.workDuration || "—") + "）\n" +
+                "■ 架電: " + (d.totalCalls || 0) + "件\n" +
+                "■ アポ: " + (d.totalApos || 0) + "件" + (d.apoRate ? "（アポ率 " + d.apoRate + "%）" : "") + "\n" +
+                "■ 通話時間 合計: " + (d.totalCallTime || "—") + "\n\n" +
+                "明日もよろしくお願いします。\n川嶋メソッド テレアポ業務管理システム"
+              );
+            }
+          } catch (drPerErr) {}
         }
       } catch (mailErr) {
         Logger.log("Daily report mail wrapper error: " + mailErr);
@@ -1778,6 +1955,7 @@ function setupSheets() {
   ensureSheet(ss, "お知らせ", ["投稿日時", "タイトル", "本文", "重要度", "掲載", "ID"]);
   ensureSheet(ss, "監査ログ", ["日時", "種別", "実行者", "対象", "詳細"]);
   ensureSheet(ss, "アカウント認証", ["PIN", "名前", "ハッシュ", "設定日時"]);
+  ensureSheet(ss, "文字起こし", ["日時", "名前", "会社名", "電話番号", "結果", "通話時間", "CID", "本文"]);
   Logger.log("✅ メインスプレッドシートのシート初期化完了");
 
   // 管理者用スプレッドシート

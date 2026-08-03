@@ -1,5 +1,5 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v47
+// 川嶋メソッド テレアポ管理 — GAS完全版 v49
 // メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
 // 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
 //
@@ -66,7 +66,7 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         message: "GAS Web App is alive",
-        version: "v47",
+        version: "v49",
         timestamp: new Date().toISOString(),
         note: "Use ?pin=XXX to fetch list, or POST with type field"
       })).setMimeType(ContentService.MimeType.JSON);
@@ -129,7 +129,8 @@ function doGet(e) {
       co: findCol(["施設", "会社", "法人", "名称", "名前"]),
       ph: findCol(["電話", "tel", "番号"]),
       pe: findCol(["担当", "氏名", "施設長"]),
-      ad: findCol(["住所", "所在地"])
+      ad: findCol(["住所", "所在地"]),
+      src: findCol(["元行"])   // v49: 元スプレッドシートの行番号（あれば確実に突合できる）
     };
 
     return ContentService.createTextOutput(
@@ -176,7 +177,7 @@ function doPost(e) {
         status: "ok",
         message: "GAS connected",
         timestamp: new Date().toISOString(),
-        version: "v47"
+        version: "v49"
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -1130,6 +1131,91 @@ function doPost(e) {
       }
     }
 
+    // ===== v48: 元スプレッドシート連携（設定の取得・保存・同期実行） =====
+    if (d.type === "ext_config_get") {
+      try {
+        var ecList = readExtConfigs_();
+        var ecOut = [];
+        var ecPins = Object.keys(FULL_NAME_MAP);
+        for (var eci = 0; eci < ecPins.length; eci++) {
+          var pn = ecPins[eci];
+          var found = null;
+          for (var ecj = 0; ecj < ecList.length; ecj++) {
+            if (String(ecList[ecj].pin) === String(pn)) { found = ecList[ecj]; break; }
+          }
+          ecOut.push({
+            pin: pn, name: FULL_NAME_MAP[pn],
+            set: !!found,
+            ssId: found ? found.ssId : "", sheetName: found ? found.sheetName : "",
+            headerRow: found ? found.headerRow : 1,
+            colCompany: found ? found.colCompany : "", colPhone: found ? found.colPhone : "",
+            colPerson: found ? found.colPerson : "", colAddress: found ? found.colAddress : "",
+            colDate: found ? found.colDate : "", colTime: found ? found.colTime : "",
+            colName: found ? found.colName : "", colResult: found ? found.colResult : "",
+            dateFmt: found ? found.dateFmt : "yyyy/MM/dd",
+            overwrite: found ? found.overwrite : false,
+            enabled: found ? found.enabled : true,
+            lastSync: found ? found.lastSync : "", lastResult: found ? found.lastResult : ""
+          });
+        }
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok", configs: ecOut }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (ecErr) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(ecErr) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+    if (d.type === "ext_config_set") {
+      try {
+        writeExtConfig_({
+          pin: d.pin, ssId: d.ssId, sheetName: d.sheetName, headerRow: d.headerRow,
+          colCompany: d.colCompany, colPhone: d.colPhone,
+          colPerson: d.colPerson, colAddress: d.colAddress, colDate: d.colDate,
+          colTime: d.colTime, colName: d.colName, colResult: d.colResult,
+          dateFmt: d.dateFmt, resultMapText: d.resultMapText,
+          overwrite: d.overwrite, enabled: d.enabled
+        });
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok" }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (esErr) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(esErr) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+    // v49: 元シートの列を自動検出
+    if (d.type === "ext_detect") {
+      try {
+        var dtRes = detectColumns_(d.ssId, d.sheetName, d.headerRow);
+        return ContentService.createTextOutput(JSON.stringify(
+          { status: dtRes.ok ? "ok" : "error", detect: dtRes, message: dtRes.message || "" }
+        )).setMimeType(ContentService.MimeType.JSON);
+      } catch (dtErr) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(dtErr) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+    // v49: 元シート → 架電リストへ取り込み
+    if (d.type === "ext_import") {
+      try {
+        var imRep = importExternalAll(d.pin || null);
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok", reports: imRep }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (imErr) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(imErr) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+    if (d.type === "ext_sync") {
+      try {
+        var syRep = syncExternalAll(d.pin || null, d.dryRun === true);
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok", reports: syRep }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (syErr) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(syErr) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
     // クライアントがリスト読込時に呼び出して、GASスプレッドシートに上書き保存
     // → 他の端末・他のアカウントからもこのリストが見える
     // ===== v20: チャンク分割アップロード (大量データを安全に送信) =====
@@ -1293,13 +1379,14 @@ function doPost(e) {
     if (d.type === "callResult") {
       var sh2 = ensureSheet(ss, "架電結果",
         ["名前", "日付", "時刻", "会社名", "電話番号", "担当者",
-         "結果", "通話時間", "チェック数", "暴走", "切り返しアウト", "メモ", "終話ステップ", "CID", "通話秒"]);
+         "結果", "通話時間", "チェック数", "暴走", "切り返しアウト", "メモ", "終話ステップ", "CID", "通話秒", "元行"]);
       sh2.appendRow([
         d.name, d.date, d.time,
         d.company, d.phone, d.person,
         d.result, d.duration, d.checkedCount,
         d.bousou, d.outText, d.memo,
-        d.endStep || "", d.cid || "", Number(d.talkSec) || 0
+        d.endStep || "", d.cid || "", Number(d.talkSec) || 0,
+        Number(d.srcRow) || ""
       ]);
       // v43: 文字起こし本文は専用シートへ (CIDで架電結果と紐づけ)
       if (d.transcript) {
@@ -1954,6 +2041,392 @@ function ensureSheet(ss, name, headers) {
 // ==========================================
 // ===== v47: 各アポインターの架電リストシートを一括作成 =====
 // 手動実行 or system_diag / create_list_sheets から呼ばれる。既存シートは変更しない(冪等)
+// ═══════════════════════════════════════════════════════════
+// v48: 元スプレッドシート連携（架電結果を各アポインターの元シートへ反映）
+// 「外部連携設定」シートに、アポインターごとの接続先と列を登録して使う
+// ═══════════════════════════════════════════════════════════
+var EXT_CONFIG_SHEET = "外部連携設定";
+var EXT_CONFIG_HEADER = ["PIN", "名前", "スプレッドシートID", "シート名", "ヘッダー行",
+  "会社名列", "電話番号列", "担当者列", "住所列", "日付列", "時刻列", "名前列", "結果列",
+  "日付書式", "結果変換", "上書き", "有効", "最終同期", "前回結果"];
+
+// 会社名の正規化（表記ゆらぎを吸収してズレを防ぐ）
+function normCompany_(s) {
+  if (s === null || s === undefined) return "";
+  var t = String(s);
+  t = t.replace(/[Ａ-Ｚａ-ｚ０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); });
+  t = t.replace(/[\s\u3000]/g, "");
+  t = t.replace(/[㈱]/g, "株式会社").replace(/[（(]株[）)]/g, "株式会社");
+  t = t.replace(/[㈲]/g, "有限会社").replace(/[（(]有[）)]/g, "有限会社");
+  t = t.replace(/[（(]社[）)]/g, "社団法人").replace(/[（(]財[）)]/g, "財団法人");
+  t = t.replace(/[（(]医[）)]/g, "医療法人").replace(/[（(]福[）)]/g, "社会福祉法人");
+  t = t.replace(/[‐‑‒–—―ー−\-]/g, "ー");
+  t = t.replace(/[・･,，.．'’"”`｀]/g, "");
+  t = t.replace(/[（）()【】\[\]「」『』]/g, "");
+  return t.toLowerCase();
+}
+// 法人格を除いた核名称（前株/後株のゆらぎ用・補助照合）
+function coreCompany_(s) {
+  return normCompany_(s).replace(
+    /(株式会社|有限会社|合同会社|合資会社|合名会社|一般社団法人|公益社団法人|社団法人|一般財団法人|財団法人|医療法人社団|医療法人|社会福祉法人|学校法人|特定非営利活動法人|npo法人)/g, "");
+}
+// 電話番号は数字のみ（最も確実なキー）
+function normPhone_(s) {
+  if (!s) return "";
+  var t = String(s).replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); });
+  return t.replace(/[^0-9]/g, "");
+}
+// 列指定 "A"/"AB"/3 → 1始まりの列番号（0=未設定）
+function colToIndex_(col) {
+  if (col === null || col === undefined || col === "") return 0;
+  if (typeof col === "number") return col;
+  var s = String(col).trim().toUpperCase();
+  if (/^[0-9]+$/.test(s)) return parseInt(s, 10);
+  var n = 0;
+  for (var i = 0; i < s.length; i++) {
+    var c = s.charCodeAt(i) - 64;
+    if (c < 1 || c > 26) return 0;
+    n = n * 26 + c;
+  }
+  return n;
+}
+// URL or ID から スプレッドシートIDを取り出す
+function extractSsId_(v) {
+  var s = String(v || "").trim();
+  var m = s.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  return m ? m[1] : s;
+}
+// "アポ=アポ獲得,不在=不在" 形式の変換表
+function parseResultMap_(s) {
+  var map = {};
+  String(s || "").split(/[,、\n]/).forEach(function (pair) {
+    var kv = pair.split("=");
+    if (kv.length === 2) {
+      var k = kv[0].trim(), v = kv[1].trim();
+      if (k) map[k] = v;
+    }
+  });
+  return map;
+}
+// 設定シートを読み込む
+function readExtConfigs_() {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sh = ensureSheet(ss, EXT_CONFIG_SHEET, EXT_CONFIG_HEADER);
+  var out = [];
+  if (sh.getLastRow() < 2) return out;
+  var rows = sh.getDataRange().getValues();
+  for (var i = 1; i < rows.length; i++) {
+    var r = rows[i];
+    if (!String(r[0] || "").trim()) continue;
+    out.push({
+      row: i + 1, pin: String(r[0]).trim(), name: String(r[1] || ""),
+      ssId: extractSsId_(r[2]), sheetName: String(r[3] || ""),
+      headerRow: Number(r[4]) || 1,
+      colCompany: colToIndex_(r[5]), colPhone: colToIndex_(r[6]),
+      colPerson: colToIndex_(r[7]), colAddress: colToIndex_(r[8]),
+      colDate: colToIndex_(r[9]), colTime: colToIndex_(r[10]),
+      colName: colToIndex_(r[11]), colResult: colToIndex_(r[12]),
+      dateFmt: String(r[13] || "yyyy/MM/dd"),
+      resultMap: parseResultMap_(r[14]),
+      overwrite: String(r[15]) === "true" || r[15] === true,
+      enabled: !(String(r[16]) === "false" || r[16] === false),
+      lastSync: r[17] ? formatDateTimeStr(r[17]) : "",
+      lastResult: String(r[18] || "")
+    });
+  }
+  return out;
+}
+// 設定を1件upsert
+function writeExtConfig_(c) {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sh = ensureSheet(ss, EXT_CONFIG_SHEET, EXT_CONFIG_HEADER);
+  var rowArr = [c.pin, FULL_NAME_MAP[c.pin] || c.name || "", extractSsId_(c.ssId), c.sheetName,
+    c.headerRow || 1, c.colCompany, c.colPhone || "", c.colPerson || "", c.colAddress || "",
+    c.colDate, c.colTime, c.colName, c.colResult,
+    c.dateFmt || "yyyy/MM/dd", c.resultMapText || "", c.overwrite ? "true" : "false",
+    c.enabled === false ? "false" : "true", "", ""];
+  var found = -1;
+  if (sh.getLastRow() > 1) {
+    var vals = sh.getDataRange().getValues();
+    for (var i = 1; i < vals.length; i++) {
+      if (String(vals[i][0]).trim() === String(c.pin).trim()) { found = i + 1; break; }
+    }
+  }
+  if (found > 0) {
+    // 最終同期・前回結果は保持
+    var keep = sh.getRange(found, 18, 1, 2).getValues()[0];
+    rowArr[17] = keep[0]; rowArr[18] = keep[1];
+    sh.getRange(found, 1, 1, rowArr.length).setValues([rowArr]);
+  } else {
+    sh.appendRow(rowArr);
+  }
+  logAudit("外部連携設定", "管理者", (FULL_NAME_MAP[c.pin] || c.pin) + " (PIN:" + c.pin + ")",
+    "シート:" + c.sheetName);
+}
+
+// ===== v49: 元スプレッドシートの列を見出しから自動検出 =====
+function detectColumns_(ssId, sheetName, headerRow) {
+  var out = { ok: false };
+  try {
+    var sh = SpreadsheetApp.openById(extractSsId_(ssId)).getSheetByName(sheetName);
+    if (!sh) { out.message = "シートが見つかりません"; return out; }
+    var hr = Number(headerRow) || 1;
+    var lastCol = sh.getLastColumn();
+    if (lastCol < 1) { out.message = "列がありません"; return out; }
+    var hdr = sh.getRange(hr, 1, 1, lastCol).getValues()[0];
+    var norm = hdr.map(function (h) { return String(h || "").replace(/[\s\u3000]/g, "").toLowerCase(); });
+    function find(pats, exclude) {
+      for (var i = 0; i < norm.length; i++) {
+        if (!norm[i]) continue;
+        if (exclude) {
+          var skip = false;
+          for (var e = 0; e < exclude.length; e++) { if (norm[i].indexOf(exclude[e]) >= 0) { skip = true; break; } }
+          if (skip) continue;
+        }
+        for (var j = 0; j < pats.length; j++) { if (norm[i].indexOf(pats[j]) >= 0) return i + 1; }
+      }
+      return 0;
+    }
+    out.ok = true;
+    out.header = hdr.map(function (h) { return String(h || ""); });
+    out.colCompany = find(["会社", "法人", "施設", "企業", "名称", "事業所"]);
+    out.colPhone = find(["電話", "tel", "番号"], ["法人番号", "整理番号"]);
+    out.colPerson = find(["担当", "氏名", "施設長", "代表者"]);
+    out.colAddress = find(["住所", "所在地"]);
+    out.colDate = find(["日付", "架電日", "実施日"]);
+    out.colTime = find(["時刻", "時間"], ["通話時間"]);
+    out.colName = find(["名前", "担当者名", "アポインター", "架電者"], ["会社", "法人", "施設"]);
+    out.colResult = find(["結果", "ステータス", "状況"]);
+    return out;
+  } catch (e) {
+    out.message = String(e);
+    return out;
+  }
+}
+
+// ===== v49: 元スプレッドシート → アポインターの架電リストシートへ取り込み =====
+// 元シートの並び順のまま取り込み、各行に「元行」を保持する（以降の書き戻しは行番号で確定＝ズレゼロ）
+function importFromExternal_(cfg) {
+  var rep = { pin: cfg.pin, name: cfg.name || FULL_NAME_MAP[cfg.pin] || "", ok: false, imported: 0, message: "" };
+  if (!cfg.ssId || !cfg.sheetName) { rep.message = "接続先が未設定です"; return rep; }
+  if (!cfg.colCompany) { rep.message = "会社名列が未設定です"; return rep; }
+  var tsh;
+  try {
+    tsh = SpreadsheetApp.openById(cfg.ssId).getSheetByName(cfg.sheetName);
+  } catch (e) { rep.message = "元スプレッドシートを開けません（共有設定をご確認ください）"; return rep; }
+  if (!tsh) { rep.message = "シート「" + cfg.sheetName + "」が見つかりません"; return rep; }
+
+  var hr = cfg.headerRow || 1;
+  var lastRow = tsh.getLastRow();
+  if (lastRow <= hr) { rep.message = "元シートにデータがありません"; return rep; }
+  var n = lastRow - hr, start = hr + 1;
+  var lastCol = tsh.getLastColumn();
+  var block = tsh.getRange(start, 1, n, lastCol).getValues();
+
+  var cCo = cfg.colCompany, cPh = cfg.colPhone, cPe = cfg.colPerson || 0, cAd = cfg.colAddress || 0;
+  var out = [];
+  for (var i = 0; i < n; i++) {
+    var r = block[i];
+    var co = String(r[cCo - 1] || "").trim();
+    if (!co) continue;                       // 会社名が空の行は取り込まない
+    out.push([
+      co,
+      cPh ? String(r[cPh - 1] || "").trim() : "",
+      cPe ? String(r[cPe - 1] || "").trim() : "",
+      cAd ? String(r[cAd - 1] || "").trim() : "",
+      start + i                              // ★元スプレッドシートの行番号
+    ]);
+  }
+  if (!out.length) { rep.message = "取り込める行がありません（会社名列をご確認ください）"; return rep; }
+
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var name = PIN_MAP[cfg.pin];
+  var lsh = ss.getSheetByName(name);
+  if (!lsh) { lsh = ss.insertSheet(name); }
+  writeListHeader_(lsh);
+  if (lsh.getLastRow() > 1) { lsh.getRange(2, 1, lsh.getLastRow() - 1, 5).clearContent(); }
+  lsh.getRange(2, 1, out.length, 5).setValues(out);
+
+  rep.ok = true; rep.imported = out.length;
+  rep.message = "取り込み " + out.length + "件（元シートの並び順を保持）";
+  logAudit("リスト取り込み", "管理者", rep.name, rep.message);
+  return rep;
+}
+function importExternalAll(pinFilter) {
+  var cfgs = readExtConfigs_();
+  var reports = [];
+  for (var i = 0; i < cfgs.length; i++) {
+    if (pinFilter && String(cfgs[i].pin) !== String(pinFilter)) continue;
+    reports.push(importFromExternal_(cfgs[i]));
+  }
+  return reports;
+}
+
+// 1名分を同期する本体
+function syncExternalFor_(cfg, dryRun) {
+  var rep = { pin: cfg.pin, name: cfg.name || FULL_NAME_MAP[cfg.pin] || "", ok: false,
+    written: 0, unmatched: [], skipped: 0, message: "" };
+  if (!cfg.enabled) { rep.message = "無効（有効=falseのため実行しません）"; return rep; }
+  if (!cfg.ssId || !cfg.sheetName) { rep.message = "接続先が未設定です"; return rep; }
+  if (!cfg.colCompany) { rep.message = "会社名列が未設定です"; return rep; }
+
+  var target, tsh;
+  try {
+    target = SpreadsheetApp.openById(cfg.ssId);
+    tsh = target.getSheetByName(cfg.sheetName);
+  } catch (e) {
+    rep.message = "元スプレッドシートを開けません（共有設定をご確認ください）: " + e;
+    return rep;
+  }
+  if (!tsh) { rep.message = "シート「" + cfg.sheetName + "」が見つかりません"; return rep; }
+
+  var lastRow = tsh.getLastRow();
+  if (lastRow <= cfg.headerRow) { rep.message = "元シートにデータがありません"; return rep; }
+  var nRows = lastRow - cfg.headerRow;
+  var startRow = cfg.headerRow + 1;
+
+  // 元シートのキー列を読む
+  var compVals = tsh.getRange(startRow, cfg.colCompany, nRows, 1).getValues();
+  var phoneVals = cfg.colPhone ? tsh.getRange(startRow, cfg.colPhone, nRows, 1).getValues() : null;
+
+  // キー→行番号（元シートの並び順を保持）
+  var byPhone = {}, byComp = {}, byCore = {};
+  for (var i = 0; i < nRows; i++) {
+    var rowNo = startRow + i;
+    if (phoneVals) {
+      var p = normPhone_(phoneVals[i][0]);
+      if (p) { (byPhone[p] = byPhone[p] || []).push(rowNo); }
+    }
+    var c = normCompany_(compVals[i][0]);
+    if (c) {
+      (byComp[c] = byComp[c] || []).push(rowNo);
+      var cc = coreCompany_(compVals[i][0]);
+      if (cc) (byCore[cc] = byCore[cc] || []).push(rowNo);
+    }
+  }
+
+  // 架電結果から対象者の分を時系列で取得
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var crSh = ss.getSheetByName("架電結果");
+  if (!crSh || crSh.getLastRow() < 2) { rep.message = "架電結果がありません"; return rep; }
+  var crRows = crSh.getDataRange().getValues();
+  var myName = FULL_NAME_MAP[cfg.pin] || cfg.name;
+  var results = [];
+  for (var k = 1; k < crRows.length; k++) {
+    var rr = crRows[k];
+    if (String(rr[0] || "").trim() !== String(myName).trim()) continue;
+    results.push({
+      date: normalizeYMD(rr[1]), time: String(rr[2] || ""), name: String(rr[0] || ""),
+      company: String(rr[3] || ""), phone: String(rr[4] || ""), result: String(rr[6] || ""),
+      srcRow: Number(rr[15]) || 0,   // v49: 元スプレッドシートの行番号
+      seq: k
+    });
+  }
+  if (!results.length) { rep.message = "この方の架電結果がありません"; return rep; }
+  results.sort(function (a, b) {
+    var d = (a.date + " " + a.time).localeCompare(b.date + " " + b.time);
+    return d !== 0 ? d : (a.seq - b.seq);
+  });
+
+  // キーごとにグループ化（電話番号優先 → 会社名 → 核名称）
+  var groups = {};
+  for (var m = 0; m < results.length; m++) {
+    var r = results[m];
+    var key = null, rows = null;
+    // v49: 元行が記録されていれば、その行に確定（会社名照合を経由しない＝ズレゼロ）
+    if (r.srcRow && r.srcRow >= startRow && r.srcRow <= lastRow) {
+      key = "R:" + r.srcRow; rows = [r.srcRow];
+      if (!groups[key]) groups[key] = { rows: rows, res: [] };
+      groups[key].res.push(r);
+      continue;
+    }
+    var ph = normPhone_(r.phone);
+    if (ph && byPhone[ph]) { key = "P:" + ph; rows = byPhone[ph]; }
+    if (!rows) {
+      var cn = normCompany_(r.company);
+      if (cn && byComp[cn]) { key = "C:" + cn; rows = byComp[cn]; }
+    }
+    if (!rows) {
+      var co = coreCompany_(r.company);
+      // 核名称は「双方で一意」のときだけ採用（誤マッチ防止）
+      if (co && byCore[co] && byCore[co].length === 1) { key = "K:" + co; rows = byCore[co]; }
+    }
+    if (!rows) { rep.unmatched.push(r.company + "（" + r.date + "）"); continue; }
+    if (!groups[key]) groups[key] = { rows: rows, res: [] };
+    groups[key].res.push(r);
+  }
+
+  // 行への割り当て（元行が足りない場合は最後の行に集約＝最新が残る）
+  var assign = {};  // rowNo -> result
+  Object.keys(groups).forEach(function (key) {
+    var g = groups[key];
+    for (var i = 0; i < g.res.length; i++) {
+      var rowNo = (i < g.rows.length) ? g.rows[i] : g.rows[g.rows.length - 1];
+      assign[rowNo] = g.res[i];  // 後勝ち＝最新の結果が残る
+    }
+  });
+
+  if (dryRun) {
+    rep.ok = true;
+    rep.written = Object.keys(assign).length;
+    rep.message = "確認のみ（書き込みなし）";
+    return rep;
+  }
+
+  // 列ごとにまとめて書き込む（既存の他列は触らない）
+  var targets = [
+    { col: cfg.colDate, get: function (r) { return r.date ? Utilities.formatDate(new Date(r.date + "T00:00:00+09:00"), "Asia/Tokyo", cfg.dateFmt) : ""; } },
+    { col: cfg.colTime, get: function (r) { return r.time; } },
+    { col: cfg.colName, get: function (r) { return r.name; } },
+    { col: cfg.colResult, get: function (r) { return cfg.resultMap[r.result] || r.result; } }
+  ];
+  var wrote = 0, skipped = 0;
+  for (var t = 0; t < targets.length; t++) {
+    var tg = targets[t];
+    if (!tg.col) continue;
+    var colVals = tsh.getRange(startRow, tg.col, nRows, 1).getValues();
+    var changed = false;
+    for (var rowNo in assign) {
+      var idx = Number(rowNo) - startRow;
+      if (idx < 0 || idx >= nRows) continue;
+      var cur = colVals[idx][0];
+      var val = tg.get(assign[rowNo]);
+      if (val === "" || val === null) continue;
+      if (!cfg.overwrite && String(cur || "").trim() !== "" && String(cur).trim() !== String(val)) {
+        skipped++; continue;  // 既に手入力がある場合は尊重
+      }
+      if (String(cur) !== String(val)) { colVals[idx][0] = val; changed = true; }
+    }
+    if (changed) { tsh.getRange(startRow, tg.col, nRows, 1).setValues(colVals); }
+  }
+  wrote = Object.keys(assign).length;
+
+  rep.ok = true; rep.written = wrote; rep.skipped = skipped;
+  rep.message = "反映 " + wrote + "件 / 未マッチ " + rep.unmatched.length + "件"
+    + (skipped ? " / 既存値を尊重 " + skipped + "件" : "");
+
+  // 設定シートに結果を記録
+  try {
+    var csh = SpreadsheetApp.openById(SHEET_ID).getSheetByName(EXT_CONFIG_SHEET);
+    if (csh && cfg.row) { csh.getRange(cfg.row, 18, 1, 2).setValues([[new Date(), rep.message]]); }
+  } catch (e) {}
+  logAudit("元シート反映", "管理者", rep.name, rep.message);
+  return rep;
+}
+
+// 全員 or 指定PINを同期
+function syncExternalAll(pinFilter, dryRun) {
+  var cfgs = readExtConfigs_();
+  var reports = [];
+  for (var i = 0; i < cfgs.length; i++) {
+    if (pinFilter && String(cfgs[i].pin) !== String(pinFilter)) continue;
+    reports.push(syncExternalFor_(cfgs[i], dryRun));
+  }
+  return reports;
+}
+// 時間主導トリガー用（1時間ごと等で自動反映したい場合にこの関数を指定）
+function autoSyncExternal() { syncExternalAll(null, false); }
+
 function setupMemberSheets() {
   var ss = SpreadsheetApp.openById(SHEET_ID);
   var created = [], existed = [];
@@ -1980,13 +2453,14 @@ function setupMemberSheets() {
 // 架電リストの見出し行を整える (会社名/電話番号/担当者/住所)
 function writeListHeader_(sh) {
   try {
-    sh.getRange(1, 1, 1, 4).setValues([["会社名", "電話番号", "担当者", "住所"]]);
-    sh.getRange(1, 1, 1, 4).setFontWeight("bold").setBackground("#e8eaf6");
+    sh.getRange(1, 1, 1, 5).setValues([["会社名", "電話番号", "担当者", "住所", "元行"]]);
+    sh.getRange(1, 1, 1, 5).setFontWeight("bold").setBackground("#e8eaf6");
     sh.setFrozenRows(1);
     sh.setColumnWidth(1, 220);
     sh.setColumnWidth(2, 130);
     sh.setColumnWidth(3, 120);
     sh.setColumnWidth(4, 260);
+    sh.setColumnWidth(5, 60);
     // 電話番号は先頭0が消えないよう書式を文字列に
     sh.getRange(2, 2, Math.max(1, sh.getMaxRows() - 1), 1).setNumberFormat("@");
   } catch (e) {}
@@ -1999,7 +2473,7 @@ function setupSheets() {
   var ss = SpreadsheetApp.openById(SHEET_ID);
   ensureSheet(ss, "勤怠", ["名前", "日付", "出勤", "退勤", "休憩開始", "休憩終了"]);
   ensureSheet(ss, "架電結果", ["名前", "日付", "時刻", "会社名", "電話番号", "担当者",
-    "結果", "通話時間", "チェック数", "暴走", "切り返しアウト", "メモ"]);
+    "結果", "通話時間", "チェック数", "暴走", "切り返しアウト", "メモ", "終話ステップ", "CID", "通話秒", "元行"]);
   ensureSheet(ss, "再架電予定", ["登録日時", "名前", "再架電予定日時", "会社名", "電話番号", "担当者", "メモ", "状態"]);
   // v28: NGリスト (全アポインター共有・架電禁止)
   ensureSheet(ss, "NGリスト", ["登録日時", "登録者", "電話番号", "会社名", "理由", "状態"]);

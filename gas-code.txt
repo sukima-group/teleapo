@@ -1,5 +1,5 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v51
+// 川嶋メソッド テレアポ管理 — GAS完全版 v52
 // メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
 // 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
 //
@@ -66,7 +66,7 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         message: "GAS Web App is alive",
-        version: "v51",
+        version: "v52",
         timestamp: new Date().toISOString(),
         note: "Use ?pin=XXX to fetch list, or POST with type field"
       })).setMimeType(ContentService.MimeType.JSON);
@@ -177,7 +177,7 @@ function doPost(e) {
         status: "ok",
         message: "GAS connected",
         timestamp: new Date().toISOString(),
-        version: "v51"
+        version: "v52"
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -1443,14 +1443,35 @@ function doPost(e) {
       var sh2 = ensureSheet(ss, "架電結果",
         ["名前", "日付", "時刻", "会社名", "電話番号", "担当者",
          "結果", "通話時間", "チェック数", "暴走", "切り返しアウト", "メモ", "終話ステップ", "CID", "通話秒", "元行"]);
-      sh2.appendRow([
+      // v52: 同一通話の二重登録を防ぐ（直近15秒以内に同じ担当者×同じ電話番号があれば、
+      //      新規追加せず最後の行を上書き＝確定した結果で置き換える）
+      var dupRowNo = 0;
+      try {
+        var lastR = sh2.getLastRow();
+        if (lastR > 1) {
+          var scanFrom = Math.max(2, lastR - 20);
+          var scanVals = sh2.getRange(scanFrom, 1, lastR - scanFrom + 1, 15).getValues();
+          for (var dvi = scanVals.length - 1; dvi >= 0; dvi--) {
+            var sv0 = scanVals[dvi];
+            if (String(sv0[0] || "") !== String(d.name || "")) continue;
+            if (!d.phone || String(sv0[4] || "") !== String(d.phone)) continue;
+            var prevId = Number(sv0[13]) || 0;   // CID = 記録時刻(ms)
+            var nowId = Number(d.cid) || 0;
+            if (prevId && nowId && Math.abs(nowId - prevId) <= 15000) { dupRowNo = scanFrom + dvi; }
+            break;
+          }
+        }
+      } catch (dupErr) {}
+      var crRow = [
         d.name, d.date, d.time,
         d.company, d.phone, d.person,
         d.result, d.duration, d.checkedCount,
         d.bousou, d.outText, d.memo,
         d.endStep || "", d.cid || "", Number(d.talkSec) || 0,
         Number(d.srcRow) || ""
-      ]);
+      ];
+      if (dupRowNo > 0) { sh2.getRange(dupRowNo, 1, 1, crRow.length).setValues([crRow]); }
+      else { sh2.appendRow(crRow); }
       // v43: 文字起こし本文は専用シートへ (CIDで架電結果と紐づけ)
       if (d.transcript) {
         try {

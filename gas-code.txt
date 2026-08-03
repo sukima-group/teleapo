@@ -1,5 +1,5 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v46
+// 川嶋メソッド テレアポ管理 — GAS完全版 v47
 // メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
 // 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
 //
@@ -66,7 +66,7 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         message: "GAS Web App is alive",
-        version: "v46",
+        version: "v47",
         timestamp: new Date().toISOString(),
         note: "Use ?pin=XXX to fetch list, or POST with type field"
       })).setMimeType(ContentService.MimeType.JSON);
@@ -92,7 +92,7 @@ function doGet(e) {
 
     if (!sheet) {
       // v46: 新メンバーの初回ログイン - シートを自動作成し「リスト未登録」として正常応答 (エラーにしない)
-      try { sheet = ss.insertSheet(sheetName); } catch (mkErr) {}
+      try { sheet = ss.insertSheet(sheetName); writeListHeader_(sheet); } catch (mkErr) {}
       return ContentService.createTextOutput(
         JSON.stringify({error: "データが空です", created: true, rows: [], cm: {}})
       ).setMimeType(ContentService.MimeType.JSON);
@@ -176,7 +176,7 @@ function doPost(e) {
         status: "ok",
         message: "GAS connected",
         timestamp: new Date().toISOString(),
-        version: "v46"
+        version: "v47"
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -1071,7 +1071,7 @@ function doPost(e) {
           var mSh = dgSs.getSheetByName(shName);
           var createdNow = false;
           if (!mSh) {
-            try { mSh = dgSs.insertSheet(shName); createdNow = true; } catch (dgMkErr) {}
+            try { mSh = dgSs.insertSheet(shName); writeListHeader_(mSh); createdNow = true; } catch (dgMkErr) {}
           }
           var rowCnt = 0;
           try { rowCnt = mSh ? Math.max(0, mSh.getLastRow() - 1) : -1; } catch (e) { rowCnt = -1; }
@@ -1110,6 +1110,23 @@ function doPost(e) {
       } catch (dgErr) {
         return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(dgErr) }))
           .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v47: 架電リストシートの一括作成 (管理者) =====
+    if (d.type === "create_list_sheets") {
+      try {
+        var clRes = setupMemberSheets();
+        logAudit("リストシート作成", "管理者",
+                 "作成:" + (clRes.created.join("・") || "なし"),
+                 "既存:" + (clRes.existed.join("・") || "なし"));
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "ok", created: clRes.created, existed: clRes.existed
+        })).setMimeType(ContentService.MimeType.JSON);
+      } catch (clErr) {
+        return ContentService.createTextOutput(JSON.stringify({
+          status: "error", message: String(clErr)
+        })).setMimeType(ContentService.MimeType.JSON);
       }
     }
 
@@ -1935,6 +1952,46 @@ function ensureSheet(ss, name, headers) {
 // v15: 手動実行用 - 初回セットアップ
 // Apps Scriptエディタで「setupSheets」を選んで実行 → 権限承認 → 全シート初期化
 // ==========================================
+// ===== v47: 各アポインターの架電リストシートを一括作成 =====
+// 手動実行 or system_diag / create_list_sheets から呼ばれる。既存シートは変更しない(冪等)
+function setupMemberSheets() {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var created = [], existed = [];
+  var pins = Object.keys(PIN_MAP);
+  for (var i = 0; i < pins.length; i++) {
+    var nm = PIN_MAP[pins[i]];
+    var sh = ss.getSheetByName(nm);
+    if (sh) {
+      // 既存だがヘッダーが無い場合のみ補う (データは触らない)
+      try {
+        if (sh.getLastRow() === 0) { writeListHeader_(sh); }
+      } catch (e) {}
+      existed.push(nm);
+      continue;
+    }
+    sh = ss.insertSheet(nm);
+    writeListHeader_(sh);
+    created.push(nm);
+  }
+  Logger.log("✅ 架電リストシート 作成:" + created.join(",") + " / 既存:" + existed.join(","));
+  return { created: created, existed: existed };
+}
+
+// 架電リストの見出し行を整える (会社名/電話番号/担当者/住所)
+function writeListHeader_(sh) {
+  try {
+    sh.getRange(1, 1, 1, 4).setValues([["会社名", "電話番号", "担当者", "住所"]]);
+    sh.getRange(1, 1, 1, 4).setFontWeight("bold").setBackground("#e8eaf6");
+    sh.setFrozenRows(1);
+    sh.setColumnWidth(1, 220);
+    sh.setColumnWidth(2, 130);
+    sh.setColumnWidth(3, 120);
+    sh.setColumnWidth(4, 260);
+    // 電話番号は先頭0が消えないよう書式を文字列に
+    sh.getRange(2, 2, Math.max(1, sh.getMaxRows() - 1), 1).setNumberFormat("@");
+  } catch (e) {}
+}
+
 function setupSheets() {
   Logger.log("=== セットアップ開始 ===");
 
@@ -1956,6 +2013,8 @@ function setupSheets() {
   ensureSheet(ss, "監査ログ", ["日時", "種別", "実行者", "対象", "詳細"]);
   ensureSheet(ss, "アカウント認証", ["PIN", "名前", "ハッシュ", "設定日時"]);
   ensureSheet(ss, "文字起こし", ["日時", "名前", "会社名", "電話番号", "結果", "通話時間", "CID", "本文"]);
+  // v47: 各アポインターの架電リストシート (藤田/本郷/小澤 など) を自動作成
+  setupMemberSheets();
   Logger.log("✅ メインスプレッドシートのシート初期化完了");
 
   // 管理者用スプレッドシート

@@ -1,5 +1,5 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v52
+// 川嶋メソッド テレアポ管理 — GAS完全版 v57
 // メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
 // 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
 //
@@ -66,7 +66,7 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         message: "GAS Web App is alive",
-        version: "v52",
+        version: "v57",
         timestamp: new Date().toISOString(),
         note: "Use ?pin=XXX to fetch list, or POST with type field"
       })).setMimeType(ContentService.MimeType.JSON);
@@ -177,7 +177,7 @@ function doPost(e) {
         status: "ok",
         message: "GAS connected",
         timestamp: new Date().toISOString(),
-        version: "v52"
+        version: "v57"
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -227,7 +227,9 @@ function doPost(e) {
       try {
         var listSh = ss2.getSheetByName(sheetName);
         if (listSh && listSh.getLastRow() > 1) {
-          var listData = listSh.getRange(2, 1, listSh.getLastRow() - 1, 4).getValues();
+          // v53: 5列目「元行」も返す（架電位置の復元・元シート反映の突合に使う）
+          var listCols = Math.min(5, Math.max(4, listSh.getLastColumn()));
+          var listData = listSh.getRange(2, 1, listSh.getLastRow() - 1, listCols).getValues();
           // 空行除外
           result.list = listData.filter(function(r){
             return r.some(function(c){return c!==null&&c!==""})
@@ -417,6 +419,27 @@ function doPost(e) {
           }
         }
       } catch (e) { result.announcements = []; }
+
+      // v57: 架電位置（この端末で続きから再開するため）
+      try {
+        var posSh = ss2.getSheetByName("架電位置");
+        if (posSh && posSh.getLastRow() > 1) {
+          var posRows = posSh.getDataRange().getValues();
+          for (var pi = 1; pi < posRows.length; pi++) {
+            if (String(posRows[pi][0]).trim() === String(d.pin).trim()) {
+              result.pos = {
+                dev: String(posRows[pi][2] || ""),
+                i: Number(posRows[pi][3]) || 0,
+                co: String(posRows[pi][4] || ""),
+                ph: String(posRows[pi][5] || ""),
+                src: String(posRows[pi][6] || ""),
+                at: posRows[pi][7] ? new Date(posRows[pi][7]).getTime() : 0
+              };
+              break;
+            }
+          }
+        }
+      } catch (posErr) { result.posError = String(posErr); }
 
       return ContentService.createTextOutput(JSON.stringify(result))
         .setMimeType(ContentService.MimeType.JSON);
@@ -1186,6 +1209,31 @@ function doPost(e) {
           .setMimeType(ContentService.MimeType.JSON);
       }
     }
+    // ===== v57: 架電位置の保存（端末内の保存が消えても続きから再開できるように） =====
+    if (d.type === "pos_save") {
+      try {
+        var psSs = SpreadsheetApp.openById(SHEET_ID);
+        var psSh = ensureSheet(psSs, "架電位置",
+          ["PIN", "名前", "端末ID", "行番号", "会社名", "電話番号", "元行", "更新日時"]);
+        var psRow = [String(d.pin), FULL_NAME_MAP[d.pin] || "", String(d.dev || ""),
+          Number(d.i) || 0, String(d.co || ""), String(d.ph || ""), String(d.src || ""), new Date()];
+        var psFound = 0;
+        if (psSh.getLastRow() > 1) {
+          var psVals = psSh.getRange(2, 1, psSh.getLastRow() - 1, 1).getValues();
+          for (var psi = 0; psi < psVals.length; psi++) {
+            if (String(psVals[psi][0]).trim() === String(d.pin).trim()) { psFound = psi + 2; break; }
+          }
+        }
+        if (psFound > 0) { psSh.getRange(psFound, 1, 1, psRow.length).setValues([psRow]); }
+        else { psSh.appendRow(psRow); }
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok" }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (psErr) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(psErr) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
     // v51: 元スプレッドシートのタブ一覧（選択肢用）
     if (d.type === "ext_sheets") {
       try {
@@ -2684,6 +2732,7 @@ function setupSheets() {
   ensureSheet(ss, "お知らせ", ["投稿日時", "タイトル", "本文", "重要度", "掲載", "ID"]);
   ensureSheet(ss, "監査ログ", ["日時", "種別", "実行者", "対象", "詳細"]);
   ensureSheet(ss, "アカウント認証", ["PIN", "名前", "ハッシュ", "設定日時"]);
+  ensureSheet(ss, "架電位置", ["PIN", "名前", "端末ID", "行番号", "会社名", "電話番号", "元行", "更新日時"]);
   ensureSheet(ss, "文字起こし", ["日時", "名前", "会社名", "電話番号", "結果", "通話時間", "CID", "本文"]);
   // v47: 各アポインターの架電リストシート (藤田/本郷/小澤 など) を自動作成
   setupMemberSheets();

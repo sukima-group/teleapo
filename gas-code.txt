@@ -1,5 +1,5 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v60
+// 川嶋メソッド テレアポ管理 — GAS完全版 v62
 // メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
 // 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
 //
@@ -34,17 +34,18 @@
 
 var SHEET_ID = "1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM";
 var ADMIN_SHEET_ID = "1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ";  // v14: 管理者用 退勤レポート用
-var PIN_MAP = {"091":"柏木", "092":"園田", "093":"堀内", "094":"河野", "095":"福田", "097":"藪内", "098":"竹之内", "101":"藤田", "103":"本郷", "105":"小澤"};
+var PIN_MAP = {"091":"柏木", "092":"園田", "093":"堀内", "094":"河野", "095":"福田", "097":"藪内", "098":"竹之内", "101":"藤田", "103":"本郷", "105":"小澤", "108":"榮"};
 // v18: 全名マップ - 出退勤・履歴・アポでは "河野由香" のような全名で記録される
 // v25: 福田貴美恵 PIN 095 追加
 // v26: 藪内亜希 PIN 097 追加 / 発信件数通知 (dial_count_notify) 追加
-var FULL_NAME_MAP = {"091":"柏木幸代", "092":"園田絵里", "093":"堀内真紀子", "094":"河野由香", "095":"福田貴美恵", "097":"藪内亜希", "098":"竹之内優子", "101":"藤田直美", "103":"本郷真弓", "105":"小澤幸枝"};
+var FULL_NAME_MAP = {"091":"柏木幸代", "092":"園田絵里", "093":"堀内真紀子", "094":"河野由香", "095":"福田貴美恵", "097":"藪内亜希", "098":"竹之内優子", "101":"藤田直美", "103":"本郷真弓", "105":"小澤幸枝", "108":"榮智子"};
 // v45: 各アポインター本人のGmail (空欄=未登録・送信スキップ)
 var STAFF_EMAILS = {
   "091":"", "092":"", "093":"", "094":"", "095":"", "097":"", "098":"",
   "101":"fujita.sukimagroup@gmail.com",
   "103":"hongo.sukimagroup@gmail.com",
-  "105":"ozawa.sukimagroup@gmail.com"
+  "105":"ozawa.sukimagroup@gmail.com",
+  "108":"sakae.sukimagroup@gmail.com"
 };
 function personalEmailFor(pin){ return STAFF_EMAILS[String(pin)] || ""; }
 function broadcastEmails(){
@@ -66,7 +67,7 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         message: "GAS Web App is alive",
-        version: "v60",
+        version: "v62",
         timestamp: new Date().toISOString(),
         note: "Use ?pin=XXX to fetch list, or POST with type field"
       })).setMimeType(ContentService.MimeType.JSON);
@@ -92,7 +93,7 @@ function doGet(e) {
 
     if (!sheet) {
       // v46: 新メンバーの初回ログイン - シートを自動作成し「リスト未登録」として正常応答 (エラーにしない)
-      try { sheet = ss.insertSheet(sheetName); writeListHeader_(sheet); } catch (mkErr) {}
+      try { if (sheetName) { sheet = ss.insertSheet(sheetName); writeListHeader_(sheet); } } catch (mkErr) {}
       return ContentService.createTextOutput(
         JSON.stringify({error: "データが空です", created: true, rows: [], cm: {}})
       ).setMimeType(ContentService.MimeType.JSON);
@@ -177,7 +178,7 @@ function doPost(e) {
         status: "ok",
         message: "GAS connected",
         timestamp: new Date().toISOString(),
-        version: "v60"
+        version: "v62"
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -1103,7 +1104,7 @@ function doPost(e) {
           var mSh = dgSs.getSheetByName(shName);
           var createdNow = false;
           if (!mSh) {
-            try { mSh = dgSs.insertSheet(shName); writeListHeader_(mSh); createdNow = true; } catch (dgMkErr) {}
+            try { if (shName) { mSh = dgSs.insertSheet(shName); writeListHeader_(mSh); createdNow = true; } } catch (dgMkErr) {}
           }
           var rowCnt = 0;
           try { rowCnt = mSh ? Math.max(0, mSh.getLastRow() - 1) : -1; } catch (e) { rowCnt = -1; }
@@ -1417,6 +1418,180 @@ function doPost(e) {
       }
     }
 
+    // ===== v62: シフト表の取り込み（管理者） =====
+    if (d.type === "shift_import") {
+      try {
+        var siOut = [];
+        (d.map || []).forEach(function (m) {
+          if (!m || !m.pin || (!m.sheetName && !m.gid)) return;
+          siOut.push(importShiftSheet_(m.pin, d.ssId, m.sheetName, m.gid, d.month));
+        });
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok", reports: siOut }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (siErr) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(siErr) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // ===== v62: 実績集計（管理者）— 日ごと／月間日平均・月間合計 =====
+    // 稼働実績(h) / アポ獲得数 / 架電件数 / 架電リスト数 / アポ率(%)
+    if (d.type === "perf_summary") {
+      try {
+        var pfSs = SpreadsheetApp.openById(SHEET_ID);
+        var month = String(d.month);
+        var pfPins = Object.keys(FULL_NAME_MAP);
+        var stat = {};   // pin -> { "yyyy-MM-dd": {workMin, apo, calls} }
+        pfPins.forEach(function (p) { stat[p] = {}; });
+        var nameToPin = {};
+        pfPins.forEach(function (p) { nameToPin[FULL_NAME_MAP[p]] = p; });
+
+        function bucket(pin, key) {
+          if (!stat[pin]) return null;
+          if (!stat[pin][key]) stat[pin][key] = { workMin: 0, apo: 0, calls: 0, planMin: 0 };
+          return stat[pin][key];
+        }
+        function ymd(v) {
+          if (v instanceof Date) return Utilities.formatDate(v, "Asia/Tokyo", "yyyy-MM-dd");
+          return normalizeYMD(v);
+        }
+        // 稼働実績（勤怠シート: 出勤・退勤・休憩）
+        var atSh = pfSs.getSheetByName("勤怠");
+        if (atSh && atSh.getLastRow() > 1) {
+          var atR = atSh.getDataRange().getValues();
+          var seen = {};
+          for (var ai = atR.length - 1; ai >= 1; ai--) {   // 後勝ち（新しい行を採用）
+            var key = ymd(atR[ai][1]);
+            if (!key || key.slice(0, 7) !== month) continue;
+            var pin = nameToPin[String(atR[ai][0] || "").trim()];
+            if (!pin) continue;
+            var sk = pin + "|" + key;
+            if (seen[sk]) continue;
+            seen[sk] = true;
+            var ci = hhmm_(atR[ai][2]), co = hhmm_(atR[ai][3]);
+            var bs = hhmm_(atR[ai][4]), be = hhmm_(atR[ai][5]);
+            if (!ci || !co) continue;
+            var wm = toMin_(co) - toMin_(ci);
+            if (bs && be && toMin_(be) > toMin_(bs)) wm -= (toMin_(be) - toMin_(bs));
+            var b = bucket(pin, key); if (b) b.workMin += Math.max(0, wm);
+          }
+        }
+        // 架電件数（架電結果シート）
+        var crSh = pfSs.getSheetByName("架電結果");
+        if (crSh && crSh.getLastRow() > 1) {
+          var crR = crSh.getDataRange().getValues();
+          for (var ci2 = 1; ci2 < crR.length; ci2++) {
+            var k2 = ymd(crR[ci2][1]);
+            if (!k2 || k2.slice(0, 7) !== month) continue;
+            var p2 = nameToPin[String(crR[ci2][0] || "").trim()];
+            if (!p2) continue;
+            var b2 = bucket(p2, k2); if (b2) b2.calls++;
+          }
+        }
+        // アポ獲得数（アポイントシート・報告者=名前）
+        var apSh = pfSs.getSheetByName("アポイント");
+        if (apSh && apSh.getLastRow() > 1) {
+          var apR = apSh.getDataRange().getValues();
+          for (var ai2 = 1; ai2 < apR.length; ai2++) {
+            var k3 = ymd(apR[ai2][0]);
+            if (!k3 || k3.slice(0, 7) !== month) continue;
+            var p3 = nameToPin[String(apR[ai2][1] || "").trim()];
+            if (!p3) continue;
+            var b3 = bucket(p3, k3); if (b3) b3.apo++;
+          }
+        }
+        // 予定（シフト明細）
+        var dtSh2 = pfSs.getSheetByName("シフト明細");
+        if (dtSh2 && dtSh2.getLastRow() > 1) {
+          var dtR2 = dtSh2.getDataRange().getValues();
+          for (var si2 = 1; si2 < dtR2.length; si2++) {
+            if (String(dtR2[si2][0]) !== month) continue;
+            var k4 = ymd(dtR2[si2][1]);
+            var p4 = String(dtR2[si2][2]);
+            var b4 = bucket(p4, k4); if (b4) b4.planMin += (Number(dtR2[si2][7]) || 0);
+          }
+        }
+        // 架電リスト数（現在のリスト行数）
+        var listCount = {};
+        pfPins.forEach(function (p) {
+          var nm2 = memberSheetName_(p);
+          var lsh2 = nm2 ? pfSs.getSheetByName(nm2) : null;
+          listCount[p] = lsh2 ? Math.max(0, lsh2.getLastRow() - 1) : 0;
+        });
+
+        // 集計を組み立てる
+        var members = [];
+        var mp2 = month.split("-"), yy2 = Number(mp2[0]), mm2 = Number(mp2[1]);
+        var lastDay2 = new Date(yy2, mm2, 0).getDate();
+        pfPins.forEach(function (p) {
+          var days = [], tW = 0, tA = 0, tC = 0, activeDays = 0;
+          for (var dd = 1; dd <= lastDay2; dd++) {
+            var key2 = yy2 + "-" + ("0" + mm2).slice(-2) + "-" + ("0" + dd).slice(-2);
+            var v2 = stat[p][key2] || { workMin: 0, apo: 0, calls: 0, planMin: 0 };
+            if (v2.workMin || v2.calls || v2.apo || v2.planMin) {
+              days.push({
+                date: key2, workH: Math.round(v2.workMin / 60 * 100) / 100,
+                planH: Math.round(v2.planMin / 60 * 100) / 100,
+                apo: v2.apo, calls: v2.calls, listCount: listCount[p],
+                rate: v2.calls ? Math.round(v2.apo / v2.calls * 1000) / 10 : 0
+              });
+              if (v2.workMin > 0) activeDays++;
+              tW += v2.workMin; tA += v2.apo; tC += v2.calls;
+            }
+          }
+          members.push({
+            pin: p, name: FULL_NAME_MAP[p], days: days,
+            totalWorkH: Math.round(tW / 60 * 100) / 100, totalApo: tA, totalCalls: tC,
+            listCount: listCount[p], activeDays: activeDays,
+            rate: tC ? Math.round(tA / tC * 1000) / 10 : 0,
+            avgWorkH: activeDays ? Math.round(tW / 60 / activeDays * 100) / 100 : 0,
+            avgApo: activeDays ? Math.round(tA / activeDays * 100) / 100 : 0,
+            avgCalls: activeDays ? Math.round(tC / activeDays * 10) / 10 : 0
+          });
+        });
+
+        // スプレッドシートにも出力
+        if (d.writeSheet === true) {
+          var pSh = ensureSheet(pfSs, "実績集計",
+            ["対象月", "PIN", "名前", "日付", "稼働実績(h)", "アポ獲得数", "架電件数", "架電リスト数", "アポ率(%)"]);
+          pSh.clear();
+          pSh.getRange(1, 1, 1, 9).setValues([["対象月", "PIN", "名前", "日付", "稼働実績(h)", "アポ獲得数", "架電件数", "架電リスト数", "アポ率(%)"]]);
+          pSh.getRange(1, 1, 1, 9).setFontWeight("bold").setBackground("#e8eaf6");
+          var outR = [];
+          members.forEach(function (mb) {
+            mb.days.forEach(function (dv) {
+              outR.push([month, mb.pin, mb.name, dv.date, dv.workH, dv.apo, dv.calls, dv.listCount, dv.rate]);
+            });
+            if (mb.days.length) {
+              outR.push([month, mb.pin, mb.name, "▼月間合計", mb.totalWorkH, mb.totalApo, mb.totalCalls, mb.listCount, mb.rate]);
+              outR.push([month, mb.pin, mb.name, "▼日平均(" + mb.activeDays + "日)", mb.avgWorkH, mb.avgApo, mb.avgCalls, mb.listCount, mb.rate]);
+            }
+          });
+          if (outR.length) pSh.getRange(2, 1, outR.length, 9).setValues(outR);
+          pSh.setFrozenRows(1);
+          logAudit("実績集計出力", "管理者", month, outR.length + "行");
+        }
+        return ContentService.createTextOutput(JSON.stringify({ status: "ok", month: month, members: members }))
+          .setMimeType(ContentService.MimeType.JSON);
+      } catch (pfErr) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(pfErr) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
+    // v61: 不明なシート（シート4 等）の整理
+    if (d.type === "cleanup_sheets") {
+      try {
+        var cuRes = cleanupStraySheets();
+        return ContentService.createTextOutput(JSON.stringify(
+          { status: "ok", removed: cuRes.removed, kept: cuRes.kept }
+        )).setMimeType(ContentService.MimeType.JSON);
+      } catch (cuErr2) {
+        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(cuErr2) }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+    }
+
     // v51: 元スプレッドシートのタブ一覧（選択肢用）
     if (d.type === "ext_sheets") {
       try {
@@ -1539,6 +1714,7 @@ function doPost(e) {
         var ss_c = SpreadsheetApp.openById(SHEET_ID);
         var sh_c = ss_c.getSheetByName(sheetName_c);
         if (!sh_c) {
+          if (!sheetName_c) { throw new Error("担当者のシート名を特定できません (PIN:" + d.pin + ")"); }
           sh_c = ss_c.insertSheet(sheetName_c);
         }
         // 最初のチャンク → シートをクリアしてヘッダーを書く
@@ -1616,6 +1792,7 @@ function doPost(e) {
       var ss_u = SpreadsheetApp.openById(SHEET_ID);
       var sh_u = ss_u.getSheetByName(sheetName_u);
       if (!sh_u) {
+        if (!sheetName_u) { throw new Error("担当者のシート名を特定できません (PIN:" + d.pin + ")"); }
         sh_u = ss_u.insertSheet(sheetName_u);
       }
       // 既存内容を全削除してから書き直し
@@ -2617,7 +2794,8 @@ function importFromExternal_(cfg) {
   if (!out.length) { rep.message = "取り込める行がありません（会社名列をご確認ください）"; return rep; }
 
   var ss = SpreadsheetApp.openById(SHEET_ID);
-  var name = PIN_MAP[cfg.pin];
+  var name = memberSheetName_(cfg.pin);
+  if (!name) { rep.message = "担当者のシート名を特定できません（PIN:" + cfg.pin + "）。連携設定のPINをご確認ください"; return rep; }
   var lsh = ss.getSheetByName(name);
   if (!lsh) { lsh = ss.insertSheet(name); }
   writeListHeader_(lsh);
@@ -2902,12 +3080,169 @@ function syncExternalAll(pinFilter, dryRun) {
 // 時間主導トリガー用（1時間ごと等で自動反映したい場合にこの関数を指定）
 function autoSyncExternal() { syncExternalAll(null, false); }
 
+// v61: 担当者のリストシート名を安全に得る。取れなければ "" を返し、呼び出し側は作成しない。
+//      （名前が undefined のまま insertSheet すると「シート4」等の不明なシートができてしまう）
+function memberSheetName_(pin) {
+  var nm = PIN_MAP[String(pin || "").trim()];
+  return (typeof nm === "string" && nm.trim()) ? nm.trim() : "";
+}
+// v61: 誤って作られた「シートN」を掃除する（データが入っていないものだけ削除）
+function cleanupStraySheets() {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var keep = {};
+  Object.keys(PIN_MAP).forEach(function (p) { keep[PIN_MAP[p]] = true; });
+  var removed = [], kept = [];
+  var all = ss.getSheets();
+  for (var i = 0; i < all.length; i++) {
+    var nm = all[i].getName();
+    if (!/^(シート|Sheet)\s*\d+$/.test(nm)) continue;   // 「シート4」「Sheet5」形式のみ対象
+    if (keep[nm]) continue;
+    var used = 0;
+    try { used = all[i].getLastRow(); } catch (e) { used = 1; }
+    if (used <= 1) {
+      try { ss.deleteSheet(all[i]); removed.push(nm); } catch (e) { kept.push(nm + "(削除失敗)"); }
+    } else {
+      kept.push(nm + "(" + (used - 1) + "行のデータあり・残しました)");
+    }
+  }
+  logAudit("不明シート整理", "管理者", "削除:" + (removed.join("・") || "なし"), kept.join("・"));
+  return { removed: removed, kept: kept };
+}
+
+// ═══════════ v62: シフト表の取り込み（既存の勤務表シートを読み込む）═══════════
+// 対応形式:
+//   A形式) 日付 / 曜日 / 午前開始 / 午前終了 / 午後開始 / 午後終了   ※中抜けは午前終了〜午後開始
+//   B形式) 日付 / 曜日 / 開始時刻 / 終了時刻 / 休憩(分)              ※休憩は分数で控除
+function hhmm_(v) {
+  if (v === null || v === undefined || v === "") return "";
+  if (v instanceof Date) return Utilities.formatDate(v, "Asia/Tokyo", "HH:mm");
+  var t = String(v).trim();
+  if (!t || t === "-" || t === "−" || t === "×" || t === "x" || t === "X") return "";
+  var m = t.match(/(\d{1,2})\s*[:：]\s*(\d{1,2})/);
+  if (m) return ("0" + m[1]).slice(-2) + ":" + ("0" + m[2]).slice(-2);
+  return "";
+}
+function minsFrom_(v) {
+  if (v === null || v === undefined || v === "") return 0;
+  var t = String(v).replace(/[^\d.]/g, "");
+  return t ? Math.round(Number(t)) : 0;
+}
+function toMin_(t) { return t ? parseInt(t.slice(0, 2)) * 60 + parseInt(t.slice(3, 5)) : 0; }
+// 1行分を {start,end,breaks,breakMins,mins} に正規化する
+function parseShiftRow_(cells, layout) {
+  var out = { start: "", end: "", breaks: [], breakMins: 0, mins: 0 };
+  if (layout === "AMPM") {
+    var a1 = hhmm_(cells[0]), a2 = hhmm_(cells[1]), p1 = hhmm_(cells[2]), p2 = hhmm_(cells[3]);
+    if (!a1 && !p1) return out;
+    out.start = a1 || p1;
+    out.end = p2 || a2;
+    if (a2 && p1 && toMin_(p1) > toMin_(a2)) out.breaks.push({ start: a2, end: p1 });
+  } else {
+    out.start = hhmm_(cells[0]);
+    out.end = hhmm_(cells[1]);
+    out.breakMins = minsFrom_(cells[2]);
+  }
+  if (!out.start || !out.end || toMin_(out.end) <= toMin_(out.start)) {
+    return { start: "", end: "", breaks: [], breakMins: 0, mins: 0 };
+  }
+  var m = toMin_(out.end) - toMin_(out.start);
+  out.breaks.forEach(function (b) {
+    var bs = Math.max(toMin_(b.start), toMin_(out.start));
+    var be = Math.min(toMin_(b.end), toMin_(out.end));
+    if (be > bs) m -= (be - bs);
+  });
+  m -= out.breakMins;
+  out.mins = Math.max(0, m);
+  return out;
+}
+// 見出しから形式と列位置を判定する
+function detectShiftLayout_(header) {
+  var norm = header.map(function (h) { return String(h || "").replace(/[\s\u3000\n\r"]/g, ""); });
+  function find(pats) {
+    for (var i = 0; i < norm.length; i++) {
+      for (var j = 0; j < pats.length; j++) { if (norm[i].indexOf(pats[j]) >= 0) return i; }
+    }
+    return -1;
+  }
+  var cDate = find(["日付", "日"]);
+  var amS = find(["午前開始"]), amE = find(["午前終了"]), pmS = find(["午後開始"]), pmE = find(["午後終了"]);
+  if (amS >= 0 && pmE >= 0) {
+    return { ok: true, layout: "AMPM", cDate: cDate, cols: [amS, amE, pmS, pmE] };
+  }
+  var st = find(["開始時刻", "開始"]), en = find(["終了時刻", "終了"]), br = find(["休憩"]);
+  if (st >= 0 && en >= 0) {
+    return { ok: true, layout: "SE", cDate: cDate, cols: [st, en, br] };
+  }
+  return { ok: false, message: "見出しから形式を判定できません（午前開始/午後終了 か 開始時刻/終了時刻 が必要です）" };
+}
+// 日付セル（8/3 や 2026-08-03 や Date）を yyyy-MM-dd にする
+function shiftDateKey_(v, year, month) {
+  if (v instanceof Date) return Utilities.formatDate(v, "Asia/Tokyo", "yyyy-MM-dd");
+  var t = String(v || "").trim();
+  if (!t) return "";
+  var m = t.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  if (m) return m[1] + "-" + ("0" + m[2]).slice(-2) + "-" + ("0" + m[3]).slice(-2);
+  m = t.match(/^(\d{1,2})\s*[\/月]\s*(\d{1,2})/);
+  if (m) return year + "-" + ("0" + m[1]).slice(-2) + "-" + ("0" + m[2]).slice(-2);
+  m = t.match(/^(\d{1,2})$/);
+  if (m) return year + "-" + ("0" + month).slice(-2) + "-" + ("0" + m[1]).slice(-2);
+  return "";
+}
+// シフト表を読み込んで「シフト明細」へ保存する
+function importShiftSheet_(pin, ssId, sheetName, gid, month) {
+  var rep = { pin: String(pin), name: FULL_NAME_MAP[pin] || "", ok: false, days: 0, mins: 0, message: "" };
+  var name = memberSheetName_(pin);
+  if (!name) { rep.message = "担当者を特定できません（PIN:" + pin + "）"; return rep; }
+  var tsh;
+  try { tsh = resolveSheet_(SpreadsheetApp.openById(extractSsId_(ssId)), sheetName, gid); }
+  catch (e) { rep.message = "シフト表を開けません（共有設定をご確認ください）"; return rep; }
+  if (!tsh) { rep.message = "シートが見つかりません"; return rep; }
+  var last = tsh.getLastRow(), lastC = tsh.getLastColumn();
+  if (last < 2) { rep.message = "データがありません"; return rep; }
+  var all = tsh.getRange(1, 1, last, lastC).getValues();
+  // 見出し行を探す（先頭5行以内）
+  var hdrRow = -1, lay = null;
+  for (var hr = 0; hr < Math.min(5, all.length); hr++) {
+    var t = detectShiftLayout_(all[hr]);
+    if (t.ok) { hdrRow = hr; lay = t; break; }
+  }
+  if (!lay) { rep.message = "見出しを判定できませんでした"; return rep; }
+  var mp = String(month).split("-"), yy = Number(mp[0]), mm = Number(mp[1]);
+  var rows = [];
+  for (var r = hdrRow + 1; r < all.length; r++) {
+    var key = shiftDateKey_(all[r][lay.cDate >= 0 ? lay.cDate : 0], yy, mm);
+    if (!key || key.slice(0, 7) !== month) continue;
+    var cells = lay.cols.map(function (c) { return c >= 0 ? all[r][c] : ""; });
+    var v = parseShiftRow_(cells, lay.layout);
+    if (!v.start) continue;
+    var brTxt = v.breaks.map(function (b) { return b.start + "-" + b.end; }).join(" / ");
+    if (v.breakMins) brTxt = (brTxt ? brTxt + " / " : "") + v.breakMins + "分";
+    rows.push([month, key, String(pin), FULL_NAME_MAP[pin] || "", v.start, v.end, brTxt, v.mins, new Date()]);
+    rep.mins += v.mins;
+  }
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var dt = ensureSheet(ss, "シフト明細",
+    ["対象月", "日付", "PIN", "名前", "開始", "終了", "休憩", "実働(分)", "更新日時"]);
+  if (dt.getLastRow() > 1) {
+    var old = dt.getDataRange().getValues();
+    for (var di = old.length - 1; di >= 1; di--) {
+      if (String(old[di][0]) === String(month) && String(old[di][2]) === String(pin)) dt.deleteRow(di + 1);
+    }
+  }
+  if (rows.length) dt.getRange(dt.getLastRow() + 1, 1, rows.length, 9).setValues(rows);
+  rep.ok = true; rep.days = rows.length;
+  rep.message = "取り込み " + rows.length + "日分（" + (lay.layout === "AMPM" ? "午前/午後形式" : "開始終了+休憩形式") + "・合計 " + (rep.mins / 60).toFixed(2) + "h）";
+  logAudit("シフト表取り込み", "管理者", rep.name, rep.message);
+  return rep;
+}
+
 function setupMemberSheets() {
   var ss = SpreadsheetApp.openById(SHEET_ID);
   var created = [], existed = [];
   var pins = Object.keys(PIN_MAP);
   for (var i = 0; i < pins.length; i++) {
-    var nm = PIN_MAP[pins[i]];
+    var nm = memberSheetName_(pins[i]);
+    if (!nm) continue;
     var sh = ss.getSheetByName(nm);
     if (sh) {
       // 既存だがヘッダーが無い場合のみ補う (データは触らない)

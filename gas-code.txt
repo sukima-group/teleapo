@@ -1,5 +1,5 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v63
+// 川嶋メソッド テレアポ管理 — GAS完全版 v67
 // メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
 // 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
 //
@@ -67,11 +67,52 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         message: "GAS Web App is alive",
-        version: "v63",
+        version: "v67",
         timestamp: new Date().toISOString(),
         note: "Use ?pin=XXX to fetch list, or POST with type field"
       })).setMimeType(ContentService.MimeType.JSON);
     }
+    // ===== v67: 経営管理システム連携エクスポート（キー認証・PII除外・監査ログ） =====
+    if (e.parameter.action === "kanriExport") {
+      if (!kanriRateOk_()) {
+        return ContentService.createTextOutput(JSON.stringify({ok:false, error:"rate_limit"}))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+      var krole = kanriRole_(e.parameter.key);
+      if (!krole) {
+        return ContentService.createTextOutput(JSON.stringify({ok:false, error:"auth"}))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+      var kss = SpreadsheetApp.openById(SHEET_ID);
+      function kvals(nm){ var sh=kss.getSheetByName(nm); return (sh && sh.getLastRow()>1)? sh.getDataRange().getValues() : []; }
+      var kfrom = String(e.parameter.from || kanriDateKey_(new Date(Date.now()-92*86400000)));
+      var kto = String(e.parameter.to || "9999-12-31");
+      var kscope = String(e.parameter.scope || "all");
+      var katt=kvals("勤怠"), khist=kvals("架電結果"), kapo=kvals("アポイント"), kshift=kvals("シフト申請");
+      var kout = kanriAggregate_(katt, khist, kapo, kfrom);
+      var kq = kanriQuality_(katt, khist, kapo, kfrom);
+      kanriQualityV2_(kq, katt, khist, kshift);
+      kout.days = kout.days.filter(function(x){return x.d<=kto;});
+      kout.appos = kout.appos.filter(function(x){return x.md<=kto;});
+      if (String(e.parameter.format||"")==="csv") {
+        try { logAudit("kanri_export_csv", "kanri-sync["+krole+"]", "", "rows:"+kout.days.length); } catch(_e){}
+        return ContentService.createTextOutput(kanriCsv_(kout.days)).setMimeType(ContentService.MimeType.CSV);
+      }
+      try { logAudit("kanri_export", "kanri-sync["+krole+"]", "", "days:"+kout.days.length+" appos:"+kout.appos.length+" scope:"+kscope); } catch(_e){}
+      var kres={ok:true, version:"v70",
+        generatedAt: kanriDateKey_(new Date())+" "+Utilities.formatDate(new Date(),"Asia/Tokyo","HH:mm"),
+        freshness: kanriFreshness_()};   // v70: 即時反映の最終時刻を同梱
+      // v70: 通話録音のカバー率も渡す（品質指標の統合）
+      if (kscope==="all"||kscope==="quality"||kscope==="recording") {
+        try { kres.recording = kanriRecCoverage_(khist, kfrom).filter(function(x){return x.d<=kto;}); } catch(_kr){}
+      }
+      if (kscope==="all"||kscope==="days") kres.days=kout.days;
+      if (kscope==="all"||kscope==="appos") kres.appos=kout.appos;
+      if (kscope==="all"||kscope==="quality") kres.quality=kq;
+      return ContentService.createTextOutput(JSON.stringify(kres))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
     if (e.parameter.action === "ping") {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
@@ -172,13 +213,32 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.TEXT);
     }
 
+    // ===== v67: 経営側からの双方向プッシュ（お知らせ配信・管理キー必須） =====
+    if (d.type === "kanri_push") {
+      if (kanriRole_(d.key) !== "admin") {
+        return ContentService.createTextOutput(JSON.stringify({ok:false, error:"auth"}))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+      var pmsg = kanriBuildPush_(d);
+      var pss = SpreadsheetApp.openById(SHEET_ID);
+      var plock = LockService.getScriptLock();
+      try { plock.tryLock(10000); } catch(_le){}
+      var pAnn = pss.getSheetByName("お知らせ");
+      if (!pAnn) { pAnn = pss.insertSheet("お知らせ"); pAnn.appendRow(["日時","タイトル","本文","重要度","掲載","ID"]); }
+      pAnn.appendRow([new Date(), pmsg.title, pmsg.body, pmsg.importance, "true", "kanri-"+Date.now()]);
+      try { plock.releaseLock(); } catch(_le2){}
+      try { logAudit("kanri_push", "keiei[admin]", "", pmsg.title); } catch(_e){}
+      return ContentService.createTextOutput(JSON.stringify({ok:true, posted:pmsg.title}))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+
     // 接続テスト用 (v15追加)
     if (d.type === "ping") {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         message: "GAS connected",
         timestamp: new Date().toISOString(),
-        version: "v63"
+        version: "v67"
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -1828,6 +1888,9 @@ function doPost(e) {
     var ss = SpreadsheetApp.openById(SHEET_ID);
 
     // ===== 勤怠記録 =====
+    // v70: 通話録音の要求（rec_*）をまとめて処理
+    try { var recRes = recHandle_(d); if (recRes) return recRes; } catch (recErr) {}
+
     if (d.type === "attendance") {
       var sh = ensureSheet(ss, "勤怠",
         ["名前", "日付", "出勤", "退勤", "休憩開始", "休憩終了"]);
@@ -1844,6 +1907,8 @@ function doPost(e) {
       } else {
         sh.appendRow(values);
       }
+      // v70: 出退勤も即時反映（実働時間）
+      try { kanriOnAttendance_(d); } catch (kErr3) {}
     }
 
     // ===== 架電結果 =====
@@ -1941,6 +2006,8 @@ function doPost(e) {
         new Date(), d.name, d.scheduledAt,
         d.company, d.phone, d.person, d.memo, "未対応"
       ]);
+      // v70: 保存と同時に経営システムへ即時反映
+      try { kanriOnCallResult_(d); } catch (kErr) {}
     }
 
     // ===== アポイント詳細 (v11: 商談日付/時間 追加) =====
@@ -2043,6 +2110,8 @@ function doPost(e) {
       } catch (mailErr) {
         Logger.log("Shift mail wrapper error: " + mailErr);
       }
+      // v70: 保存と同時に経営システムへ即時反映
+      try { kanriOnAppointment_(d); } catch (kErr2) {}
     }
 
     // ===== 退勤レポート (v14追加, v17: LockService追加) =====
@@ -3957,4 +4026,1170 @@ function testForwardApoRecordings() {
   var result = forwardApoRecordings();
   Logger.log("テスト結果: " + JSON.stringify(result, null, 2));
   return result;
+}
+
+
+// ============================================================
+// v67: 経営管理システム連携（build_kanri_system.py が取得）
+// ============================================================
+var KANRI_KEY = "sukima-kanri-2026";  // 経営システム側の設定と一致させる（変更可）
+
+function kanriDateKey_(d){
+  if (!d) return "";
+  if (Object.prototype.toString.call(d) === "[object Date]" && !isNaN(d))
+    return Utilities.formatDate(d, "Asia/Tokyo", "yyyy-MM-dd");
+  var s = String(d).trim();
+  var m = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (m) return m[1]+"-"+("0"+m[2]).slice(-2)+"-"+("0"+m[3]).slice(-2);
+  return "";
+}
+function kanriHM_(v){
+  if (v===null || v===undefined || v==="") return "";
+  if (Object.prototype.toString.call(v) === "[object Date]" && !isNaN(v))
+    return Utilities.formatDate(v, "Asia/Tokyo", "HH:mm");
+  var s = String(v).trim(); var m = s.match(/(\d{1,2}):(\d{2})/);
+  return m ? ("0"+m[1]).slice(-2)+":"+m[2] : "";
+}
+function kanriMin_(hm){ if(!hm) return null; var p=hm.split(":"); return (+p[0])*60+(+p[1]); }
+
+// 純粋集計関数（Node単体テスト可能：Utilities非依存の整形済み値でも動く）
+function kanriAggregate_(att, hist, apo, fromKey){
+  var days={}; // key = name + "|" + date
+  function slot(nm, dk){
+    var k=nm+"|"+dk;
+    if(!days[k]) days[k]={name:nm, d:dk, hours:null, est:false, calls:0, connects:0, appos:0, tmin:null, tmax:null};
+    return days[k];
+  }
+  for (var i=1;i<att.length;i++){
+    var nm=String(att[i][0]||"").trim(); var dk=kanriDateKey_(att[i][1]);
+    if(!nm||!dk||dk<fromKey) continue;
+    var ci=kanriMin_(kanriHM_(att[i][2])), co=kanriMin_(kanriHM_(att[i][3]));
+    var bs=kanriMin_(kanriHM_(att[i][4])), be=kanriMin_(kanriHM_(att[i][5]));
+    if(ci!==null && co!==null && co>ci){
+      var brk=(bs!==null&&be!==null&&be>bs)?(be-bs):0;
+      slot(nm,dk).hours=Math.round(((co-ci-brk)/60)*100)/100;
+    }
+  }
+  for (var j=1;j<hist.length;j++){
+    var hn=String(hist[j][0]||"").trim(); var hd=kanriDateKey_(hist[j][1]);
+    if(!hn||!hd||hd<fromKey) continue;
+    var s=slot(hn,hd); s.calls++;
+    var rid=mapResultLabelToId(hist[j][6]);
+    if(rid!=="absent" && rid!=="wrong") s.connects++;
+    if(rid==="appo") s.appos++;
+    var tm=kanriMin_(kanriHM_(hist[j][2]));
+    if(tm!==null){ if(s.tmin===null||tm<s.tmin)s.tmin=tm; if(s.tmax===null||tm>s.tmax)s.tmax=tm; }
+  }
+  var out=[];
+  for (var k in days){
+    var v=days[k];
+    if(v.hours===null && v.tmin!==null && v.tmax!==null && v.tmax>v.tmin){
+      v.hours=Math.round(((v.tmax-v.tmin)/60)*100)/100; v.est=true;
+    }
+    out.push({d:v.d, name:v.name, hours:v.hours, est:v.est, calls:v.calls, connects:v.connects, appos:v.appos});
+  }
+  out.sort(function(a,b){ return a.d===b.d ? (a.name<b.name?-1:1) : (a.d<b.d?-1:1); });
+  var apl=[];
+  for (var q=1;q<apo.length;q++){
+    var md=kanriDateKey_(apo[q][3]); if(!md||md<fromKey) continue;
+    apl.push({md:md, mt:kanriHM_(apo[q][4]), project:String(apo[q][2]||""), company:String(apo[q][5]||""), reporter:String(apo[q][1]||"")});
+  }
+  apl.sort(function(a,b){ return a.md<b.md?-1:(a.md>b.md?1:0); });
+  return {days:out, appos:apl};
+}
+
+
+// ============================================================
+// v67: 品質ゲート・鍵管理・レート制限・日次スナップショット・自己テスト
+// ============================================================
+function kanriKey_(){
+  try{ var p=PropertiesService.getScriptProperties().getProperty("KANRI_KEY"); if(p) return String(p); }catch(_e){}
+  return KANRI_KEY; // フォールバック（本番はスクリプトプロパティ KANRI_KEY を設定して鍵をコード外へ）
+}
+function kanriRateOk_(){
+  try{
+    var c=CacheService.getScriptCache(); var k="kanri_rl_"+Math.floor(Date.now()/60000);
+    var n=Number(c.get(k)||0)+1; c.put(k,String(n),90); return n<=6; // 6回/分まで
+  }catch(_e){ return true; }
+}
+// データ品質ゲート：①勤怠の打刻漏れ ②名簿外の名前 ③アポ件数の突合（架電結果の「アポ」 vs アポイント報告）
+function kanriQuality_(att, hist, apo, fromKey){
+  var known={}; for (var p in FULL_NAME_MAP) known[FULL_NAME_MAP[p]]=1;
+  var punchMiss=[], unknown={}, hA={}, rA={};
+  for (var i=1;i<att.length;i++){
+    var nm=String(att[i][0]||"").trim(); var dk=kanriDateKey_(att[i][1]);
+    if(!nm||!dk||dk<fromKey) continue;
+    if(!known[nm]) unknown[nm]=(unknown[nm]||0)+1;
+    var ci=kanriHM_(att[i][2]), co=kanriHM_(att[i][3]);
+    if(ci && !co) punchMiss.push({name:nm, d:dk, note:"出勤あり・退勤なし"});
+  }
+  for (var j=1;j<hist.length;j++){
+    var hn=String(hist[j][0]||"").trim(); var hd=kanriDateKey_(hist[j][1]);
+    if(!hn||!hd||hd<fromKey) continue;
+    if(!known[hn]) unknown[hn]=(unknown[hn]||0)+1;
+    if(mapResultLabelToId(hist[j][6])==="appo"){ var k1=hn+"|"+hd; hA[k1]=(hA[k1]||0)+1; }
+  }
+  for (var q=1;q<apo.length;q++){
+    var rn=String(apo[q][1]||"").trim(); var rd=kanriDateKey_(apo[q][0]);
+    if(!rn||!rd||rd<fromKey) continue;
+    if(!known[rn]) unknown[rn]=(unknown[rn]||0)+1;
+    var k2=rn+"|"+rd; rA[k2]=(rA[k2]||0)+1;
+  }
+  var mism=[]; var seen={};
+  function chk(k){ if(seen[k])return; seen[k]=1;
+    var a=hA[k]||0, b=rA[k]||0;
+    if(a!==b){ var pr=k.split("|"); mism.push({name:pr[0], d:pr[1], histAppo:a, reported:b, diff:a-b}); } }
+  for (var k in hA) chk(k); for (var k2b in rA) chk(k2b);
+  var unk=[]; for (var u in unknown) unk.push({name:u, rows:unknown[u]});
+  mism.sort(function(x,y){return x.d<y.d?-1:1;});
+  return {punchMiss:punchMiss, unknownNames:unk, apoMismatch:mism,
+          summary:{punchMiss:punchMiss.length, unknownNames:unk.length, apoMismatch:mism.length}};
+}
+// 日次スナップショット（時間主導トリガー用）：直近7日の集計を「経営連携_日次集計」へupsert
+function kanriSnapshotDaily(){
+  var klock = LockService.getScriptLock();
+  try { klock.tryLock(10000); } catch(_le){}
+  var ss=SpreadsheetApp.openById(SHEET_ID);
+  function v(nm){ var sh=ss.getSheetByName(nm); return (sh&&sh.getLastRow()>1)?sh.getDataRange().getValues():[]; }
+  var fromKey=kanriDateKey_(new Date(Date.now()-7*86400000));
+  var out=kanriAggregate_(v("勤怠"),v("架電結果"),v("アポイント"),fromKey);
+  var sh=ss.getSheetByName("経営連携_日次集計");
+  if(!sh){ sh=ss.insertSheet("経営連携_日次集計"); sh.appendRow(["日付","名前","実働h","推定","架電","接続","アポ","更新時刻"]); }
+  var data=sh.getDataRange().getValues(); var idx={};
+  for (var i=1;i<data.length;i++) idx[kanriDateKey_(data[i][0])+"|"+data[i][1]]=i+1;
+  var now=new Date();
+  out.days.forEach(function(dv){
+    var row=[dv.d,dv.name,dv.hours,dv.est?"推定":"",dv.calls,dv.connects,dv.appos,now];
+    var r=idx[dv.d+"|"+dv.name];
+    if(r) sh.getRange(r,1,1,8).setValues([row]); else sh.appendRow(row);
+  });
+  logAudit("kanri_snapshot","trigger","","rows:"+out.days.length);
+  try{ kanriEnsureDashboard_(); }catch(e2){ kanriNotifyFail_("dashboard", e2); }
+  try{ klock.releaseLock(); }catch(_le3){}
+}
+function setupKanriTriggers(){ // エディタから1回実行：毎日21時にスナップショット
+  ScriptApp.getProjectTriggers().forEach(function(t){ if(t.getHandlerFunction()==="kanriSnapshotDaily") ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger("kanriSnapshotDaily").timeBased().atHour(21).everyDays(1).create();
+  ScriptApp.getProjectTriggers().forEach(function(t){ if(t.getHandlerFunction()==="kanriBackupDaily") ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger("kanriBackupDaily").timeBased().atHour(22).everyDays(1).create();
+}
+// 自己テスト（エディタで実行→ログにPASS/FAIL）
+function kanriSelfTest_(){
+  var att=[["n","d","ci","co","bs","be"],["榮智子","2026/08/17","10:00","18:30","13:00","14:00"],["柏木幸代","2026/08/19","11:00","","",""]];
+  var hist=[["n","d","t","c","p","pe","r"]]; 
+  for(var i=0;i<3;i++)hist.push(["榮智子","2026/08/17",(10+i)+":10","","","","アポ"]);
+  hist.push(["謎の担当","2026/08/17","10:00","","","","不在"]);
+  var apo=[["rd","rp","pj","md","mt","co"],["2026/08/17","榮智子","NKT","2026/08/20","10:00","A苑"],["2026/08/17","榮智子","NKT","2026/08/21","10:00","B苑"]];
+  var a=kanriAggregate_(att,hist,apo,"2026-08-01");
+  var q=kanriQuality_(att,hist,apo,"2026-08-01");
+  var t=[["hours7.5",a.days[0].hours===7.5],["appos3",a.days[0].appos===3],
+         ["punchMiss1",q.summary.punchMiss===1],["unknown1",q.summary.unknownNames===1],
+         ["mismatch(3vs2)",q.summary.apoMismatch===1 && q.apoMismatch[0].diff===1]];
+  var ok=t.every(function(x){return x[1];});
+  t.forEach(function(x){ Logger.log((x[1]?"PASS ":"FAIL ")+x[0]); });
+  Logger.log(ok?"== kanriSelfTest: ALL PASS ==":"== kanriSelfTest: FAILED ==");
+  return ok;
+}
+
+
+// ============================================================
+// v67: ロール別キー・CSV・双方向プッシュ・準リアルタイムダッシュボード・障害通知
+// ============================================================
+var KANRI_ADMIN_KEY = "sukima-kanri-admin-2026"; // 管理（push可）。本番はスクリプトプロパティ KANRI_ADMIN_KEY 推奨
+var KANRI_ALERT_EMAIL = ""; // 障害通知先（空=通知しない）例: "ichikawa@sukimagroup.jp"
+
+function kanriRole_(key){
+  var k=String(key||"");
+  if (!k) return "";
+  var admin=KANRI_ADMIN_KEY, read=KANRI_KEY;
+  try{
+    var p=PropertiesService.getScriptProperties();
+    admin=p.getProperty("KANRI_ADMIN_KEY")||admin;
+    read=p.getProperty("KANRI_KEY")||read;
+  }catch(_e){}
+  if (k===admin) return "admin";
+  if (k===read) return "read";
+  return "";
+}
+function kanriCsv_(days){
+  var out=["date,name,hours,est,calls,connects,appos"];
+  (days||[]).forEach(function(d){
+    out.push([d.d,'"'+String(d.name).replace(/"/g,'""')+'"',(d.hours==null?"":d.hours),(d.est?1:0),d.calls,d.connects,d.appos].join(","));
+  });
+  return out.join("\n");
+}
+function kanriBuildPush_(d){
+  if (d.goal!==undefined && d.goal!==null && String(d.goal)!=="") {
+    var g=Number(d.goal)||0;
+    return {title:"【経営】今月のアポ目標", body:"今月のチーム目標は "+g+" 件です。⑬達成率は経営システムで毎週共有します。", importance:"high"};
+  }
+  return {title:String(d.title||"【経営】連絡"), body:String(d.message||""), importance:String(d.importance||"high")};
+}
+// 準リアルタイム・経営ダッシュボード（数式ベース：経営連携_日次集計を参照＝型が正規化済み）
+function kanriEnsureDashboard_(){
+  var ss=SpreadsheetApp.openById(SHEET_ID);
+  var sh=ss.getSheetByName("経営ダッシュボード");
+  if (!sh) sh=ss.insertSheet("経営ダッシュボード");
+  var S="'経営連携_日次集計'";
+  function F(day0,colL){ // 期間合計
+    return "=IFERROR(SUMPRODUCT(("+S+"!$A$2:$A$10000>=TEXT(TODAY()-"+day0+',"YYYY-MM-DD"))*('+S+"!$A$2:$A$10000<=TEXT(TODAY(),\"YYYY-MM-DD\"))*N("+S+"!$"+colL+"$2:$"+colL+"$10000)),0)";
+  }
+  var rows=[
+    ["経営ダッシュボード（準リアルタイム：5分毎トリガー時）","","","","","","","","今月目標(入力)",60],
+    ["指標","本日","直近7日","今月","","担当別・今月アポ","","","今月達成率",'=IFERROR(D4/J1,0)'],
+    ["架電",F(0,"E"),F(6,"E"),'=IFERROR(SUMPRODUCT((LEFT('+S+'!$A$2:$A$10000,7)=TEXT(TODAY(),"YYYY-MM"))*N('+S+'!$E$2:$E$10000)),0)',"","名前","アポ","","",""],
+    ["アポ",F(0,"G"),F(6,"G"),'=IFERROR(SUMPRODUCT((LEFT('+S+'!$A$2:$A$10000,7)=TEXT(TODAY(),"YYYY-MM"))*N('+S+'!$G$2:$G$10000)),0)',"","","","","",""],
+    ["接続",F(0,"F"),F(6,"F"),'=IFERROR(SUMPRODUCT((LEFT('+S+'!$A$2:$A$10000,7)=TEXT(TODAY(),"YYYY-MM"))*N('+S+'!$F$2:$F$10000)),0)',"","","","","",""]
+  ];
+  sh.getRange(1,1,rows.length,10).setValues(rows.map(function(r){while(r.length<10)r.push("");return r;}));
+  var names=[]; for (var p in FULL_NAME_MAP) names.push(FULL_NAME_MAP[p]);
+  names=names.filter(function(n){return ["柏木幸代","藤田直美","小澤幸枝","竹之内優子","榮智子","本郷真弓"].indexOf(n)>=0;});
+  for (var i=0;i<names.length;i++){
+    sh.getRange(4+i,6).setValue(names[i]);
+    sh.getRange(4+i,7).setFormula('=IFERROR(SUMPRODUCT((LEFT('+S+'!$A$2:$A$10000,7)=TEXT(TODAY(),"YYYY-MM"))*('+S+'!$B$2:$B$10000="'+names[i]+'")*N('+S+'!$G$2:$G$10000)),0)');
+  }
+  sh.getRange(2,10).setFormula('=IFERROR($D$4/$J$1,0)');
+  // v67: 率KPIと着地予測（営業日=月〜木, weekend="0000111"）
+  sh.getRange(6,1).setValue("接続率");
+  sh.getRange(6,2).setFormula('=IFERROR(B5/B3,0)'); sh.getRange(6,3).setFormula('=IFERROR(C5/C3,0)'); sh.getRange(6,4).setFormula('=IFERROR(D5/D3,0)');
+  sh.getRange(7,1).setValue("アポ率");
+  sh.getRange(7,2).setFormula('=IFERROR(B4/B3,0)'); sh.getRange(7,3).setFormula('=IFERROR(C4/C3,0)'); sh.getRange(7,4).setFormula('=IFERROR(D4/D3,0)');
+  sh.getRange(3,9).setValue("今月着地予測(アポ)");
+  sh.getRange(3,10).setFormula('=IFERROR(ROUND($D$4/MAX(1,NETWORKDAYS.INTL(EOMONTH(TODAY(),-1)+1,TODAY(),"0000111"))*NETWORKDAYS.INTL(EOMONTH(TODAY(),-1)+1,EOMONTH(TODAY(),0),"0000111"),1),0)');
+  sh.getRange(4,9).setValue("予測vs目標");
+  sh.getRange(4,10).setFormula('=IF($J$3>=$J$1,"✓ 到達ペース","⚠ 不足ペース")');
+}
+function setupKanriRealtime(){ // エディタから1回実行：5分毎スナップショット＝準リアルタイム
+  ScriptApp.getProjectTriggers().forEach(function(t){ if(t.getHandlerFunction()==="kanriSnapshotDaily") ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger("kanriSnapshotDaily").timeBased().everyMinutes(5).create();
+  kanriEnsureDashboard_();
+}
+function kanriNotifyFail_(where, err){
+  try{
+    if (!KANRI_ALERT_EMAIL) return;
+    MailApp.sendEmail(KANRI_ALERT_EMAIL, "【経営連携】処理失敗: "+where, String(err));
+  }catch(_e){}
+}
+
+
+// ============================================================
+// v67: 統計的異常検知・労務整合・稼働空転・修復提案・バックアップ/DR
+// ============================================================
+function kanriQualityV2_(kq, att, hist, shift){
+  var today = kanriDateKey_(new Date());
+  var mkey = today.slice(0,7);
+  // (d) 稼働空転: 本日出勤打刻あり×架電0
+  var attToday={}, callToday={};
+  for (var i=1;i<att.length;i++){
+    var nm=String(att[i][0]||"").trim();
+    if (kanriDateKey_(att[i][1])===today && kanriHM_(att[i][2])) attToday[nm]=1;
+  }
+  for (var j=1;j<hist.length;j++){
+    var hn=String(hist[j][0]||"").trim();
+    if (kanriDateKey_(hist[j][1])===today) callToday[hn]=(callToday[hn]||0)+1;
+  }
+  kq.idleAttendance=[];
+  for (var nm2 in attToday){ if(!callToday[nm2]) kq.idleAttendance.push({name:nm2, d:today, note:"出勤打刻あり・架電0件"}); }
+  // (e) シフト整合: 対象月の最新申請(出勤予定日数) vs 実出勤日数（経過按分・乖離2日以上）
+  var latest={};
+  for (var s=1;s<shift.length;s++){
+    if (String(shift[s][4]||"")!==mkey) continue;
+    var ap=String(shift[s][2]||"").trim(); if(!ap) continue;
+    latest[ap]=Number(shift[s][5])||0; // 後勝ち=最新
+  }
+  var attDays={};
+  for (var a2=1;a2<att.length;a2++){
+    var an=String(att[a2][0]||"").trim(); var ad=kanriDateKey_(att[a2][1]);
+    if (ad.slice(0,7)===mkey && kanriHM_(att[a2][2])) { attDays[an]=attDays[an]||{}; attDays[an][ad]=1; }
+  }
+  var dom = Number(today.slice(8,10)), dim = new Date(Number(today.slice(0,4)), Number(today.slice(5,7)), 0).getDate();
+  kq.shiftGap=[];
+  for (var p2 in latest){
+    var planned=latest[p2]; if(!planned) continue;
+    var expect=Math.floor(planned*dom/dim);
+    var actual=Object.keys(attDays[p2]||{}).length;
+    if (expect-actual>=2) kq.shiftGap.push({name:p2, planned:planned, expected:expect, actual:actual, note:"シフト予定ペース比 "+(expect-actual)+"日不足"});
+  }
+  // (f) 統計的異常検知: 直近7日アポ率が過去28日基準の50%未満（分母: 両期間とも架電30件以上）
+  var d7 = kanriDateKey_(new Date(Date.now()-7*86400000));
+  var d35 = kanriDateKey_(new Date(Date.now()-35*86400000));
+  var rate={};
+  for (var h2=1;h2<hist.length;h2++){
+    var rn=String(hist[h2][0]||"").trim(); var rd=kanriDateKey_(hist[h2][1]);
+    if (!rn||!rd||rd<d35||rd>today) continue;
+    var bucket = (rd>d7)? "recent":"base";
+    rate[rn]=rate[rn]||{recent:{c:0,a:0},base:{c:0,a:0}};
+    rate[rn][bucket].c++;
+    if (mapResultLabelToId(hist[h2][6])==="appo") rate[rn][bucket].a++;
+  }
+  kq.rateAlerts=[];
+  for (var rn2 in rate){
+    var R=rate[rn2];
+    if (R.recent.c>=30 && R.base.c>=30){
+      var pr=R.recent.a/R.recent.c, pb=R.base.a/R.base.c;
+      if (pb>0 && pr < pb*0.5) kq.rateAlerts.push({name:rn2, recentRate:Math.round(pr*1000)/10, baseRate:Math.round(pb*1000)/10, note:"直近7日のアポ率が基準期間の半分未満"});
+    }
+  }
+  // 修復提案（突合差異に具体アクションを付与）
+  (kq.apoMismatch||[]).forEach(function(m){
+    m.fix = (m.diff>0)
+      ? m.name+"さんの"+m.d+"のアポ報告が"+m.diff+"件不足→PWAのアポ報告入力を依頼"
+      : m.name+"さんの"+m.d+"の架電結果「アポ」が"+(-m.diff)+"件不足→架電結果の記録漏れを確認";
+  });
+  kq.summary.idleAttendance=kq.idleAttendance.length;
+  kq.summary.shiftGap=kq.shiftGap.length;
+  kq.summary.rateAlerts=kq.rateAlerts.length;
+  return kq;
+}
+// 日次バックアップ（7世代管理）
+var KANRI_BACKUP_KEEP = 7;
+function kanriBackupPrune_(names){ // 純関数: "バックアップ_YYYY-MM-DD" 群から削除対象を返す
+  var bs = names.filter(function(n){ return /^バックアップ_\d{4}-\d{2}-\d{2}$/.test(n); }).sort();
+  return bs.slice(0, Math.max(0, bs.length - KANRI_BACKUP_KEEP));
+}
+function kanriBackupDaily(){
+  try{
+    var f = DriveApp.getFileById(SHEET_ID);
+    var today = kanriDateKey_(new Date());
+    var name = "バックアップ_" + today;
+    var parent = f.getParents().hasNext() ? f.getParents().next() : DriveApp.getRootFolder();
+    var it = parent.getFilesByName(name);
+    if (!it.hasNext()) f.makeCopy(name, parent);
+    var all=[], files=parent.getFiles();
+    while (files.hasNext()){ var g=files.next(); all.push(g.getName()); }
+    kanriBackupPrune_(all).forEach(function(del){
+      var di=parent.getFilesByName(del);
+      while (di.hasNext()) di.next().setTrashed(true);
+    });
+    logAudit("kanri_backup","trigger","",name);
+  }catch(e){ kanriNotifyFail_("backup", e); }
+}
+
+
+// ══════════ v70: 通話録音の自動収集（v69機能を統合） ══════════
+var REC_CONFIG_SHEET = "録音設定";
+var REC_CONFIG_HEADER = ["PIN", "名前", "ドライブフォルダID", "照合許容(分)", "有効", "最終スキャン", "前回結果"];
+var REC_EXT = ["m4a", "mp3", "amr", "3gp", "aac", "wav", "ogg", "opus"];
+var REC_ALERT_PCT = 70;   // これ未満のカバー率で通知する
+var REC_SCAN_FN = "autoRecScan";
+var REC_DONE_LABEL = "録音取込済";
+var REC_INBOX_SHEET = "録音取込ログ";
+var REC_MAX_MB = 25;   // 1ファイルの上限（Gmail添付の実用上限）
+
+function recDigits_(s) { return String(s || "").replace(/[^0-9]/g, ""); }
+
+function recParseStamp_(fileName, fallbackMs) {
+  var t = String(fileName || "");
+  var m = t.match(/(20\d{2})[-_\/.]?(\d{2})[-_\/.]?(\d{2})[ _T-]+(\d{2})[-_:;.]?(\d{2})(?:[-_:;.]?(\d{2}))?/);
+  if (m) {
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]),
+      Number(m[4]), Number(m[5]), Number(m[6] || 0)).getTime();
+  }
+  m = t.match(/(20\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
+  if (m) {
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]),
+      Number(m[4]), Number(m[5]), Number(m[6])).getTime();
+  }
+  return Number(fallbackMs) || 0;
+}
+
+function recPhoneIn_(fileName) {
+  var d = String(fileName || "").replace(/20\d{6}[\d_\-:;.]*/g, " ");  // 日時部分を除外
+  var m = d.match(/\d[\d\-()\s]{7,}\d/g);
+  if (!m) return "";
+  for (var i = 0; i < m.length; i++) {
+    var v = recDigits_(m[i]);
+    if (v.length >= 9 && v.length <= 11) return v;
+  }
+  return "";
+}
+
+function recIsAudio_(name) {
+  var e = String(name || "").split(".").pop().toLowerCase();
+  return REC_EXT.indexOf(e) >= 0;
+}
+
+function recMatchFiles_(calls, files, tolMin) {
+  var tol = (Number(tolMin) || 5) * 60000;
+  var wide = tol * 18;   // 長電話で録音の時刻が終了時刻になる場合に備えた広い窓（既定90分）
+  var used = {}, taken = {}, assign = [];
+  var byPhone = {};
+  calls.forEach(function (c, i) {
+    var p = recDigits_(c.phone);
+    if (p) { (byPhone[p] = byPhone[p] || []).push(i); }
+  });
+  function phoneOf(f) { return f.phone || recPhoneIn_(f.name); }
+  // 指定した条件で、まだ空いている架電のうち最も時刻が近いものを選ぶ
+  function pick(f, idxList, limit) {
+    var best = -1, bestDiff = Infinity;
+    (idxList || []).forEach(function (i) {
+      if (used[i]) return;
+      var d = Math.abs(calls[i].atMs - f.atMs);
+      if (d <= limit && d < bestDiff) { best = i; bestDiff = d; }
+    });
+    return { i: best, diff: bestDiff };
+  }
+  function allIdx() { var a = []; for (var i = 0; i < calls.length; i++) a.push(i); return a; }
+  function commit(f, r) {
+    used[r.i] = true; taken[f.id] = true;
+    assign.push({ call: calls[r.i], file: f, diffMs: r.diff });
+  }
+  // ① 電話番号が一致し、時刻も近いもの（もっとも確実）
+  files.forEach(function (f) {
+    var p = phoneOf(f);
+    if (!p || !byPhone[p]) return;
+    var r = pick(f, byPhone[p], tol);
+    if (r.i >= 0) commit(f, r);
+  });
+  // ② 電話番号は分からないが、時刻がごく近いもの
+  files.forEach(function (f) {
+    if (taken[f.id]) return;
+    if (phoneOf(f) && byPhone[phoneOf(f)]) return;   // 番号ありは③で扱う
+    var r = pick(f, allIdx(), tol);
+    if (r.i >= 0) commit(f, r);
+  });
+  // ③ 電話番号は一致するが時刻が離れているもの（長電話などを救済）
+  files.forEach(function (f) {
+    if (taken[f.id]) return;
+    var p = phoneOf(f);
+    if (!p || !byPhone[p]) return;
+    var r = pick(f, byPhone[p], wide);
+    if (r.i >= 0) commit(f, r);
+  });
+  var unmatched = files.filter(function (f) { return !taken[f.id]; });
+  var noRec = [];
+  calls.forEach(function (c, i) { if (!used[i]) noRec.push(c); });
+  return { assign: assign, unmatchedFiles: unmatched, callsWithoutRec: noRec };
+}
+
+function extractFolderId_(v) {
+  var t = String(v || "").trim();
+  var m = t.match(/\/folders\/([a-zA-Z0-9-_]+)/);
+  if (m) return m[1];
+  m = t.match(/[?&]id=([a-zA-Z0-9-_]+)/);
+  return m ? m[1] : t;
+}
+
+function recFolderName_(pin) {
+  var nm = FULL_NAME_MAP[String(pin || "").trim()];
+  if (!nm) return "";
+  return nm + "_" + String(pin).trim();     // 例: 竹之内優子_098
+}
+
+function recDatePath_(atMs) {
+  var d = new Date(Number(atMs) || 0);
+  if (!atMs || isNaN(d.getTime())) return null;
+  var y = d.getFullYear(), m = ("0" + (d.getMonth() + 1)).slice(-2), dd = ("0" + d.getDate()).slice(-2);
+  return { ym: y + "-" + m, d: dd, key: y + "-" + m + "-" + dd };
+}
+
+function recChildFolder_(parent, name) {
+  var it = parent.getFoldersByName(name);
+  if (it.hasNext()) return it.next();
+  return parent.createFolder(name);
+}
+
+function provisionRecFolders(rootIdOrUrl) {
+  var rootId = extractFolderId_(rootIdOrUrl);
+  var root;
+  try { root = rootId ? DriveApp.getFolderById(rootId) : DriveApp.createFolder("通話録音"); }
+  catch (e) { return { ok: false, message: "親フォルダを開けません: " + e }; }
+
+  var out = [];
+  Object.keys(FULL_NAME_MAP).forEach(function (pin) {
+    var fname = recFolderName_(pin);
+    if (!fname) return;
+    var folder;
+    try { folder = recChildFolder_(root, fname); }
+    catch (e2) { out.push({ pin: pin, name: FULL_NAME_MAP[pin], ok: false, message: String(e2) }); return; }
+    // 本人のGmailに編集権限で共有（本人の端末からアップロードできるようにするため）
+    var mail = personalEmailFor(pin), shared = "";
+    if (mail) {
+      try { folder.addEditor(mail); shared = mail; }
+      catch (e3) { shared = "共有失敗(" + mail + ")"; }
+    }
+    // 「録音設定」に自動登録（管理者が手でURLを貼る必要をなくす）
+    try {
+      writeRecConfig_({ pin: pin, folderId: folder.getId(), tol: 5, enabled: true });
+    } catch (e4) {}
+    out.push({ pin: pin, name: FULL_NAME_MAP[pin], ok: true,
+      folderId: folder.getId(), url: folder.getUrl(), shared: shared });
+  });
+  // v69: 「受信箱」フォルダも用意する（誰でもここに置けば自動で振り分けられる）
+  var inbox = null;
+  try {
+    inbox = recChildFolder_(root, "_受信箱");
+    Object.keys(STAFF_EMAILS).forEach(function (pn) {
+      var em = STAFF_EMAILS[pn];
+      if (em) { try { inbox.addEditor(em); } catch (e) {} }
+    });
+  } catch (e2) {}
+  try {
+    var props = PropertiesService.getScriptProperties();
+    props.setProperty("REC_ROOT_FOLDER", root.getId());
+    if (inbox) props.setProperty("REC_INBOX_FOLDER", inbox.getId());
+  } catch (e3) {}
+  logAudit("録音フォルダ整備", "管理者", out.length + "名分を作成/共有", "親:" + root.getName());
+  return { ok: true, rootId: root.getId(), rootUrl: root.getUrl(), rootName: root.getName(),
+    inboxId: inbox ? inbox.getId() : "", inboxUrl: inbox ? inbox.getUrl() : "", members: out };
+}
+
+function recOrganizeFolder_(folder, sinceMs) {
+  var moved = 0, kept = 0;
+  var it = folder.getFiles(), guard = 0;
+  var buckets = {};
+  while (it.hasNext() && guard < 500) {
+    guard++;
+    var f = it.next();
+    var nm = f.getName();
+    if (!recIsAudio_(nm)) continue;
+    var atMs = recParseStamp_(nm, f.getDateCreated().getTime());
+    if (sinceMs && atMs < sinceMs) { kept++; continue; }
+    var pathInfo = recDatePath_(atMs);
+    if (!pathInfo) { kept++; continue; }
+    var key = pathInfo.ym + "/" + pathInfo.d;
+    if (!buckets[key]) {
+      var ymF = recChildFolder_(folder, pathInfo.ym);
+      buckets[key] = recChildFolder_(ymF, pathInfo.d);
+    }
+    try { buckets[key].addFile(f); folder.removeFile(f); moved++; }
+    catch (e) { kept++; }
+  }
+  return { moved: moved, kept: kept };
+}
+
+function recSyncVerdict_(lastUploadMs, todayCalls, todayFiles, nowMs) {
+  if (!lastUploadMs) return todayCalls > 0 ? "未着信" : "未設定";
+  var hours = (nowMs - lastUploadMs) / 3600000;
+  if (todayCalls > 0 && todayFiles === 0) return "停止の疑い";
+  if (hours > 72) return "3日以上なし";
+  if (hours > 24) return "24時間以上なし";
+  return "正常";
+}
+
+function recPinFromEmail_(from) {
+  var addr = String(from || "").toLowerCase();
+  var m = addr.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/);
+  if (m) addr = m[0];
+  for (var pin in STAFF_EMAILS) {
+    var e = String(STAFF_EMAILS[pin] || "").toLowerCase();
+    if (e && e === addr) return String(pin);
+  }
+  return "";
+}
+
+function recPinFromText_(text) {
+  var t = String(text || "");
+  for (var pin in FULL_NAME_MAP) {
+    var nm = FULL_NAME_MAP[pin];
+    if (nm && t.indexOf(nm) >= 0) return String(pin);
+    var sh = PIN_MAP[pin];
+    if (sh && t.indexOf(sh) >= 0) return String(pin);
+  }
+  var m = t.match(/(?:^|[^0-9])(0?9[1-8]|10[135]|108)(?:[^0-9]|$)/);
+  if (m) {
+    var cand = m[1].length === 2 ? "0" + m[1] : m[1];
+    if (FULL_NAME_MAP[cand]) return cand;
+  }
+  return "";
+}
+
+function recIngestDecide_(msg) {
+  var pin = recPinFromEmail_(msg.from);
+  if (!pin) pin = recPinFromText_(msg.subject || "");
+  if (!pin) pin = recPinFromText_(msg.fileName || "");
+  return pin;
+}
+
+function recAttachmentOk_(name, sizeBytes) {
+  if (!recIsAudio_(name)) return false;
+  if (sizeBytes && sizeBytes > REC_MAX_MB * 1024 * 1024) return false;
+  return true;
+}
+
+function recDupKey_(pin, name, sizeBytes) {
+  return String(pin) + "|" + String(name || "") + "|" + String(sizeBytes || 0);
+}
+
+function recLoadIngested_() {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sh = ensureSheet(ss, REC_INBOX_SHEET,
+    ["取込日時", "経路", "PIN", "名前", "ファイル名", "サイズ", "保存先", "重複鍵"]);
+  var seen = {};
+  if (sh.getLastRow() > 1) {
+    var v = sh.getRange(2, 8, sh.getLastRow() - 1, 1).getValues();
+    for (var i = 0; i < v.length; i++) { if (v[i][0]) seen[String(v[i][0])] = true; }
+  }
+  return { sheet: sh, seen: seen };
+}
+
+function recMemberFolder_(pin, rootFolder) {
+  var cfgs = readRecConfigs_();
+  for (var i = 0; i < cfgs.length; i++) {
+    if (String(cfgs[i].pin) === String(pin) && cfgs[i].folderId) {
+      try { return DriveApp.getFolderById(cfgs[i].folderId); } catch (e) {}
+    }
+  }
+  if (!rootFolder) return null;
+  var nm = recFolderName_(pin);
+  if (!nm) return null;
+  var f = recChildFolder_(rootFolder, nm);
+  try { writeRecConfig_({ pin: pin, folderId: f.getId(), tol: 5, enabled: true }); } catch (e2) {}
+  return f;
+}
+
+function recSaveBlob_(memberFolder, blob, atMs) {
+  var dp = recDatePath_(atMs) || recDatePath_(new Date().getTime());
+  var ymF = recChildFolder_(memberFolder, dp.ym);
+  var dF = recChildFolder_(ymF, dp.d);
+  var file = dF.createFile(blob);
+  return file;
+}
+
+function recIngestGmail_(days, rootFolderId) {
+  var rep = { channel: "メール", saved: 0, skipped: 0, unknown: 0, details: [] };
+  var root = null;
+  if (rootFolderId) { try { root = DriveApp.getFolderById(extractFolderId_(rootFolderId)); } catch (e) {} }
+  var label;
+  try { label = GmailApp.getUserLabelByName(REC_DONE_LABEL) || GmailApp.createLabel(REC_DONE_LABEL); }
+  catch (e2) { rep.error = "ラベルを用意できません: " + e2; return rep; }
+
+  var q = 'has:attachment newer_than:' + (Number(days) || 7) + 'd -label:"' + REC_DONE_LABEL + '"';
+  var threads = GmailApp.search(q, 0, 40);
+  var log = recLoadIngested_();
+  var rows = [];
+  for (var t = 0; t < threads.length; t++) {
+    var msgs = threads[t].getMessages();
+    var touched = false;
+    for (var m = 0; m < msgs.length; m++) {
+      var msg = msgs[m];
+      var atts = msg.getAttachments();
+      for (var a = 0; a < atts.length; a++) {
+        var att = atts[a];
+        var nm = att.getName(), sz = att.getSize();
+        if (!recAttachmentOk_(nm, sz)) { continue; }
+        var pin = recIngestDecide_({ from: msg.getFrom(), subject: msg.getSubject(), fileName: nm });
+        if (!pin) { rep.unknown++; rep.details.push("差出人不明: " + nm); continue; }
+        var key = recDupKey_(pin, nm, sz);
+        if (log.seen[key]) { rep.skipped++; touched = true; continue; }
+        var folder = recMemberFolder_(pin, root);
+        if (!folder) { rep.details.push("保存先なし: " + (FULL_NAME_MAP[pin] || pin)); continue; }
+        var atMs = recParseStamp_(nm, msg.getDate().getTime());
+        try {
+          var f = recSaveBlob_(folder, att.copyBlob().setName(nm), atMs);
+          rows.push([new Date(), "メール", pin, FULL_NAME_MAP[pin] || "", nm, sz, f.getUrl(), key]);
+          log.seen[key] = true;
+          rep.saved++; touched = true;
+        } catch (e3) { rep.details.push("保存失敗: " + nm + " " + e3); }
+      }
+    }
+    if (touched) { try { threads[t].addLabel(label); } catch (e4) {} }
+  }
+  if (rows.length) { log.sheet.getRange(log.sheet.getLastRow() + 1, 1, rows.length, 8).setValues(rows); }
+  return rep;
+}
+
+function recIngestInbox_(inboxFolderId, rootFolderId) {
+  var rep = { channel: "受信箱", saved: 0, skipped: 0, unknown: 0, details: [] };
+  if (!inboxFolderId) { rep.details.push("受信箱フォルダが未設定"); return rep; }
+  var inbox, root = null;
+  try { inbox = DriveApp.getFolderById(extractFolderId_(inboxFolderId)); }
+  catch (e) { rep.error = "受信箱を開けません: " + e; return rep; }
+  if (rootFolderId) { try { root = DriveApp.getFolderById(extractFolderId_(rootFolderId)); } catch (e2) {} }
+
+  var log = recLoadIngested_();
+  var rows = [], it = inbox.getFiles(), guard = 0;
+  while (it.hasNext() && guard < 300) {
+    guard++;
+    var f = it.next();
+    var nm = f.getName(), sz = f.getSize();
+    if (!recAttachmentOk_(nm, sz)) continue;
+    var pin = recPinFromText_(nm);
+    if (!pin) { try { pin = recPinFromEmail_(f.getOwner() ? f.getOwner().getEmail() : ""); } catch (e3) {} }
+    if (!pin) { rep.unknown++; rep.details.push("担当者不明: " + nm); continue; }
+    var key = recDupKey_(pin, nm, sz);
+    if (log.seen[key]) { rep.skipped++; continue; }
+    var folder = recMemberFolder_(pin, root);
+    if (!folder) { rep.details.push("保存先なし: " + (FULL_NAME_MAP[pin] || pin)); continue; }
+    var atMs = recParseStamp_(nm, f.getDateCreated().getTime());
+    try {
+      var saved = recSaveBlob_(folder, f.getBlob().setName(nm), atMs);
+      inbox.removeFile(f);   // 受信箱から片付ける（担当者フォルダへ移動した形にする）
+      rows.push([new Date(), "受信箱", pin, FULL_NAME_MAP[pin] || "", nm, sz, saved.getUrl(), key]);
+      log.seen[key] = true;
+      rep.saved++;
+    } catch (e4) { rep.details.push("保存失敗: " + nm + " " + e4); }
+  }
+  if (rows.length) { log.sheet.getRange(log.sheet.getLastRow() + 1, 1, rows.length, 8).setValues(rows); }
+  return rep;
+}
+
+function recIngestAll(days, rootFolderId, inboxFolderId) {
+  var out = [];
+  try { out.push(recIngestGmail_(days, rootFolderId)); } catch (e) { out.push({ channel: "メール", error: String(e) }); }
+  if (inboxFolderId) {
+    try { out.push(recIngestInbox_(inboxFolderId, rootFolderId)); } catch (e2) { out.push({ channel: "受信箱", error: String(e2) }); }
+  }
+  var saved = 0; out.forEach(function (r) { saved += (r.saved || 0); });
+  logAudit("録音吸い上げ", "システム", saved + "件を保存", out.map(function (r) { return r.channel + ":" + (r.saved || 0); }).join(" / "));
+  return out;
+}
+
+function readRecConfigs_() {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sh = ensureSheet(ss, REC_CONFIG_SHEET, REC_CONFIG_HEADER);
+  var out = [];
+  if (sh.getLastRow() < 2) return out;
+  var rows = sh.getDataRange().getValues();
+  for (var i = 1; i < rows.length; i++) {
+    if (!String(rows[i][0] || "").trim()) continue;
+    out.push({
+      row: i + 1, pin: String(rows[i][0]).trim(), name: String(rows[i][1] || ""),
+      folderId: extractFolderId_(rows[i][2]), tol: Number(rows[i][3]) || 5,
+      enabled: !(String(rows[i][4]) === "false" || rows[i][4] === false),
+      lastScan: rows[i][5] ? formatDateTimeStr(rows[i][5]) : "",
+      lastResult: String(rows[i][6] || "")
+    });
+  }
+  return out;
+}
+
+function writeRecConfig_(c) {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sh = ensureSheet(ss, REC_CONFIG_SHEET, REC_CONFIG_HEADER);
+  var row = [String(c.pin), FULL_NAME_MAP[c.pin] || "", extractFolderId_(c.folderId),
+    Number(c.tol) || 5, c.enabled === false ? "false" : "true", "", ""];
+  var found = -1;
+  if (sh.getLastRow() > 1) {
+    var v = sh.getDataRange().getValues();
+    for (var i = 1; i < v.length; i++) { if (String(v[i][0]).trim() === String(c.pin).trim()) { found = i + 1; break; } }
+  }
+  if (found > 0) {
+    var keep = sh.getRange(found, 6, 1, 2).getValues()[0];
+    row[5] = keep[0]; row[6] = keep[1];
+    sh.getRange(found, 1, 1, row.length).setValues([row]);
+  } else { sh.appendRow(row); }
+  logAudit("録音設定", "管理者", (FULL_NAME_MAP[c.pin] || c.pin), "フォルダ:" + row[2]);
+}
+
+function recScanFor_(cfg, days) {
+  var rep = { pin: cfg.pin, name: FULL_NAME_MAP[cfg.pin] || cfg.name, ok: false,
+    files: 0, matched: 0, unmatched: 0, noRec: 0, message: "" };
+  if (!cfg.enabled) { rep.message = "無効"; return rep; }
+  if (!cfg.folderId) { rep.message = "ドライブフォルダが未設定です"; return rep; }
+  var folder;
+  try { folder = DriveApp.getFolderById(cfg.folderId); }
+  catch (e) { rep.message = "フォルダを開けません（共有設定をご確認ください）"; return rep; }
+
+  var since = new Date().getTime() - (Number(days) || 7) * 86400000;
+  // v68: 直下に上がってきた録音を「年月/日」へ自動整理してから読み取る
+  try { var org = recOrganizeFolder_(folder, 0); rep.organized = org.moved; } catch (eo) { rep.organized = 0; }
+  // 直下＋小フォルダ（2階層）をまとめて走査する
+  var files = [], guard = 0, lastUpload = 0;
+  function scanFolder(fd, depth) {
+    var it = fd.getFiles();
+    while (it.hasNext() && guard < 1200) {
+      guard++;
+      var f = it.next();
+      var nm = f.getName();
+      if (!recIsAudio_(nm)) continue;
+      var created = f.getDateCreated().getTime();
+      if (created > lastUpload) lastUpload = created;
+      var atMs = recParseStamp_(nm, created);
+      if (atMs < since) continue;
+      files.push({ id: f.getId(), name: nm, atMs: atMs, phone: recPhoneIn_(nm), url: f.getUrl() });
+    }
+    if (depth <= 0) return;
+    var sub = fd.getFolders();
+    while (sub.hasNext() && guard < 1200) { scanFolder(sub.next(), depth - 1); }
+  }
+  scanFolder(folder, 2);
+  rep.files = files.length;
+  rep.lastUpload = lastUpload ? formatDateTimeStr(new Date(lastUpload)) : "";
+  rep.lastUploadMs = lastUpload;
+
+  // 架電結果から対象者の分を取り出す
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var crSh = ss.getSheetByName("架電結果");
+  if (!crSh || crSh.getLastRow() < 2) { rep.message = "架電結果がありません"; return rep; }
+  var crRows = crSh.getDataRange().getValues();
+  var myName = FULL_NAME_MAP[cfg.pin] || cfg.name;
+  var calls = [];
+  for (var i = 1; i < crRows.length; i++) {
+    if (String(crRows[i][0] || "").trim() !== String(myName).trim()) continue;
+    var ymd = normalizeYMD(crRows[i][1]);
+    var hm = hhmm_(crRows[i][2]);
+    if (!ymd || !hm) continue;
+    var atMs2 = new Date(Number(ymd.slice(0, 4)), Number(ymd.slice(5, 7)) - 1, Number(ymd.slice(8, 10)),
+      Number(hm.slice(0, 2)), Number(hm.slice(3, 5)), 0).getTime();
+    if (atMs2 < since) continue;
+    calls.push({ row: i + 1, phone: String(crRows[i][4] || ""), atMs: atMs2,
+      company: String(crRows[i][3] || ""), date: ymd, time: hm, name: myName,
+      hasRec: !!String(crRows[i][16] || "") });
+  }
+  calls.sort(function (a, b) { return a.atMs - b.atMs; });
+
+  var res = recMatchFiles_(calls, files, cfg.tol);
+  // 書き戻し（録音ファイル=17列目 / 録音URL=18列目）
+  res.assign.forEach(function (a) {
+    try { crSh.getRange(a.call.row, 17, 1, 2).setValues([[a.file.name, a.file.url]]); } catch (e) {}
+  });
+  rep.ok = true;
+  rep.matched = res.assign.length;
+  rep.unmatched = res.unmatchedFiles.length;
+  rep.noRec = res.callsWithoutRec.length;
+  rep.noRecList = res.callsWithoutRec.slice(0, 8).map(function (c) { return c.company + "(" + c.time + ")"; });
+  rep.message = "録音 " + rep.files + "件中 " + rep.matched + "件を紐づけ／未紐づけ録音 " + rep.unmatched
+    + "件／録音なしの架電 " + rep.noRec + "件"
+    + (rep.organized ? "／日付フォルダへ整理 " + rep.organized + "件" : "");
+  // v68: 同期が止まっていないかの判定を添える
+  try {
+    var todayKey = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd");
+    var tCalls = 0, tFiles = 0;
+    calls.forEach(function (c) { if (c.date === todayKey) tCalls++; });
+    files.forEach(function (f) {
+      var dp = recDatePath_(f.atMs);
+      if (dp && dp.key === todayKey) tFiles++;
+    });
+    rep.todayCalls = tCalls; rep.todayFiles = tFiles;
+    rep.sync = recSyncVerdict_(rep.lastUploadMs, tCalls, tFiles, new Date().getTime());
+  } catch (ev) { rep.sync = ""; }
+  try {
+    var csh = SpreadsheetApp.openById(SHEET_ID).getSheetByName(REC_CONFIG_SHEET);
+    if (csh && cfg.row) csh.getRange(cfg.row, 6, 1, 2).setValues([[new Date(), rep.message]]);
+  } catch (e) {}
+  logAudit("録音スキャン", "管理者", rep.name, rep.message);
+  return rep;
+}
+
+function recScanAll(pinFilter, days) {
+  var cfgs = readRecConfigs_(), out = [];
+  for (var i = 0; i < cfgs.length; i++) {
+    if (pinFilter && String(cfgs[i].pin) !== String(pinFilter)) continue;
+    out.push(recScanFor_(cfgs[i], days));
+  }
+  return out;
+}
+
+function autoRecScan() {
+  // v69: まず端末から届いた録音を吸い上げてから照合する
+  var ingest = [];
+  try {
+    var props = PropertiesService.getScriptProperties();
+    ingest = recIngestAll(3, props.getProperty("REC_ROOT_FOLDER") || "", props.getProperty("REC_INBOX_FOLDER") || "");
+  } catch (eIn) { Logger.log("ingest failed: " + eIn); }
+  var reps = recScanAll(null, 3);
+  // v65: カバー率が低いメンバーを管理者へ通知（気づきの自動化）
+  try {
+    var alerts = [];
+    reps.forEach(function (r) {
+      if (!r.ok) { alerts.push("・" + r.name + "：" + r.message); return; }
+      var denom = r.matched + r.noRec;
+      if (denom >= 5) {
+        var pct = Math.round(r.matched / denom * 100);
+        if (pct < REC_ALERT_PCT) {
+          alerts.push("・" + r.name + "：録音カバー率 " + pct + "%（" + r.matched + "/" + denom + "件）");
+        }
+      }
+      if (r.unmatched > 0) {
+        alerts.push("・" + r.name + "：架電に紐づかない録音が " + r.unmatched + "件");
+      }
+    });
+    if (alerts.length) {
+      MailApp.sendEmail(DAILY_REPORT_TO,
+        "【録音チェック】確認が必要な項目が " + alerts.length + "件あります",
+        "通話録音の自動照合を実行しました。次の点をご確認ください。\n\n" + alerts.join("\n") +
+        "\n\n※ カバー率が低い場合は、端末の「通話を自動録音」がONか、ドライブへの同期が動いているかをご確認ください。\n\n" +
+        "川嶋メソッド テレアポ業務管理システム");
+      logAudit("録音アラート", "システム", alerts.length + "件", "");
+    }
+  } catch (e) { Logger.log("rec alert failed: " + e); }
+}
+
+function getRecTriggerStatus() {
+  var trs = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < trs.length; i++) {
+    if (trs[i].getHandlerFunction() === REC_SCAN_FN) return { on: true };
+  }
+  return { on: false };
+}
+
+function setRecTrigger(on, hours) {
+  var trs = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < trs.length; i++) {
+    if (trs[i].getHandlerFunction() === REC_SCAN_FN) ScriptApp.deleteTrigger(trs[i]);
+  }
+  if (!on) { logAudit("録音自動照合", "管理者", "停止", ""); return { on: false }; }
+  var hh = Number(hours) || 24;
+  if (hh >= 24) { ScriptApp.newTrigger(REC_SCAN_FN).timeBased().everyDays(1).atHour(21).create(); }
+  else { ScriptApp.newTrigger(REC_SCAN_FN).timeBased().everyHours(Math.max(1, hh)).create(); }
+  logAudit("録音自動照合", "管理者", "開始（" + (hh >= 24 ? "毎日21時" : hh + "時間ごと") + "）", "");
+  return { on: true, hours: hh };
+}
+
+function recListFor_(pin, month, resultFilter, limit) {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sh = ss.getSheetByName("架電結果");
+  var out = [];
+  if (!sh || sh.getLastRow() < 2) return out;
+  var nm = FULL_NAME_MAP[String(pin || "")] || "";
+  var rows = sh.getDataRange().getValues();
+  for (var i = rows.length - 1; i >= 1 && out.length < (limit || 100); i--) {
+    var name = String(rows[i][0] || "").trim();
+    if (pin && name !== nm) continue;
+    var ymd = normalizeYMD(rows[i][1]);
+    if (month && (!ymd || ymd.slice(0, 7) !== month)) continue;
+    var result = String(rows[i][6] || "");
+    if (resultFilter && result !== resultFilter) continue;
+    var url = String(rows[i][17] || "");
+    if (!url) continue;
+    out.push({
+      name: name, date: ymd, time: String(rows[i][2] || ""),
+      company: String(rows[i][3] || ""), phone: String(rows[i][4] || ""),
+      result: result, dur: String(rows[i][7] || ""),
+      file: String(rows[i][16] || ""), url: url
+    });
+  }
+  return out;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// v70: 架電システム → 経営システム への「即時反映」
+//   これまでは5分ごとの再集計（ポーリング）だったため、入力から
+//   最大5分の遅れがあった。v70では保存された瞬間に該当する
+//   「日付×担当者」の1行だけを更新する（イベント駆動）。
+//   ・O(1)の加算なので、何件保存されても重くならない
+//   ・5分ごとの全再計算はそのまま残し、ズレがあっても自動で直る
+// ═══════════════════════════════════════════════════════════════
+var KANRI_LIVE_SHEET = "経営連携_日次集計";
+var KANRI_LIVE_HEADER = ["日付", "名前", "実働h", "推定", "架電", "接続", "アポ", "更新時刻"];
+
+// 架電結果1件が「接続」「アポ」に当たるかを判定（kanriAggregate_ と同一基準）
+function kanriDelta_(resultLabel) {
+  var rid = mapResultLabelToId(resultLabel);
+  return {
+    calls: 1,
+    connects: (rid !== "absent" && rid !== "wrong") ? 1 : 0,
+    appos: (rid === "appo") ? 1 : 0
+  };
+}
+// 既存行に増分を足した新しい行を作る（純粋関数＝検証しやすい）
+function kanriApplyDelta_(row, delta, now) {
+  var r = row ? row.slice(0) : ["", "", null, "", 0, 0, 0, ""];
+  r[4] = (Number(r[4]) || 0) + (delta.calls || 0);
+  r[5] = (Number(r[5]) || 0) + (delta.connects || 0);
+  r[6] = (Number(r[6]) || 0) + (delta.appos || 0);
+  r[7] = now;
+  return r;
+}
+// 勤怠から実働時間を求める（kanriAggregate_ と同一基準）
+function kanriHoursFrom_(ci, co, bs, be) {
+  var a = kanriMin_(kanriHM_(ci)), b = kanriMin_(kanriHM_(co));
+  if (a === null || b === null || b <= a) return null;
+  var s = kanriMin_(kanriHM_(bs)), e = kanriMin_(kanriHM_(be));
+  var brk = (s !== null && e !== null && e > s) ? (e - s) : 0;
+  return Math.round(((b - a - brk) / 60) * 100) / 100;
+}
+// 「日付×担当者」の行番号を探す（キャッシュ付き）
+function kanriFindRow_(sh, dateKey, name) {
+  var ck = "kanri_row_" + dateKey + "_" + name;
+  try {
+    var c = CacheService.getScriptCache();
+    var hit = c.get(ck);
+    if (hit) {
+      var rn = Number(hit);
+      var v = sh.getRange(rn, 1, 1, 2).getValues()[0];
+      if (kanriDateKey_(v[0]) === dateKey && String(v[1]).trim() === name) return rn;
+    }
+  } catch (e) {}
+  if (sh.getLastRow() < 2) return 0;
+  var data = sh.getRange(2, 1, sh.getLastRow() - 1, 2).getValues();
+  for (var i = data.length - 1; i >= 0; i--) {
+    if (kanriDateKey_(data[i][0]) === dateKey && String(data[i][1]).trim() === name) {
+      var rowNo = i + 2;
+      try { CacheService.getScriptCache().put(ck, String(rowNo), 21600); } catch (e2) {}
+      return rowNo;
+    }
+  }
+  return 0;
+}
+// 即時反映の本体。kind: "call"（架電結果）／"appo"（アポ報告）／"hours"（勤怠）
+function kanriLiveUpdate_(name, dateKey, kind, payload) {
+  if (!name || !dateKey) return false;
+  var lock = LockService.getScriptLock();
+  try { lock.tryLock(8000); } catch (e) {}
+  try {
+    var ss = SpreadsheetApp.openById(SHEET_ID);
+    var sh = ss.getSheetByName(KANRI_LIVE_SHEET);
+    if (!sh) { sh = ss.insertSheet(KANRI_LIVE_SHEET); sh.appendRow(KANRI_LIVE_HEADER); }
+    var rowNo = kanriFindRow_(sh, dateKey, name);
+    var cur = rowNo ? sh.getRange(rowNo, 1, 1, 8).getValues()[0] : null;
+    var now = new Date();
+    var next;
+    if (kind === "hours") {
+      next = cur ? cur.slice(0) : [dateKey, name, null, "", 0, 0, 0, now];
+      next[2] = payload.hours;
+      next[3] = "";               // 実測が入ったので「推定」を外す
+      next[7] = now;
+    } else {
+      var delta = (kind === "appo") ? { calls: 0, connects: 0, appos: 1 } : kanriDelta_(payload.result);
+      next = kanriApplyDelta_(cur, delta, now);
+    }
+    next[0] = dateKey; next[1] = name;
+    if (rowNo) { sh.getRange(rowNo, 1, 1, 8).setValues([next]); }
+    else {
+      sh.appendRow(next);
+      try { CacheService.getScriptCache().put("kanri_row_" + dateKey + "_" + name, String(sh.getLastRow()), 21600); } catch (e2) {}
+    }
+    // 経営側が「いつの時点のデータか」を判断できるように最終反映時刻を残す
+    try { PropertiesService.getScriptProperties().setProperty("KANRI_LAST_LIVE", now.toISOString()); } catch (e3) {}
+    return true;
+  } catch (err) {
+    Logger.log("kanriLiveUpdate_ failed: " + err);
+    return false;
+  } finally {
+    try { lock.releaseLock(); } catch (e4) {}
+  }
+}
+// 架電結果の保存直後に呼ぶ
+function kanriOnCallResult_(d) {
+  try {
+    return kanriLiveUpdate_(String(d.name || "").trim(), kanriDateKey_(d.date), "call", { result: d.result });
+  } catch (e) { return false; }
+}
+// アポ報告の保存直後に呼ぶ（報告日ベース＝品質ゲートの突合と同じ基準）
+function kanriOnAppointment_(d) {
+  try {
+    return kanriLiveUpdate_(String(d.reporter || d.name || "").trim(), kanriDateKey_(d.date), "appo", {});
+  } catch (e) { return false; }
+}
+// 出退勤の保存直後に呼ぶ
+function kanriOnAttendance_(d) {
+  try {
+    var h = kanriHoursFrom_(d.clockIn, d.clockOut, d.breakStart, d.breakEnd);
+    if (h === null) return false;
+    return kanriLiveUpdate_(String(d.name || "").trim(), kanriDateKey_(d.date), "hours", { hours: h });
+  } catch (e) { return false; }
+}
+
+function setupRecording() {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  ensureSheet(ss, REC_CONFIG_SHEET, REC_CONFIG_HEADER);
+  ensureSheet(ss, REC_INBOX_SHEET, ["取込日時","経路","PIN","名前","ファイル名","サイズ","保存先","重複鍵"]);
+  var cr = ss.getSheetByName("架電結果");
+  if (cr) {
+    var lastCol = cr.getLastColumn();
+    var hdr = cr.getRange(1, 1, 1, Math.max(1, lastCol)).getValues()[0];
+    if (hdr.indexOf("録音ファイル") < 0) {
+      cr.getRange(1, lastCol + 1, 1, 2).setValues([["録音ファイル", "録音URL"]]);
+      cr.getRange(1, lastCol + 1, 1, 2).setFontWeight("bold");
+    }
+  }
+  Logger.log("✅ 録音管理の初期化が完了しました");
+}
+
+function recHandle_(d) {
+  function J(o){return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON)}
+  try {
+    if (d.type === "rec_provision") {
+      var pv = provisionRecFolders(d.rootId || "");
+      return J(pv.ok ? { status:"ok", root:{id:pv.rootId,url:pv.rootUrl,name:pv.rootName},
+                         inboxId:pv.inboxId, inboxUrl:pv.inboxUrl, members:pv.members }
+                     : { status:"error", message: pv.message });
+    }
+    if (d.type === "rec_ingest") {
+      var pr = PropertiesService.getScriptProperties();
+      return J({ status:"ok", results: recIngestAll(d.days||7,
+        d.rootId || pr.getProperty("REC_ROOT_FOLDER") || "",
+        d.inboxId || pr.getProperty("REC_INBOX_FOLDER") || "") });
+    }
+    if (d.type === "rec_config_get") {
+      var list = readRecConfigs_(), out = [];
+      Object.keys(FULL_NAME_MAP).forEach(function (pn) {
+        var f = null; list.forEach(function (x) { if (String(x.pin) === String(pn)) f = x; });
+        out.push({ pin: pn, name: FULL_NAME_MAP[pn], set: !!f, folderId: f ? f.folderId : "",
+          tol: f ? f.tol : 5, enabled: f ? f.enabled : true,
+          lastScan: f ? f.lastScan : "", lastResult: f ? f.lastResult : "" });
+      });
+      return J({ status: "ok", configs: out });
+    }
+    if (d.type === "rec_config_set") { writeRecConfig_({pin:d.pin,folderId:d.folderId,tol:d.tol,enabled:d.enabled}); return J({status:"ok"}); }
+    if (d.type === "rec_scan") { return J({ status:"ok", reports: recScanAll(d.pin||null, d.days||7) }); }
+    if (d.type === "rec_trigger") {
+      return J({ status:"ok", trigger: (d.action==="set") ? setRecTrigger(d.on===true, d.hours) : getRecTriggerStatus() });
+    }
+    if (d.type === "rec_list") { return J({ status:"ok", items: recListFor_(d.pin||"", d.month||"", d.result||"", d.limit||60) }); }
+    if (d.type === "rec_self") {
+      var sh = SpreadsheetApp.openById(SHEET_ID).getSheetByName("架電結果");
+      var nm = FULL_NAME_MAP[String(d.pin||"")]||"";
+      var today = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd");
+      var calls=0, rec=0, missing=[];
+      if (sh && sh.getLastRow()>1) {
+        var rows=sh.getDataRange().getValues(), ci=rows[0].indexOf("録音URL");
+        for (var i=1;i<rows.length;i++){
+          if(String(rows[i][0]||"").trim()!==nm)continue;
+          if(normalizeYMD(rows[i][1])!==today)continue;
+          calls++;
+          if(ci>=0&&String(rows[i][ci]||""))rec++;
+          else if(missing.length<5)missing.push(String(rows[i][3]||"")+"("+String(rows[i][2]||"")+")");
+        }
+      }
+      return J({ status:"ok", calls:calls, rec:rec, pct: calls?Math.round(rec/calls*1000)/10:0, missing:missing });
+    }
+    if (d.type === "rec_status") {
+      var ss2=SpreadsheetApp.openById(SHEET_ID), sh2=ss2.getSheetByName("架電結果");
+      var month=String(d.month||""), agg={};
+      if (sh2 && sh2.getLastRow()>1) {
+        var rw=sh2.getDataRange().getValues(), ui=rw[0].indexOf("録音URL");
+        for (var k=1;k<rw.length;k++){
+          var ymd=normalizeYMD(rw[k][1]);
+          if(!ymd||(month&&ymd.slice(0,7)!==month))continue;
+          var n2=String(rw[k][0]||"").trim(); if(!n2)continue;
+          if(!agg[n2])agg[n2]={calls:0,rec:0};
+          agg[n2].calls++;
+          if(ui>=0&&String(rw[k][ui]||""))agg[n2].rec++;
+        }
+      }
+      var members=[];
+      Object.keys(FULL_NAME_MAP).forEach(function(pn){
+        var nm3=FULL_NAME_MAP[pn], v=agg[nm3]; if(!v)return;
+        members.push({pin:pn,name:nm3,calls:v.calls,rec:v.rec,pct:v.calls?Math.round(v.rec/v.calls*1000)/10:0,days:[]});
+      });
+      return J({ status:"ok", month:month, members:members });
+    }
+  } catch (e) { return J({ status:"error", message:String(e) }); }
+  return null;
+}
+
+
+// ═══ v70: 経営システムへ「録音カバー率」も渡す（品質指標の統合） ═══
+// 純粋関数：架電結果から、担当者×日ごとの録音有無を集計する
+function kanriRecCoverage_(hist, fromKey) {
+  var by = {}, hdr = hist && hist.length ? hist[0] : [];
+  var ui = -1;
+  for (var c = 0; c < hdr.length; c++) { if (String(hdr[c]).indexOf("録音URL") >= 0) ui = c; }
+  for (var i = 1; i < (hist || []).length; i++) {
+    var nm = String(hist[i][0] || "").trim();
+    var dk = kanriDateKey_(hist[i][1]);
+    if (!nm || !dk || dk < fromKey) continue;
+    var k = nm + "|" + dk;
+    if (!by[k]) by[k] = { name: nm, d: dk, calls: 0, rec: 0 };
+    by[k].calls++;
+    if (ui >= 0 && String(hist[i][ui] || "")) by[k].rec++;
+  }
+  var out = [];
+  for (var key in by) {
+    var v = by[key];
+    out.push({ d: v.d, name: v.name, calls: v.calls, rec: v.rec,
+      pct: v.calls ? Math.round(v.rec / v.calls * 1000) / 10 : 0 });
+  }
+  out.sort(function (a, b) { return a.d === b.d ? (a.name < b.name ? -1 : 1) : (a.d < b.d ? -1 : 1); });
+  return out;
+}
+// 経営システムが「いつ時点のデータか」を判断するための鮮度情報
+function kanriFreshness_() {
+  var last = "";
+  try { last = PropertiesService.getScriptProperties().getProperty("KANRI_LAST_LIVE") || ""; } catch (e) {}
+  return { lastLive: last, mode: "event+snapshot", serverTime: new Date().toISOString() };
 }

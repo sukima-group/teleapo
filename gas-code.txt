@@ -5104,6 +5104,13 @@ function recHandle_(d) {
         d.rootId || pr.getProperty("REC_ROOT_FOLDER") || "",
         d.inboxId || pr.getProperty("REC_INBOX_FOLDER") || "") });
     }
+    if (d.type === "kanri_drive_build") {
+      var kb = kanriBuildDriveSystem(d.rootId || KANRI_DRIVE_ROOT, d.months || 6);
+      return J(kb.ok ? { status: "ok", result: kb } : { status: "error", message: kb.message });
+    }
+    if (d.type === "kanri_drive_trigger") {
+      return J({ status: "ok", trigger: (d.action === "set") ? setKanriDriveTrigger(d.on === true, d.hours) : getKanriDriveTrigger() });
+    }
     if (d.type === "rec_macro_check") {
       return J({ status: "ok", result: recMacroCheck(d.pin, d.windowMin || 30) });
     }
@@ -5311,4 +5318,268 @@ function DAILY_REPORT_TO_REC() {
     if (v) return String(v);
   } catch (e) {}
   return "hr.ashikaga@gmail.com";
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// v72: Googleドライブ上で完結する経営管理システム
+//   指定フォルダの中にフォルダ構成とスプレッドシートを自動生成し、
+//   架電システムのデータで自動更新する。
+//   → 経営PC・Python・Excel が不要になり、スマホからも見られる。
+// ═══════════════════════════════════════════════════════════════
+var KANRI_DRIVE_ROOT = "1rR9JXEFWlJMwwb8RAoNqkxey5Wri0g0i";  // 経営管理システムを置くドライブフォルダ
+var KANRI_SS_NAME = "スキマグループ_経営管理システム";
+var KANRI_FOLDERS = ["01_月次レポート", "02_バックアップ", "03_エクスポート"];
+
+// 月キー（yyyy-MM）
+function kanriMonthKey_(dateKey) { return String(dateKey || "").slice(0, 7); }
+
+// 日次集計シートに書く行を作る（純粋関数）
+function kanriDailyRows_(days) {
+  var out = [];
+  (days || []).forEach(function (d) {
+    var conn = Number(d.connects) || 0, calls = Number(d.calls) || 0, apo = Number(d.appos) || 0;
+    out.push([d.d, d.name, (d.hours === null || d.hours === undefined) ? "" : d.hours,
+      d.est ? "推定" : "", calls, conn, apo,
+      calls ? Math.round(conn / calls * 1000) / 10 : 0,
+      calls ? Math.round(apo / calls * 1000) / 10 : 0,
+      (d.hours ? Math.round(calls / d.hours * 10) / 10 : "")]);
+  });
+  return out;
+}
+// アポインター別の合計（純粋関数）
+function kanriMemberRollup_(days) {
+  var m = {};
+  (days || []).forEach(function (d) {
+    if (!m[d.name]) m[d.name] = { name: d.name, days: 0, hours: 0, calls: 0, connects: 0, appos: 0 };
+    var r = m[d.name];
+    r.days++;
+    r.hours += Number(d.hours) || 0;
+    r.calls += Number(d.calls) || 0;
+    r.connects += Number(d.connects) || 0;
+    r.appos += Number(d.appos) || 0;
+  });
+  var out = [];
+  for (var k in m) {
+    var v = m[k];
+    out.push([v.name, v.days, Math.round(v.hours * 10) / 10, v.calls, v.connects, v.appos,
+      v.calls ? Math.round(v.connects / v.calls * 1000) / 10 : 0,
+      v.calls ? Math.round(v.appos / v.calls * 1000) / 10 : 0,
+      v.hours ? Math.round(v.calls / v.hours * 10) / 10 : 0,
+      v.days ? Math.round(v.appos / v.days * 100) / 100 : 0]);
+  }
+  out.sort(function (a, b) { return b[5] - a[5]; });   // アポ数の多い順
+  return out;
+}
+// 月別の推移（純粋関数）
+function kanriMonthlyRollup_(days) {
+  var m = {};
+  (days || []).forEach(function (d) {
+    var mk = kanriMonthKey_(d.d);
+    if (!mk) return;
+    if (!m[mk]) m[mk] = { mk: mk, dates: {}, hours: 0, calls: 0, connects: 0, appos: 0 };
+    var r = m[mk];
+    r.dates[d.d] = 1;
+    r.hours += Number(d.hours) || 0;
+    r.calls += Number(d.calls) || 0;
+    r.connects += Number(d.connects) || 0;
+    r.appos += Number(d.appos) || 0;
+  });
+  var out = [];
+  for (var k in m) {
+    var v = m[k], nd = 0;
+    for (var x in v.dates) nd++;
+    out.push([v.mk, nd, Math.round(v.hours * 10) / 10, v.calls, v.connects, v.appos,
+      v.calls ? Math.round(v.appos / v.calls * 1000) / 10 : 0,
+      nd ? Math.round(v.appos / nd * 100) / 100 : 0]);
+  }
+  out.sort(function (a, b) { return a[0] < b[0] ? -1 : 1; });
+  return out;
+}
+// 子フォルダを用意（無ければ作る）
+function kanriChildFolder_(parent, name) {
+  var it = parent.getFoldersByName(name);
+  return it.hasNext() ? it.next() : parent.createFolder(name);
+}
+// フォルダ内の指定名スプレッドシートを取得（無ければ作る）
+function kanriGetOrCreateSS_(folder, name) {
+  var it = folder.getFilesByName(name);
+  while (it.hasNext()) {
+    var f = it.next();
+    if (f.getMimeType() === MimeType.GOOGLE_SHEETS) return SpreadsheetApp.openById(f.getId());
+  }
+  var ss = SpreadsheetApp.create(name);
+  var file = DriveApp.getFileById(ss.getId());
+  folder.addFile(file);
+  try { DriveApp.getRootFolder().removeFile(file); } catch (e) {}
+  return ss;
+}
+// シートを用意して中身を入れ替える
+function kanriPutSheet_(ss, name, header, rows, widths) {
+  var sh = ss.getSheetByName(name) || ss.insertSheet(name);
+  sh.clear();
+  sh.getRange(1, 1, 1, header.length).setValues([header]);
+  sh.getRange(1, 1, 1, header.length).setFontWeight("bold").setBackground("#e8eaf6");
+  if (rows && rows.length) sh.getRange(2, 1, rows.length, header.length).setValues(rows);
+  sh.setFrozenRows(1);
+  (widths || []).forEach(function (w, i) { try { sh.setColumnWidth(i + 1, w); } catch (e) {} });
+  return sh;
+}
+
+// ★本体：ドライブ内に経営管理システムを構築／更新する
+function kanriBuildDriveSystem(rootIdOrUrl, months) {
+  var rootId = extractFolderId_(rootIdOrUrl || KANRI_DRIVE_ROOT);
+  var root;
+  try { root = DriveApp.getFolderById(rootId); }
+  catch (e) { return { ok: false, message: "フォルダを開けません（共有設定をご確認ください）: " + e }; }
+
+  // フォルダ構成を用意
+  var home = kanriChildFolder_(root, "経営管理システム");
+  var subs = {};
+  KANRI_FOLDERS.forEach(function (n) { subs[n] = kanriChildFolder_(home, n); });
+
+  // データを集計
+  var ss0 = SpreadsheetApp.openById(SHEET_ID);
+  function vals(nm) { var sh = ss0.getSheetByName(nm); return (sh && sh.getLastRow() > 1) ? sh.getDataRange().getValues() : []; }
+  var back = (Number(months) || 6) * 31;
+  var fromKey = kanriDateKey_(new Date(Date.now() - back * 86400000));
+  var att = vals("勤怠"), hist = vals("架電結果"), apo = vals("アポイント"), shift = vals("シフト申請");
+  var agg = kanriAggregate_(att, hist, apo, fromKey);
+  var q = kanriQuality_(att, hist, apo, fromKey);
+  try { kanriQualityV2_(q, att, hist, shift); } catch (eq) {}
+  var cover = [];
+  try { cover = kanriRecCoverage_(hist, fromKey); } catch (ec) {}
+
+  // スプレッドシートを用意
+  var ss = kanriGetOrCreateSS_(home, KANRI_SS_NAME);
+
+  // ① 日次集計
+  kanriPutSheet_(ss, "日次集計",
+    ["日付", "名前", "実働h", "推定", "架電", "接続", "アポ", "接続率%", "アポ率%", "架電/h"],
+    kanriDailyRows_(agg.days), [90, 100, 60, 50, 60, 60, 60, 70, 70, 70]);
+
+  // ② アポインター別
+  kanriPutSheet_(ss, "アポインター別",
+    ["名前", "稼働日数", "実働h計", "架電", "接続", "アポ", "接続率%", "アポ率%", "架電/h", "アポ/日"],
+    kanriMemberRollup_(agg.days), [110, 70, 70, 60, 60, 60, 70, 70, 70, 70]);
+
+  // ③ 月次推移
+  kanriPutSheet_(ss, "月次推移",
+    ["対象月", "稼働日数", "実働h計", "架電", "接続", "アポ", "アポ率%", "アポ/日"],
+    kanriMonthlyRollup_(agg.days), [80, 80, 80, 70, 70, 70, 70, 70]);
+
+  // ④ アポ一覧
+  var apoRows = (agg.appos || []).map(function (a) { return [a.md, a.mt, a.project, a.company, a.reporter]; });
+  kanriPutSheet_(ss, "アポ一覧", ["商談日", "時間", "案件名", "法人名", "報告者"],
+    apoRows, [90, 70, 120, 220, 100]);
+
+  // ⑤ 品質レポート
+  var qRows = [];
+  (q.punchMiss || []).forEach(function (x) { qRows.push(["打刻漏れ", x.name, x.d, x.note || ""]); });
+  (q.unknownNames || []).forEach(function (x) { qRows.push(["名簿外の名前", x.name, "", x.rows + "行"]); });
+  (q.apoMismatch || []).forEach(function (x) {
+    qRows.push(["アポ件数の差異", x.name, x.d,
+      "架電結果" + x.histAppo + "件 / 報告" + x.reported + "件" + (x.fix ? "（" + x.fix + "）" : "")]);
+  });
+  (q.idleWork || []).forEach(function (x) { qRows.push(["稼働空転", x.name, x.d, x.note || "出勤打刻あり・架電0件"]); });
+  (q.shiftGap || []).forEach(function (x) { qRows.push(["シフト乖離", x.name, x.month || "", x.note || ""]); });
+  (q.apoDrop || []).forEach(function (x) { qRows.push(["アポ率急落", x.name, "", x.note || ""]); });
+  kanriPutSheet_(ss, "品質レポート", ["種別", "対象者", "日付/月", "内容"], qRows, [110, 100, 90, 420]);
+
+  // ⑥ 録音カバレッジ
+  var cRows = (cover || []).map(function (c) { return [c.d, c.name, c.calls, c.rec, c.pct]; });
+  kanriPutSheet_(ss, "録音カバレッジ", ["日付", "名前", "架電", "録音", "カバー率%"], cRows, [90, 100, 60, 60, 80]);
+
+  // ⑦ ダッシュボード（数式で自動計算）
+  kanriBuildDriveDashboard_(ss);
+
+  // 月次レポートのコピーを残す（当月分を上書き）
+  var mk = kanriMonthKey_(kanriDateKey_(new Date()));
+  try {
+    var mfolder = kanriChildFolder_(subs["01_月次レポート"], mk);
+    var copyName = KANRI_SS_NAME + "_" + mk;
+    var old = mfolder.getFilesByName(copyName);
+    while (old.hasNext()) { old.next().setTrashed(true); }
+    DriveApp.getFileById(ss.getId()).makeCopy(copyName, mfolder);
+  } catch (em) {}
+
+  // CSVエクスポート（外部BI用）
+  try {
+    var csv = kanriCsv_(agg.days);
+    var ex = subs["03_エクスポート"];
+    var oldc = ex.getFilesByName("daily.csv");
+    while (oldc.hasNext()) { oldc.next().setTrashed(true); }
+    ex.createFile("daily.csv", csv, MimeType.CSV);
+  } catch (ex2) {}
+
+  try { PropertiesService.getScriptProperties().setProperty("KANRI_DRIVE_SS", ss.getId()); } catch (e3) {}
+  logAudit("経営システム構築", "管理者", ss.getName(), "日次" + agg.days.length + "行");
+  return { ok: true, url: ss.getUrl(), id: ss.getId(), folderUrl: home.getUrl(),
+    days: agg.days.length, members: kanriMemberRollup_(agg.days).length,
+    quality: qRows.length, coverage: cRows.length };
+}
+
+// ダッシュボード（数式ベース＝開くたびに最新の計算結果になる）
+function kanriBuildDriveDashboard_(ss) {
+  var sh = ss.getSheetByName("ダッシュボード") || ss.insertSheet("ダッシュボード", 0);
+  sh.clear();
+  var D = "'日次集計'";
+  var today = 'TEXT(TODAY(),"yyyy-mm-dd")';
+  var month = 'TEXT(TODAY(),"yyyy-mm")';
+  var rows = [
+    ["スキマグループ 経営管理システム", "", "", ""],
+    ["最終更新", '=TEXT(NOW(),"yyyy/mm/dd hh:mm")', "", ""],
+    ["", "", "", ""],
+    ["■ 本日", "", "■ 今月", ""],
+    ["架電", '=SUMIF(' + D + '!A:A,' + today + ',' + D + '!E:E)',
+      "架電", '=SUMPRODUCT((LEFT(' + D + '!A2:A10000,7)=' + month + ')*' + D + '!E2:E10000)'],
+    ["接続", '=SUMIF(' + D + '!A:A,' + today + ',' + D + '!F:F)',
+      "接続", '=SUMPRODUCT((LEFT(' + D + '!A2:A10000,7)=' + month + ')*' + D + '!F2:F10000)'],
+    ["アポ", '=SUMIF(' + D + '!A:A,' + today + ',' + D + '!G:G)',
+      "アポ", '=SUMPRODUCT((LEFT(' + D + '!A2:A10000,7)=' + month + ')*' + D + '!G2:G10000)'],
+    ["実働h", '=SUMIF(' + D + '!A:A,' + today + ',' + D + '!C:C)',
+      "実働h", '=SUMPRODUCT((LEFT(' + D + '!A2:A10000,7)=' + month + ')*' + D + '!C2:C10000)'],
+    ["アポ率%", '=IF(B5=0,0,ROUND(B7/B5*100,1))', "アポ率%", '=IF(D5=0,0,ROUND(D7/D5*100,1))'],
+    ["接続率%", '=IF(B5=0,0,ROUND(B6/B5*100,1))', "接続率%", '=IF(D5=0,0,ROUND(D6/D5*100,1))'],
+    ["", "", "", ""],
+    ["■ 品質チェック", '=COUNTA(\'品質レポート\'!A2:A)&"件"', "■ 録音カバー率",
+      '=IFERROR(ROUND(SUM(\'録音カバレッジ\'!D2:D)/SUM(\'録音カバレッジ\'!C2:C)*100,1)&"%","—")'],
+    ["", "", "", ""],
+    ["■ アポインター別（アポ数順）", "", "", ""]
+  ];
+  sh.getRange(1, 1, rows.length, 4).setValues(rows);
+  sh.getRange(1, 1).setFontSize(14).setFontWeight("bold");
+  sh.getRange(4, 1).setFontWeight("bold"); sh.getRange(4, 3).setFontWeight("bold");
+  sh.getRange(12, 1).setFontWeight("bold"); sh.getRange(12, 3).setFontWeight("bold");
+  sh.getRange(14, 1).setFontWeight("bold");
+  sh.getRange(15, 1).setFormula("=IFERROR(QUERY('アポインター別'!A:J,\"select A,D,F,H,C where A is not null order by F desc limit 15\",1),\"データがありません\")");
+  sh.setColumnWidth(1, 190); sh.setColumnWidth(2, 130);
+  sh.setColumnWidth(3, 150); sh.setColumnWidth(4, 130);
+  try { ss.setActiveSheet(sh); ss.moveActiveSheet(1); } catch (e) {}
+  return sh;
+}
+
+// 毎日の自動更新（トリガー用）
+function kanriDriveRefresh() {
+  var r = kanriBuildDriveSystem(KANRI_DRIVE_ROOT, 6);
+  if (!r.ok) { try { kanriNotifyFail_("drive_build", r.message); } catch (e) {} }
+  return r;
+}
+function setKanriDriveTrigger(on, hours) {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === "kanriDriveRefresh") ScriptApp.deleteTrigger(t);
+  });
+  if (!on) { logAudit("経営システム自動更新", "管理者", "停止", ""); return { on: false }; }
+  var hh = Number(hours) || 24;
+  if (hh >= 24) ScriptApp.newTrigger("kanriDriveRefresh").timeBased().everyDays(1).atHour(20).create();
+  else ScriptApp.newTrigger("kanriDriveRefresh").timeBased().everyHours(Math.max(1, hh)).create();
+  logAudit("経営システム自動更新", "管理者", "開始(" + (hh >= 24 ? "毎日20時" : hh + "時間ごと") + ")", "");
+  return { on: true, hours: hh };
+}
+function getKanriDriveTrigger() {
+  var on = false;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === "kanriDriveRefresh") on = true;
+  });
+  return { on: on };
 }

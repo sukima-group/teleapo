@@ -5104,6 +5104,14 @@ function recHandle_(d) {
         d.rootId || pr.getProperty("REC_ROOT_FOLDER") || "",
         d.inboxId || pr.getProperty("REC_INBOX_FOLDER") || "") });
     }
+    if (d.type === "rec_macro_check") {
+      return J({ status: "ok", result: recMacroCheck(d.pin, d.windowMin || 30) });
+    }
+    if (d.type === "rec_macro_setup") {
+      var setups = [];
+      Object.keys(FULL_NAME_MAP).forEach(function (pn) { setups.push(recMacroSetup_(pn)); });
+      return J({ status: "ok", setups: setups, mailTo: DAILY_REPORT_TO_REC() });
+    }
     if (d.type === "rec_config_get") {
       var list = readRecConfigs_(), out = [];
       Object.keys(FULL_NAME_MAP).forEach(function (pn) {
@@ -5192,4 +5200,115 @@ function kanriFreshness_() {
   var last = "";
   try { last = PropertiesService.getScriptProperties().getProperty("KANRI_LAST_LIVE") || ""; } catch (e) {}
   return { lastLive: last, mode: "event+snapshot", serverTime: new Date().toISOString() };
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// v71: MacroDroid の導通チェック
+//   「マクロを作ったけれど、本当に届いているのか」を確認するための機能。
+//   直近◯分のメールを調べ、届いていない場合は原因まで示す。
+// ═══════════════════════════════════════════════════════════════
+
+// 受信メール一覧から、その担当者の録音が届いているかを判定する（純粋関数＝検証しやすい）
+//   mails: [{from, subject, dateMs, attachments:[{name,size}]}]
+function recMacroVerdict_(mails, pin, nowMs, windowMin) {
+  var win = (Number(windowMin) || 30) * 60000;
+  var myMail = String(personalEmailFor(pin) || "").toLowerCase();
+  var myName = FULL_NAME_MAP[String(pin)] || "";
+  var res = { ok: false, state: "", found: null, issues: [], checked: 0 };
+
+  var recent = (mails || []).filter(function (m) { return (nowMs - m.dateMs) <= win; });
+  res.checked = recent.length;
+
+  // ① 自分から届いた「音声つき」のメール＝成功
+  for (var i = 0; i < recent.length; i++) {
+    var m = recent[i];
+    var fromAddr = String(m.from || "").toLowerCase();
+    var byEmail = myMail && fromAddr.indexOf(myMail) >= 0;
+    var bySubject = myName && String(m.subject || "").indexOf(myName) >= 0;
+    if (!byEmail && !bySubject) continue;
+    var audio = (m.attachments || []).filter(function (a) { return recAttachmentOk_(a.name, a.size); });
+    if (audio.length) {
+      res.ok = true; res.state = "成功";
+      res.found = { from: m.from, subject: m.subject, dateMs: m.dateMs,
+        fileName: audio[0].name, size: audio[0].size, count: audio.length };
+      if (!byEmail) res.issues.push("会社のGmail以外から届いています（件名の名前で判別しました）");
+      return res;
+    }
+  }
+  // ② 自分から届いているが、音声が付いていない
+  for (var j = 0; j < recent.length; j++) {
+    var m2 = recent[j];
+    var f2 = String(m2.from || "").toLowerCase();
+    if (!(myMail && f2.indexOf(myMail) >= 0)) continue;
+    var atts = m2.attachments || [];
+    res.state = "添付が正しくない";
+    if (!atts.length) res.issues.push("メールは届いていますが、添付ファイルがありません（マクロの『添付＝追加されたファイル』を確認）");
+    else {
+      var big = atts.filter(function (a) { return a.size > REC_MAX_MB * 1024 * 1024; });
+      if (big.length) res.issues.push("添付が大きすぎます（" + Math.round(big[0].size / 1048576) + "MB／上限" + REC_MAX_MB + "MB）");
+      else res.issues.push("添付が音声ファイルではありません（" + atts[0].name + "）");
+    }
+    return res;
+  }
+  // ③ そもそも届いていない
+  res.state = "未着";
+  res.issues.push("直近" + (Number(windowMin) || 30) + "分に、このメンバーからのメールが届いていません");
+  if (!myMail) res.issues.push("この方の会社Gmailが未登録です（件名に名前を入れて送ってもらってください）");
+  return res;
+}
+// 実際にGmailを調べて判定する
+function recMacroCheck(pin, windowMin) {
+  var win = Number(windowMin) || 30;
+  var mails = [];
+  try {
+    var threads = GmailApp.search("newer_than:1d", 0, 30);
+    for (var t = 0; t < threads.length; t++) {
+      var ms = threads[t].getMessages();
+      for (var i = 0; i < ms.length; i++) {
+        var atts = [];
+        try {
+          var ax = ms[i].getAttachments();
+          for (var a = 0; a < ax.length; a++) atts.push({ name: ax[a].getName(), size: ax[a].getSize() });
+        } catch (e) {}
+        mails.push({ from: ms[i].getFrom(), subject: ms[i].getSubject(),
+          dateMs: ms[i].getDate().getTime(), attachments: atts });
+      }
+    }
+  } catch (e2) {
+    return { ok: false, state: "確認できません", issues: ["Gmailを読めません: " + e2], checked: 0 };
+  }
+  var v = recMacroVerdict_(mails, pin, new Date().getTime(), win);
+  v.name = FULL_NAME_MAP[String(pin)] || "";
+  v.mail = personalEmailFor(pin) || "";
+  logAudit("導通チェック", "管理者", v.name, v.state);
+  return v;
+}
+// 端末に入力してもらう設定値を組み立てる（印刷・画面表示に使う）
+function recMacroSetup_(pin) {
+  var name = FULL_NAME_MAP[String(pin)] || "";
+  return {
+    pin: String(pin), name: name,
+    mailTo: DAILY_REPORT_TO_REC(),
+    subject: "録音 " + name,
+    folder: "Call",
+    fromAccount: personalEmailFor(pin) || "（会社Gmail未登録）",
+    steps: [
+      "MacroDroid を開き「マクロを追加」",
+      "トリガー → ファイル → ファイル追加 → フォルダ「Call」を選ぶ",
+      "アクション → メール → メール送信",
+      "宛先に " + DAILY_REPORT_TO_REC() + " を入力",
+      "件名に「録音 " + name + "」を入力",
+      "添付で「トリガーとなったファイル」を選ぶ",
+      "マクロ名を「録音自動送信」にして保存 → 有効(ON)にする"
+    ]
+  };
+}
+// 録音の送付先（既定は管理者。必要ならスクリプトプロパティ REC_MAIL_TO で変更可）
+function DAILY_REPORT_TO_REC() {
+  try {
+    var v = PropertiesService.getScriptProperties().getProperty("REC_MAIL_TO");
+    if (v) return String(v);
+  } catch (e) {}
+  return "hr.ashikaga@gmail.com";
 }

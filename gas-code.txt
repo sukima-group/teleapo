@@ -5114,7 +5114,9 @@ function recHandle_(d) {
       return J({ status: "ok", result: nightlyStatus() });
     }
     if (d.type === "kanri_wb_install") {
-      var wi = kanriInstallWorkbook(d.rootId || KANRI_DRIVE_ROOT);
+      var wi;
+      try { wi = k5Install(d.rootId || KANRI_DRIVE_ROOT); }
+      catch (eIns) { wi = kanriInstallWorkbook(d.rootId || KANRI_DRIVE_ROOT); }
       return J(wi.ok ? { status: "ok", result: wi } : { status: "error", message: wi.message, needXlsx: !!wi.needXlsx, folderUrl: wi.folderUrl || "" });
     }
     if (d.type === "kanri_wb_trigger") {
@@ -5773,7 +5775,9 @@ function kanriWorkbookRefresh() {
   try { id = PropertiesService.getScriptProperties().getProperty("KANRI_WB_ID") || ""; } catch (e) {}
   if (!id) { var r = kanriInstallWorkbook(KANRI_DRIVE_ROOT); return r; }
   try {
-    var fed = kanriFeedWorkbook_(id);
+    var fed;
+    try { fed = k5FeedWorkbook_(id); }            // v75: 第5期レイアウトを優先
+    catch (eK5) { fed = kanriFeedWorkbook_(id); } // 旧レイアウトへフォールバック
     logAudit("経営システム更新", "trigger", "", "投入" + fed.rows + "行");
     return { ok: true, rows: fed.rows };
   } catch (e2) {
@@ -5961,4 +5965,224 @@ function nightlyStatus() {
   var wd = nightlyWatchdog_(lastOk, new Date().getTime());
   return { on: on, hour: hour, lastOk: lastOk ? formatDateTimeStr(new Date(lastOk)) : "",
     last: last ? formatDateTimeStr(new Date(last)) : "", watchdog: wd, history: hist };
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// v75: 第5期の経営管理ファイル（41シート）に対応
+//   ⑰日次活動ログ（見出し3行目・データ4行目〜）へ投入し、
+//   ①設定のアポインターマスタと名前を突合する。
+// ═══════════════════════════════════════════════════════════════
+var K5_LOG_SHEET_HINTS = ["日次活動ログ", "日次アポ取得ログ", "日次ログ"];
+var K5_MASTER_SHEET_HINTS = ["設定", "①設定", "設定・マスタ"];
+
+// 見出し行を探す（「日付」と「アポインター/担当」を含む行）
+function k5FindHeader_(values) {
+  for (var r = 0; r < Math.min(20, (values || []).length); r++) {
+    var row = (values[r] || []).map(function (x) { return String(x || "").replace(/\s/g, ""); });
+    var j = row.join("|");
+    if (j.indexOf("日付") >= 0 && (j.indexOf("アポインター") >= 0 || j.indexOf("担当") >= 0)) return r + 1;
+  }
+  return 0;
+}
+// 見出しから列位置を割り出す（第5期の並び：日付/アポインター/架電数/接続数/アポ数/商談数/成約数/メモ/集計月）
+function k5Columns_(headerRow) {
+  var m = { date: 0, name: 0, calls: 0, connects: 0, appos: 0, deals: 0, closes: 0, memo: 0 };
+  (headerRow || []).forEach(function (h, i) {
+    var t = String(h || "").replace(/\s/g, "");
+    var c = i + 1;
+    if (!m.date && t.indexOf("日付") >= 0) m.date = c;
+    else if (!m.name && (t.indexOf("アポインター") >= 0 || t.indexOf("担当") >= 0)) m.name = c;
+    else if (!m.calls && t.indexOf("架電") >= 0) m.calls = c;
+    else if (!m.connects && t.indexOf("接続") >= 0) m.connects = c;
+    else if (!m.appos && t.indexOf("アポ数") >= 0) m.appos = c;
+    else if (!m.deals && t.indexOf("商談") >= 0) m.deals = c;
+    else if (!m.closes && t.indexOf("成約") >= 0) m.closes = c;
+    else if (!m.memo && t.indexOf("メモ") >= 0) m.memo = c;
+  });
+  if (!m.appos) {   // 「アポ数」が無い場合は「アポ」で拾う
+    (headerRow || []).forEach(function (h, i) {
+      var t = String(h || "").replace(/\s/g, "");
+      if (!m.appos && t.indexOf("アポ") >= 0 && (i + 1) !== m.name) m.appos = i + 1;
+    });
+  }
+  return m;
+}
+// ①設定のアポインターマスタを読む
+function k5ReadMaster_(ss) {
+  var names = [];
+  var sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    var nm = sheets[i].getName();
+    var hit = false;
+    for (var h = 0; h < K5_MASTER_SHEET_HINTS.length; h++) {
+      if (nm.indexOf(K5_MASTER_SHEET_HINTS[h]) >= 0) { hit = true; break; }
+    }
+    if (!hit) continue;
+    var sh = sheets[i];
+    var vals = sh.getRange(1, 1, Math.min(60, sh.getMaxRows()), Math.min(15, sh.getMaxColumns())).getValues();
+    for (var r = 0; r < vals.length; r++) {
+      for (var c = 0; c < vals[r].length; c++) {
+        if (String(vals[r][c] || "").indexOf("アポインターマスタ") >= 0) {
+          for (var rr = r + 1; rr < vals.length; rr++) {
+            var v = String(vals[rr][c] || "").trim();
+            if (!v) { if (rr > r + 1 && !String(vals[rr + 1] ? vals[rr + 1][c] : "").trim()) break; else continue; }
+            if (v.indexOf("■") === 0) break;
+            names.push(v);
+          }
+          return names;
+        }
+      }
+    }
+  }
+  return names;
+}
+// 名前を突合する（「堀内」と「堀内真紀子」、「藪内亜紀」と「藪内亜希」のような表記差を吸収）
+function k5MatchName_(name, master) {
+  var n = String(name || "").replace(/[\s\u3000]/g, "");
+  if (!n) return "";
+  // ① 完全一致
+  for (var i = 0; i < (master || []).length; i++) {
+    if (String(master[i]).replace(/[\s\u3000]/g, "") === n) return master[i];
+  }
+  // ② 括弧書き（役員 等）を除いた一致／前方一致（マスタが姓のみの場合を含む）
+  for (var j = 0; j < (master || []).length; j++) {
+    var m = String(master[j]).replace(/[（(].*$/, "").replace(/[\s\u3000]/g, "");
+    if (!m) continue;
+    if (m === n) return master[j];
+    if (n.indexOf(m) === 0 || m.indexOf(n) === 0) return master[j];
+  }
+  // ③ 先頭2文字（姓）が一致し、文字数も近いもの＝表記ゆれ（亜希／亜紀 など）
+  if (n.length >= 3) {
+    for (var k = 0; k < (master || []).length; k++) {
+      var m2 = String(master[k]).replace(/[（(].*$/, "").replace(/[\s\u3000]/g, "");
+      if (m2.length < 3) continue;
+      if (m2.slice(0, 2) !== n.slice(0, 2)) continue;
+      if (Math.abs(m2.length - n.length) > 1) continue;
+      // 異なる文字が1つまでなら同一人物とみなす
+      var diff = 0, len = Math.max(m2.length, n.length);
+      for (var c = 0; c < len; c++) { if (m2.charAt(c) !== n.charAt(c)) diff++; }
+      if (diff <= 1) return master[k];
+    }
+  }
+  return "";
+}
+// ⑰へ書く行を作る（純粋関数）
+function k5LogRows_(days, master, capacity) {
+  var src = (days || []).slice(0);
+  src.sort(function (a, b) { return a.d === b.d ? (a.name < b.name ? -1 : 1) : (a.d < b.d ? -1 : 1); });
+  var cap = Number(capacity) || 1000;
+  if (src.length > cap) src = src.slice(src.length - cap);
+  var rows = [], unmatched = {};
+  src.forEach(function (d) {
+    var nm = (master && master.length) ? k5MatchName_(d.name, master) : d.name;
+    if (!nm) { unmatched[d.name] = (unmatched[d.name] || 0) + 1; nm = d.name; }
+    rows.push([d.d, nm, Number(d.calls) || 0, Number(d.connects) || 0, Number(d.appos) || 0,
+      "", "", "自動連携 " + (d.hours ? d.hours + "h" : "")]);
+  });
+  var un = [];
+  for (var k in unmatched) un.push({ name: k, rows: unmatched[k] });
+  return { rows: rows, unmatched: un };
+}
+
+// ★第5期ファイルへ投入する
+function k5FeedWorkbook_(wbId, months) {
+  var ss = SpreadsheetApp.openById(wbId);
+  // ⑰日次活動ログを探す
+  var sh = null, sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length && !sh; i++) {
+    var nm = sheets[i].getName();
+    for (var h = 0; h < K5_LOG_SHEET_HINTS.length; h++) {
+      if (nm.indexOf(K5_LOG_SHEET_HINTS[h]) >= 0) { sh = sheets[i]; break; }
+    }
+  }
+  if (!sh) throw new Error("日次活動ログのシートが見つかりません");
+
+  var top = sh.getRange(1, 1, Math.min(20, sh.getMaxRows()), Math.min(12, sh.getMaxColumns())).getValues();
+  var hrow = k5FindHeader_(top);
+  if (!hrow) throw new Error("「日付」「アポインター」の見出し行が見つかりません");
+  var cols = k5Columns_(top[hrow - 1]);
+  if (!cols.date || !cols.name) throw new Error("日付またはアポインターの列を特定できません");
+  var first = hrow + 1;
+  var capacity = Math.max(100, sh.getMaxRows() - first + 1);
+
+  // 集計とマスタ突合
+  var ss0 = SpreadsheetApp.openById(SHEET_ID);
+  function vals(nm2) { var x = ss0.getSheetByName(nm2); return (x && x.getLastRow() > 1) ? x.getDataRange().getValues() : []; }
+  var fromKey = kanriDateKey_(new Date(Date.now() - (Number(months) || 6) * 31 * 86400000));
+  var agg = kanriAggregate_(vals("勤怠"), vals("架電結果"), vals("アポイント"), fromKey);
+  var master = k5ReadMaster_(ss);
+  var built = k5LogRows_(agg.days, master, capacity);
+
+  // 既存の自動連携分だけを消す（手入力の行は残す）
+  var existing = sh.getRange(first, 1, capacity, Math.max(cols.memo || 8, 8)).getValues();
+  var keep = [];
+  for (var r = 0; r < existing.length; r++) {
+    var memo = cols.memo ? String(existing[r][cols.memo - 1] || "") : "";
+    var dv = existing[r][cols.date - 1];
+    if (!dv && !existing[r][cols.name - 1]) continue;
+    if (memo.indexOf("自動連携") === 0) continue;      // 前回入れた分は差し替える
+    keep.push(existing[r]);
+  }
+  // 書き戻し（手入力 → 自動連携 の順）
+  var width = Math.max(cols.memo || 8, 8);
+  var out = [];
+  keep.forEach(function (r) {
+    var line = [];
+    for (var c = 0; c < width; c++) line.push(r[c] === undefined ? "" : r[c]);
+    out.push(line);
+  });
+  built.rows.forEach(function (r) {
+    var line = [];
+    for (var c = 0; c < width; c++) line.push("");
+    line[cols.date - 1] = r[0];
+    line[cols.name - 1] = r[1];
+    if (cols.calls) line[cols.calls - 1] = r[2];
+    if (cols.connects) line[cols.connects - 1] = r[3];
+    if (cols.appos) line[cols.appos - 1] = r[4];
+    if (cols.memo) line[cols.memo - 1] = r[7];
+    out.push(line);
+  });
+  if (out.length > capacity) out = out.slice(out.length - capacity);
+
+  sh.getRange(first, 1, capacity, width).clearContent();
+  if (out.length) sh.getRange(first, 1, out.length, width).setValues(out);
+
+  return { rows: built.rows.length, kept: keep.length, sheetName: sh.getName(),
+    first: first, cols: cols, master: master.length, unmatched: built.unmatched };
+}
+
+// 第5期ファイルを設置（Excel→スプレッドシート変換 ＋ 投入）
+function k5Install(rootIdOrUrl) {
+  var rootId = extractFolderId_(rootIdOrUrl || KANRI_DRIVE_ROOT);
+  var root;
+  try { root = DriveApp.getFolderById(rootId); }
+  catch (e) { return { ok: false, message: "フォルダを開けません（共有設定をご確認ください）" }; }
+  var home = kanriChildFolder_(root, "経営管理システム");
+
+  // 既に変換済みのスプレッドシートがあるか
+  var wb = null, it = home.getFilesByType(MimeType.GOOGLE_SHEETS), guard = 0;
+  while (it.hasNext() && guard < 100) {
+    guard++;
+    var f = it.next();
+    if (f.getName().indexOf("経営管理") >= 0) { if (!wb || f.getDateUpdated() > wb.getDateUpdated()) wb = f; }
+  }
+  var converted = false;
+  if (!wb) {
+    var xlsx = kanriFindXlsx_(home) || kanriFindXlsx_(root);
+    if (!xlsx) {
+      return { ok: false, needXlsx: true, folderUrl: home.getUrl(),
+        message: "Excelが見つかりません。経営管理のxlsxをフォルダへ置いてから、もう一度お試しください。" };
+    }
+    var made = kanriConvertXlsx_(xlsx.getId(), home.getId(), xlsx.getName().replace(/\.xlsx$/i, ""));
+    wb = DriveApp.getFileById(made.id);
+    converted = true;
+  }
+  var fed = k5FeedWorkbook_(wb.getId());
+  try { PropertiesService.getScriptProperties().setProperty("KANRI_WB_ID", wb.getId()); } catch (e2) {}
+  logAudit("第5期システム設置", "管理者", wb.getName(),
+    (converted ? "変換+" : "") + "投入" + fed.rows + "行");
+  return { ok: true, converted: converted, url: wb.getUrl(), id: wb.getId(), folderUrl: home.getUrl(),
+    rows: fed.rows, kept: fed.kept, sheetName: fed.sheetName, master: fed.master,
+    unmatched: fed.unmatched, sheets: SpreadsheetApp.openById(wb.getId()).getSheets().length };
 }

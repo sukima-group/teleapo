@@ -1909,6 +1909,7 @@ function doPost(e) {
       }
       // v70: 出退勤も即時反映（実働時間）
       try { kanriOnAttendance_(d); } catch (kErr3) {}
+      try { kanriPushOnCheckout_(d); } catch (kErr3b) {}
     }
 
     // ===== 架電結果 =====
@@ -2008,6 +2009,7 @@ function doPost(e) {
       ]);
       // v70: 保存と同時に経営システムへ即時反映
       try { kanriOnCallResult_(d); } catch (kErr) {}
+      try { kanriPushOnCall_(d); } catch (kErrB) {}
     }
 
     // ===== アポイント詳細 (v11: 商談日付/時間 追加) =====
@@ -2112,6 +2114,8 @@ function doPost(e) {
       }
       // v70: 保存と同時に経営システムへ即時反映
       try { kanriOnAppointment_(d); } catch (kErr2) {}
+      // v88: 経営管理システム（41シート）へも即時反映
+      try { kanriPushOnAppointment_(d); } catch (kErr2b) {}
     }
 
     // ===== 退勤レポート (v14追加, v17: LockService追加) =====
@@ -5110,6 +5114,12 @@ function setupRecording() {
 function recHandle_(d) {
   function J(o){return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON)}
   try {
+    if (d.type === "kanri_push_diagnose") {
+      return J({ status: "ok", result: kanriPushDiagnose() });
+    }
+    if (d.type === "kanri_push_now") {
+      return J({ status: "ok", result: kanriPushDay_(String(d.name || ""), d.date || kanriDateKey_(new Date())) });
+    }
     if (d.type === "rec_pending") {
       return J({ status: "ok", result: recPendingFor(d.pin, d.days || 3) });
     }
@@ -7390,5 +7400,181 @@ function middayCollect() {
     out.matched = m;
   } catch (e3) {}
   logAudit("昼の回収", "trigger", "保存" + (out.saved || 0) + "／保管庫" + (out.archived || 0) + "／紐づけ" + (out.matched || 0), "");
+  return out;
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// v88: アポ登録・架電結果を、経営管理システムへ即時反映する
+//   これまで経営管理システム（41シート）への投入は、夜間処理か
+//   管理者のボタン操作でしか走っていなかった。そのため
+//   「アポを登録しても、いつまでも反映されない」状態だった。
+//   v88では保存された瞬間に、その1行だけを追記する。
+// ═══════════════════════════════════════════════════════════════
+
+// 経営管理システムの ⑰日次活動ログ へ、1日分の実績を反映する（追記・更新）
+function kanriPushDay_(name, dateKey) {
+  var wbId = "";
+  try { wbId = PropertiesService.getScriptProperties().getProperty("KANRI_WB_ID") || ""; } catch (e) {}
+  if (!wbId) return { ok: false, message: "経営管理システムが未設置です" };
+  if (!name || !dateKey) return { ok: false, message: "対象が不明です" };
+
+  var lock = LockService.getScriptLock();
+  try { lock.tryLock(10000); } catch (eL) {}
+  try {
+    var ss = SpreadsheetApp.openById(wbId);
+    var sh = null, sheets = ss.getSheets();
+    for (var i = 0; i < sheets.length && !sh; i++) {
+      var nm2 = sheets[i].getName();
+      for (var h = 0; h < K5_LOG_SHEET_HINTS.length; h++) {
+        if (nm2.indexOf(K5_LOG_SHEET_HINTS[h]) >= 0) { sh = sheets[i]; break; }
+      }
+    }
+    if (!sh) return { ok: false, message: "日次活動ログのシートが見つかりません" };
+
+    var top = sh.getRange(1, 1, Math.min(20, sh.getMaxRows()), Math.min(12, sh.getMaxColumns())).getValues();
+    var hrow = k5FindHeader_(top);
+    if (!hrow) return { ok: false, message: "見出し行が見つかりません" };
+    var cols = k5Columns_(top[hrow - 1]);
+    if (!cols.date || !cols.name) return { ok: false, message: "列を特定できません" };
+    var first = hrow + 1;
+
+    // その日・その担当者の実績を集計し直す（1日分だけなので軽い）
+    var ss0 = SpreadsheetApp.openById(SHEET_ID);
+    function vals(n3) { var x = ss0.getSheetByName(n3); return (x && x.getLastRow() > 1) ? x.getDataRange().getValues() : []; }
+    var agg = kanriAggregate_(vals("勤怠"), vals("架電結果"), vals("アポイント"), dateKey);
+    var day = null;
+    (agg.days || []).forEach(function (d2) {
+      if (d2.d === dateKey && String(d2.name).trim() === String(name).trim()) day = d2;
+    });
+    if (!day) return { ok: false, message: "その日の実績が見つかりません" };
+
+    // 名簿と突合（表記ゆれを吸収）
+    var master = [];
+    try { master = k5ReadMaster_(ss); } catch (eM) {}
+    var writeName = (master && master.length) ? (k5MatchName_(name, master) || name) : name;
+
+    // 既存行を探す（同じ日付・同じ担当者）
+    var span = Math.min(1000, sh.getMaxRows() - first + 1);
+    var width = Math.max(cols.memo || 8, 8);
+    var found = 0;
+    if (span > 0) {
+      var body = sh.getRange(first, 1, span, width).getValues();
+      for (var r = 0; r < body.length; r++) {
+        var dv = body[r][cols.date - 1];
+        var dk = (dv instanceof Date) ? Utilities.formatDate(dv, "Asia/Tokyo", "yyyy-MM-dd") : normalizeYMD(dv);
+        var nv = String(body[r][cols.name - 1] || "").trim();
+        if (dk === dateKey && nv === writeName) { found = first + r; break; }
+        if (!dv && !nv && !found) { found = -(first + r); }   // 空き行の候補（負で記憶）
+      }
+    }
+    var target = found > 0 ? found : (found < 0 ? -found : first + (span > 0 ? span : 0));
+
+    // 書き込む（数式列は触らない）
+    if (cols.date) sh.getRange(target, cols.date).setValue(dateKey);
+    if (cols.name) sh.getRange(target, cols.name).setValue(writeName);
+    if (cols.calls) sh.getRange(target, cols.calls).setValue(Number(day.calls) || 0);
+    if (cols.connects) sh.getRange(target, cols.connects).setValue(Number(day.connects) || 0);
+    if (cols.appos) sh.getRange(target, cols.appos).setValue(Number(day.appos) || 0);
+    if (cols.memo) sh.getRange(target, cols.memo).setValue("自動連携 " + (day.hours ? day.hours + "h" : ""));
+
+    return { ok: true, row: target, name: writeName, date: dateKey,
+      calls: day.calls, connects: day.connects, appos: day.appos, updated: found > 0 };
+  } catch (e2) {
+    return { ok: false, message: String(e2) };
+  } finally {
+    try { lock.releaseLock(); } catch (e3) {}
+  }
+}
+
+// 保存のたびに呼ぶ入口（重くならないよう、直近の実行から一定時間あけて実行する）
+var KANRI_PUSH_MIN_INTERVAL = 20000;   // 20秒
+function kanriPushLive_(name, dateKey, force) {
+  if (!name || !dateKey) return false;
+  var key = "kpush_" + dateKey + "_" + name;
+  try {
+    var cache = CacheService.getScriptCache();
+    if (!force && cache.get(key)) return false;    // 直近に実行済みなら見送る
+    cache.put(key, "1", Math.ceil(KANRI_PUSH_MIN_INTERVAL / 1000));
+  } catch (e) {}
+  var r = kanriPushDay_(name, dateKey);
+  if (!r.ok) { Logger.log("kanriPushLive_ skipped: " + (r.message || "")); }
+  return r.ok;
+}
+// アポ報告の直後（アポは重要なので必ず反映する）
+function kanriPushOnAppointment_(d) {
+  try {
+    return kanriPushLive_(String(d.reporter || d.name || "").trim(), kanriDateKey_(d.date), true);
+  } catch (e) { return false; }
+}
+// 架電結果の直後（頻度が高いので間隔をあけて反映）
+function kanriPushOnCall_(d) {
+  try {
+    return kanriPushLive_(String(d.name || "").trim(), kanriDateKey_(d.date), false);
+  } catch (e) { return false; }
+}
+// 退勤の直後（その日の最終確定）
+function kanriPushOnCheckout_(d) {
+  try {
+    if (!d.clockOut) return false;
+    return kanriPushLive_(String(d.name || "").trim(), kanriDateKey_(d.date), true);
+  } catch (e) { return false; }
+}
+
+// 反映状況の確認（管理者が「なぜ入らないか」を切り分けるため）
+function kanriPushDiagnose() {
+  var out = { ok: false, steps: [] };
+  var wbId = "";
+  try { wbId = PropertiesService.getScriptProperties().getProperty("KANRI_WB_ID") || ""; } catch (e) {}
+  out.steps.push({ name: "経営管理システムの設置", ok: !!wbId,
+    detail: wbId ? "設置済み" : "未設置です。「📊 作成／更新する」を先に押してください" });
+  if (!wbId) return out;
+  var ss = null;
+  try { ss = SpreadsheetApp.openById(wbId); out.url = ss.getUrl(); out.fileName = ss.getName(); }
+  catch (e2) {
+    out.steps.push({ name: "ファイルを開く", ok: false, detail: "開けません: " + e2 });
+    return out;
+  }
+  out.steps.push({ name: "ファイルを開く", ok: true, detail: ss.getName() + "（" + ss.getSheets().length + "シート）" });
+
+  var sh = null, sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length && !sh; i++) {
+    var nm = sheets[i].getName();
+    for (var h = 0; h < K5_LOG_SHEET_HINTS.length; h++) {
+      if (nm.indexOf(K5_LOG_SHEET_HINTS[h]) >= 0) { sh = sheets[i]; break; }
+    }
+  }
+  out.steps.push({ name: "日次活動ログのシート", ok: !!sh,
+    detail: sh ? sh.getName() : "見つかりません（シート名に「日次活動ログ」が必要です）" });
+  if (!sh) return out;
+
+  var top = sh.getRange(1, 1, Math.min(20, sh.getMaxRows()), Math.min(12, sh.getMaxColumns())).getValues();
+  var hrow = k5FindHeader_(top);
+  out.steps.push({ name: "見出し行", ok: !!hrow, detail: hrow ? (hrow + "行目") : "「日付」「アポインター」を含む行がありません" });
+  if (!hrow) return out;
+  var cols = k5Columns_(top[hrow - 1]);
+  out.steps.push({ name: "列の特定", ok: !!(cols.date && cols.name),
+    detail: "日付=" + cols.date + " 担当=" + cols.name + " 架電=" + cols.calls + " アポ=" + cols.appos });
+
+  // 本日のデータがあるか
+  var today = kanriDateKey_(new Date());
+  var ss0 = SpreadsheetApp.openById(SHEET_ID);
+  function vals(n2) { var x = ss0.getSheetByName(n2); return (x && x.getLastRow() > 1) ? x.getDataRange().getValues() : []; }
+  var agg = kanriAggregate_(vals("勤怠"), vals("架電結果"), vals("アポイント"), today);
+  var todays = (agg.days || []).filter(function (d3) { return d3.d === today; });
+  out.steps.push({ name: "本日の実績", ok: todays.length > 0,
+    detail: todays.length ? todays.map(function (t) { return t.name + "(架電" + t.calls + "/アポ" + t.appos + ")"; }).join(" ") : "本日の架電がまだありません" });
+
+  // 名簿の突合
+  var master = [];
+  try { master = k5ReadMaster_(ss); } catch (eM) {}
+  var unmatched = [];
+  todays.forEach(function (t) {
+    if (master.length && !k5MatchName_(t.name, master)) unmatched.push(t.name);
+  });
+  out.steps.push({ name: "名簿との突合", ok: unmatched.length === 0,
+    detail: master.length ? (unmatched.length ? ("名簿にない: " + unmatched.join("・")) : ("名簿" + master.length + "名と一致")) : "名簿が読めません（①設定のアポインターマスタ）" });
+
+  out.ok = out.steps.every(function (s2) { return s2.ok; });
   return out;
 }

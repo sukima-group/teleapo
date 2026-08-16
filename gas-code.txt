@@ -34,18 +34,16 @@
 
 var SHEET_ID = "1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM";
 var ADMIN_SHEET_ID = "1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ";  // v14: 管理者用 退勤レポート用
-var PIN_MAP = {"091":"柏木", "092":"園田", "093":"堀内", "094":"河野", "095":"福田", "097":"藪内", "098":"竹之内", "101":"藤田", "103":"本郷", "105":"小澤", "108":"榮"};
+var PIN_MAP = {"091":"柏木", "098":"竹之内", "101":"藤田", "105":"小澤", "108":"榮"};
 // v18: 全名マップ - 出退勤・履歴・アポでは "河野由香" のような全名で記録される
 // v25: 福田貴美恵 PIN 095 追加
 // v26: 藪内亜希 PIN 097 追加 / 発信件数通知 (dial_count_notify) 追加
-var FULL_NAME_MAP = {"091":"柏木幸代", "092":"園田絵里", "093":"堀内真紀子", "094":"河野由香", "095":"福田貴美恵", "097":"藪内亜希", "098":"竹之内優子", "101":"藤田直美", "103":"本郷真弓", "105":"小澤幸枝", "108":"榮智子"};
+var FULL_NAME_MAP = {"091":"柏木幸代", "098":"竹之内優子", "101":"藤田直美", "105":"小澤幸枝", "108":"榮智子"};
 // v45: 各アポインター本人のGmail (空欄=未登録・送信スキップ)
 var STAFF_EMAILS = {
   "091":"kashiwagi.sukimagroup@gmail.com",
-  "092":"", "093":"", "094":"", "095":"", "097":"",
   "098":"takenouchi.sukimagroup@gmail.com",
   "101":"fujita.sukimagroup@gmail.com",
-  "103":"hongo.sukimagroup@gmail.com",
   "105":"ozawa.sukimagroup@gmail.com",
   "108":"sakae.sukimagroup@gmail.com"
 };
@@ -4626,6 +4624,12 @@ function recLoadIngested_() {
 }
 
 function recMemberFolder_(pin, rootFolder) {
+  // v84: ご指定のフォルダがあれば最優先で使う
+  var fixed = REC_MEMBER_FOLDERS[String(pin)];
+  if (fixed) {
+    try { return DriveApp.getFolderById(fixed); }
+    catch (eF) { Logger.log("fixed folder open failed: " + pin + " " + eF); }
+  }
   var cfgs = readRecConfigs_();
   for (var i = 0; i < cfgs.length; i++) {
     if (String(cfgs[i].pin) === String(pin) && cfgs[i].folderId) {
@@ -4679,7 +4683,10 @@ function recIngestGmail_(days, rootFolderId) {
         var atMs = recParseStamp_(nm, msg.getDate().getTime());
         try {
           var f = recSaveBlob_(folder, att.copyBlob().setName(nm), atMs);
-          rows.push([new Date(), "メール", pin, FULL_NAME_MAP[pin] || "", nm, sz, f.getUrl(), key]);
+          var au = "";
+          try { au = recArchiveCopy_(f, pin, atMs, nm); } catch (eA3) {}
+          rows.push([new Date(), "メール", pin, FULL_NAME_MAP[pin] || "", nm, sz,
+            f.getUrl() + (au ? " / 保管庫:" + au : ""), key]);
           log.seen[key] = true;
           rep.saved++; touched = true;
         } catch (e3) { rep.details.push("保存失敗: " + nm + " " + e3); }
@@ -4717,7 +4724,10 @@ function recIngestInbox_(inboxFolderId, rootFolderId) {
     try {
       var saved = recSaveBlob_(folder, f.getBlob().setName(nm), atMs);
       inbox.removeFile(f);   // 受信箱から片付ける（担当者フォルダへ移動した形にする）
-      rows.push([new Date(), "受信箱", pin, FULL_NAME_MAP[pin] || "", nm, sz, saved.getUrl(), key]);
+      var au2 = "";
+      try { au2 = recArchiveCopy_(saved, pin, atMs, nm); } catch (eA4) {}
+      rows.push([new Date(), "受信箱", pin, FULL_NAME_MAP[pin] || "", nm, sz,
+        saved.getUrl() + (au2 ? " / 保管庫:" + au2 : ""), key]);
       log.seen[key] = true;
       rep.saved++;
     } catch (e4) { rep.details.push("保存失敗: " + nm + " " + e4); }
@@ -4831,6 +4841,10 @@ function recScanFor_(cfg, days) {
   }
   calls.sort(function (a, b) { return a.atMs - b.atMs; });
 
+  // v86: 担当者フォルダに入っている録音を保管庫へも写す（同期アプリ経由の分を拾う）
+  try { var sw = recArchiveSweep_(cfg.pin, days || 7); rep.archived = sw.copied; }
+  catch (eSw) { rep.archived = 0; }
+
   var res = recMatchFiles_(calls, files, cfg.tol);
   // 書き戻し（録音ファイル=17列目 / 録音URL=18列目）
   res.assign.forEach(function (a) {
@@ -4843,7 +4857,8 @@ function recScanFor_(cfg, days) {
   rep.noRecList = res.callsWithoutRec.slice(0, 8).map(function (c) { return c.company + "(" + c.time + ")"; });
   rep.message = "録音 " + rep.files + "件中 " + rep.matched + "件を紐づけ／未紐づけ録音 " + rep.unmatched
     + "件／録音なしの架電 " + rep.noRec + "件"
-    + (rep.organized ? "／日付フォルダへ整理 " + rep.organized + "件" : "");
+    + (rep.organized ? "／日付フォルダへ整理 " + rep.organized + "件" : "")
+    + (rep.archived ? "／保管庫へ " + rep.archived + "件" : "");
   // v68: 同期が止まっていないかの判定を添える
   try {
     var todayKey = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd");
@@ -5095,6 +5110,63 @@ function setupRecording() {
 function recHandle_(d) {
   function J(o){return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON)}
   try {
+    if (d.type === "rec_pending") {
+      return J({ status: "ok", result: recPendingFor(d.pin, d.days || 3) });
+    }
+    if (d.type === "nightly_twice") {
+      return J({ status: "ok", trigger: setNightlyTwice(d.on === true, d.hour, d.hour2) });
+    }
+    if (d.type === "rec_archive_sweep") {
+      return J({ status: "ok", result: recArchiveSweepAll(d.days || 14) });
+    }
+    if (d.type === "rec_long_calls") {
+      return J({ status: "ok", result: recLongCalls(d.days || 7) });
+    }
+    if (d.type === "rec_archive_check") {
+      var acOut = { folderId: REC_ARCHIVE_FOLDER, ok: false, url: "", months: [], files: 0 };
+      try {
+        var arcF = DriveApp.getFolderById(REC_ARCHIVE_FOLDER);
+        acOut.ok = true; acOut.url = arcF.getUrl(); acOut.name = arcF.getName();
+        var it2 = arcF.getFolders(), cnt = 0;
+        while (it2.hasNext() && cnt < 6) { acOut.months.push(it2.next().getName()); cnt++; }
+        // 直近の保存例を数件
+        var samples = [], guard2 = 0;
+        var ymIt = arcF.getFolders();
+        while (ymIt.hasNext() && samples.length < 5 && guard2 < 30) {
+          guard2++;
+          var ymF = ymIt.next(), dIt = ymF.getFolders();
+          while (dIt.hasNext() && samples.length < 5) {
+            var dF = dIt.next(), fIt = dF.getFiles();
+            while (fIt.hasNext() && samples.length < 5) {
+              var sf = fIt.next();
+              samples.push({ name: sf.getName(), path: ymF.getName() + "/" + dF.getName(), url: sf.getUrl() });
+            }
+          }
+        }
+        acOut.samples = samples;
+        acOut.files = samples.length;
+      } catch (eAC) { acOut.message = "開けません（共有をご確認ください）: " + eAC; }
+      return J({ status: "ok", archive: acOut });
+    }
+    if (d.type === "rec_folder_check") {
+      var fcOut = [];
+      Object.keys(FULL_NAME_MAP).forEach(function (pn) {
+        var id = REC_MEMBER_FOLDERS[pn] || "";
+        var row = { pin: pn, name: FULL_NAME_MAP[pn], folderId: id, ok: false, url: "", message: "" };
+        if (!id) { row.message = "フォルダ未設定"; fcOut.push(row); return; }
+        try {
+          var f = DriveApp.getFolderById(id);
+          row.ok = true; row.url = f.getUrl(); row.folderName = f.getName();
+          try {
+            var sub = f.getFolders(), months = [];
+            while (sub.hasNext() && months.length < 3) months.push(sub.next().getName());
+            row.months = months;
+          } catch (eS) {}
+        } catch (e2) { row.message = "開けません（共有をご確認ください）"; }
+        fcOut.push(row);
+      });
+      return J({ status: "ok", folders: fcOut });
+    }
     if (d.type === "rec_upload_session") {
       var ses = recCreateUploadSession(d);
       return J(ses.ok ? { status: "ok", result: ses } : { status: "error", message: ses.message });
@@ -5871,6 +5943,7 @@ var NIGHTLY_HEADER = ["実行日時", "結果", "所要秒", "録音取込", "�
 function nightlyPlan_() {
   return [
     { key: "ingest", label: "録音の吸い上げ（メール・受信箱）" },
+    { key: "archive", label: "録音を保管庫へ複製" },
     { key: "match", label: "録音を架電記録に紐づけ" },
     { key: "snapshot", label: "経営連携の再集計" },
     { key: "workbook", label: "経営管理システム（21シート）の更新" },
@@ -5935,6 +6008,11 @@ function nightlyPipeline() {
     var saved = 0, unknown = 0;
     (res || []).forEach(function (r) { saved += (r.saved || 0); unknown += (r.unknown || 0); });
     return (pulled + saved) + "件保存（端末" + pulled + "／メール" + saved + "）" + (unknown ? " / 担当者不明" + unknown + "件" : "");
+  });
+  // ②-0 担当者フォルダの録音を保管庫へ写す（同期アプリ経由の分）
+  run("archive", function () {
+    var a = recArchiveSweepAll(3);
+    return a.total + "件を保管庫へ";
   });
   // ② 録音を架電記録へ紐づけ
   run("match", function () {
@@ -6728,6 +6806,16 @@ function recPullAll(rootIdOrUrl, days) {
 //   全員分の新着を回収し、日付フォルダへ整理して架電記録に紐づける。
 // ═══════════════════════════════════════════════════════════════
 var REC_ROOT_V81 = "1Hslq_b1D9S5kv2Jb5cTSFVbtmeTGc8CV";   // 録音の保管先（管理者ドライブ）
+// v85: すべての録音を1か所にも集める保管庫（アポインター名＋日時のファイル名で保存）
+var REC_ARCHIVE_FOLDER = "1P7MOlAg7gRR1X_imtjSjl81MmUUZFQ7V";
+// v84: 担当者ごとの保存先フォルダ（ご指定のURL）。ここが最優先で使われる。
+var REC_MEMBER_FOLDERS = {
+  "091":"1QSuwdlfZyFMhnog7u71OAQ6-UWQJCELS",
+  "101":"1fNCpuY4o2QUUEzcSWn8ngCA6NQ56tQMz",
+  "108":"1_xxgD4FxgWXlo7Tpqhf6VOjITvNRqXrC",
+  "105":"1ZQssbWhd0AQp7DPNtv0qI2aZvxdedCBj",
+  "098":"1mlTKkVidiQfJVSRgpVg8oJ0GLQAeLKDo"
+};
 
 function recRootFolder_() {
   try {
@@ -6877,13 +6965,16 @@ function recUploadOne(d) {
   try { file = recSaveBlob_(folder, blob, atMs); }
   catch (e3) { res.message = "保存できません: " + e3; return res; }
 
+  var arcUrl = "";
+  try { arcUrl = recArchiveCopy_(file, pin, atMs, name); } catch (eA2) {}
   try {
     log.sheet.appendRow([new Date(), "アプリ", pin, FULL_NAME_MAP[pin] || "", name,
-      d.size || 0, file.getUrl(), key]);
+      d.size || 0, file.getUrl() + (arcUrl ? " / 保管庫:" + arcUrl : ""), key]);
   } catch (e4) {}
 
   res.ok = true;
   res.url = file.getUrl();
+  res.archiveUrl = arcUrl;
   res.path = plan.path;
   return res;
 }
@@ -6948,10 +7039,54 @@ function recUploadStatus(pin) {
 // ═══════════════════════════════════════════════════════════════
 
 // アップロード先（担当者/年月/日）のフォルダIDを用意する
+// v85: 「アポインター名_日付_時刻」の分かりやすいファイル名を作る
+//   例: 竹之内優子_2026-08-15_1015.m4a （同名があれば末尾に -2 を付ける）
+function recArchiveName_(pin, originalName, atMs) {
+  var nm = FULL_NAME_MAP[String(pin)] || ("PIN" + pin);
+  var d = new Date(Number(atMs) || new Date().getTime());
+  if (isNaN(d.getTime())) d = new Date();
+  var y = d.getFullYear();
+  var mo = ("0" + (d.getMonth() + 1)).slice(-2);
+  var da = ("0" + d.getDate()).slice(-2);
+  var hh = ("0" + d.getHours()).slice(-2);
+  var mi = ("0" + d.getMinutes()).slice(-2);
+  var ext = "m4a";
+  var m = String(originalName || "").match(/\.([A-Za-z0-9]{2,5})$/);
+  if (m) ext = m[1].toLowerCase();
+  return nm + "_" + y + "-" + mo + "-" + da + "_" + hh + mi + "." + ext;
+}
+// 同じ名前があれば連番を振る
+function recUniqueName_(folder, baseName) {
+  var name = baseName, n = 1;
+  try {
+    while (folder.getFilesByName(name).hasNext() && n < 50) {
+      n++;
+      var dot = baseName.lastIndexOf(".");
+      name = (dot > 0 ? baseName.slice(0, dot) : baseName) + "-" + n +
+             (dot > 0 ? baseName.slice(dot) : "");
+    }
+  } catch (e) {}
+  return name;
+}
+// 全体保管庫にも同じ録音を残す（担当者別フォルダとは別に、1か所で見られるように）
+function recArchiveCopy_(file, pin, atMs, originalName) {
+  if (!REC_ARCHIVE_FOLDER) return "";
+  try {
+    var arc = DriveApp.getFolderById(REC_ARCHIVE_FOLDER);
+    var dp = recDatePath_(atMs) || recDatePath_(new Date().getTime());
+    var ym = recChildFolder_(arc, dp.ym);
+    var day = recChildFolder_(ym, dp.d);
+    var nm = recUniqueName_(day, recArchiveName_(pin, originalName, atMs));
+    var copied = file.makeCopy(nm, day);
+    return copied.getUrl();
+  } catch (e) {
+    Logger.log("archive copy failed: " + e);
+    return "";
+  }
+}
 function recResolveUploadFolder_(pin, fileName, lastModified) {
-  var root;
-  try { root = DriveApp.getFolderById(recRootFolder_()); }
-  catch (e) { return { ok: false, message: "保管先フォルダを開けません" }; }
+  var root = null;
+  try { root = DriveApp.getFolderById(recRootFolder_()); } catch (e) {}
   var member = recMemberFolder_(pin, root);
   if (!member) return { ok: false, message: "担当者フォルダを用意できません" };
   var atMs = recParseStamp_(fileName, Number(lastModified) || new Date().getTime());
@@ -7018,12 +7153,22 @@ function recCompleteUpload(d) {
   if (!url && d.fileId) {
     try { url = DriveApp.getFileById(String(d.fileId)).getUrl(); } catch (e) {}
   }
+  var archiveUrl = "";
   try {
     var log = recLoadIngested_();
     if (log.seen[key]) return { ok: true, skipped: true };
-    log.sheet.appendRow([new Date(), "アプリ直送", pin, FULL_NAME_MAP[pin] || "", name, size, url, key]);
+    // v85: 全体保管庫にも「アポインター名_日付_時刻」で残す
+    if (d.fileId) {
+      try {
+        var f2 = DriveApp.getFileById(String(d.fileId));
+        var atMs2 = recParseStamp_(name, f2.getDateCreated().getTime());
+        archiveUrl = recArchiveCopy_(f2, pin, atMs2, name);
+      } catch (eA) {}
+    }
+    log.sheet.appendRow([new Date(), "アプリ直送", pin, FULL_NAME_MAP[pin] || "", name, size,
+      url + (archiveUrl ? " / 保管庫:" + archiveUrl : ""), key]);
   } catch (e2) { return { ok: false, message: String(e2) }; }
-  return { ok: true, url: url };
+  return { ok: true, url: url, archiveUrl: archiveUrl };
 }
 
 // 本日まだ録音を送っていない担当者を洗い出す（管理者の催促に使う）
@@ -7067,4 +7212,183 @@ function recMissingToday() {
   });
   list.sort(function (a, b) { return b.missing - a.missing; });
   return { date: today, members: list, pending: list.filter(function (x) { return !x.done; }).length };
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// v86: 担当者フォルダに入った録音を、保管庫へ自動で写す
+//   同期アプリ（Autosync 無料版）で入ってきた録音は、これまで
+//   保管庫に届いていなかった。ここを埋めることで、アポ以外の
+//   「断り・不在」の通話も自動で保管庫に集まるようになる。
+// ═══════════════════════════════════════════════════════════════
+var REC_ARCHIVED_PREFIX = "ARC:";      // 保管庫へ写したことの目印
+var REC_FREE_LIMIT_MB = 10;            // 同期アプリ無料版の1ファイル上限
+
+// 保管庫へ写した記録の鍵
+function recArchiveKey_(pin, fileName, size) {
+  return REC_ARCHIVED_PREFIX + String(pin) + "|" + String(fileName || "") + "|" + String(size || 0);
+}
+// 担当者フォルダを一巡し、まだ保管庫にない録音を写す
+function recArchiveSweep_(pin, days) {
+  var rep = { pin: String(pin), name: FULL_NAME_MAP[String(pin)] || "", copied: 0, skipped: 0, errors: 0 };
+  var folder = null;
+  try {
+    var root = null;
+    try { root = DriveApp.getFolderById(recRootFolder_()); } catch (e0) {}
+    folder = recMemberFolder_(pin, root);
+  } catch (e) { rep.error = String(e); return rep; }
+  if (!folder) { rep.error = "担当者フォルダがありません"; return rep; }
+
+  var since = new Date().getTime() - (Number(days) || 14) * 86400000;
+  var log = recLoadIngested_();
+  var rows = [], guard = 0;
+
+  function sweep(fd, depth) {
+    var it = fd.getFiles();
+    while (it.hasNext() && guard < 600) {
+      guard++;
+      var f = it.next();
+      var nm = f.getName();
+      if (!recIsAudio_(nm)) continue;
+      var created = 0;
+      try { created = f.getDateCreated().getTime(); } catch (eC) { created = new Date().getTime(); }
+      if (created < since) continue;
+      var size = 0;
+      try { size = f.getSize(); } catch (eS) {}
+      var key = recArchiveKey_(pin, nm, size);
+      if (log.seen[key]) { rep.skipped++; continue; }
+      var atMs = recParseStamp_(nm, created);
+      var url = "";
+      try { url = recArchiveCopy_(f, pin, atMs, nm); }
+      catch (eA) { rep.errors++; continue; }
+      if (!url) { rep.errors++; continue; }
+      rows.push([new Date(), "保管庫へ複製", pin, FULL_NAME_MAP[String(pin)] || "", nm, size, url, key]);
+      log.seen[key] = true;
+      rep.copied++;
+    }
+    if (depth <= 0) return;
+    var sub = fd.getFolders();
+    while (sub.hasNext() && guard < 600) { sweep(sub.next(), depth - 1); }
+  }
+  try { sweep(folder, 2); } catch (eW) { rep.error = String(eW); }
+  if (rows.length) {
+    try { log.sheet.getRange(log.sheet.getLastRow() + 1, 1, rows.length, 8).setValues(rows); } catch (eL) {}
+  }
+  return rep;
+}
+// 全員分をまとめて保管庫へ写す
+function recArchiveSweepAll(days) {
+  var out = [], total = 0;
+  Object.keys(FULL_NAME_MAP).forEach(function (pin) {
+    var r = recArchiveSweep_(pin, days || 14);
+    total += r.copied;
+    out.push(r);
+  });
+  logAudit("保管庫へ複製", "システム", total + "件", "");
+  return { total: total, members: out };
+}
+
+// 同期アプリ無料版で送れない可能性がある通話（10MB超になる長さ）を洗い出す
+// 通話秒からファイルサイズを見積もる（Galaxy標準はおおむね 64kbps）
+function recEstimateMB_(seconds, kbps) {
+  var k = Number(kbps) || 64;
+  return Math.round((Number(seconds) || 0) * k / 8 / 1024 * 10) / 10;
+}
+function recLongCalls(days) {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sh = ss.getSheetByName("架電結果");
+  var out = [];
+  if (!sh || sh.getLastRow() < 2) return { limitMB: REC_FREE_LIMIT_MB, items: [] };
+  var since = kanriDateKey_(new Date(Date.now() - (Number(days) || 7) * 86400000));
+  var rows = sh.getDataRange().getValues();
+  var ui = rows[0].indexOf("録音URL");
+  for (var i = 1; i < rows.length; i++) {
+    var ymd = normalizeYMD(rows[i][1]);
+    if (!ymd || ymd < since) continue;
+    var sec = Number(rows[i][14]) || 0;               // 通話秒
+    if (!sec) continue;
+    var mb = recEstimateMB_(sec, 64);
+    if (mb < REC_FREE_LIMIT_MB) continue;
+    var hasRec = (ui >= 0) ? !!String(rows[i][ui] || "") : false;
+    if (hasRec) continue;                              // すでに録音が付いていれば対象外
+    out.push({ name: String(rows[i][0] || ""), date: ymd, time: String(rows[i][2] || ""),
+      company: String(rows[i][3] || ""), sec: sec, mb: mb });
+  }
+  out.sort(function (a, b) { return b.mb - a.mb; });
+  return { limitMB: REC_FREE_LIMIT_MB, items: out.slice(0, 30) };
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// v87: 本人が「どの通話の録音が届いていないか」を知れるようにする
+//   同期アプリの無料版では10MB超が送られない。取りこぼしを本人が
+//   その場で見て、1タップで送れるようにすることで漏れをなくす。
+// ═══════════════════════════════════════════════════════════════
+
+// 本人向け：録音が紐づいていない通話の一覧（新しい順）
+function recPendingFor(pin, days) {
+  var nm = FULL_NAME_MAP[String(pin || "")] || "";
+  var out = { name: nm, items: [], total: 0, longOnly: 0 };
+  if (!nm) return out;
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sh = ss.getSheetByName("架電結果");
+  if (!sh || sh.getLastRow() < 2) return out;
+  var since = kanriDateKey_(new Date(Date.now() - (Number(days) || 3) * 86400000));
+  var rows = sh.getDataRange().getValues();
+  var ui = rows[0].indexOf("録音URL");
+  for (var i = rows.length - 1; i >= 1 && out.items.length < 40; i--) {
+    if (String(rows[i][0] || "").trim() !== nm) continue;
+    var ymd = normalizeYMD(rows[i][1]);
+    if (!ymd || ymd < since) continue;
+    if (ui >= 0 && String(rows[i][ui] || "")) continue;      // 録音が付いていれば対象外
+    var sec = Number(rows[i][14]) || 0;
+    if (sec < 20) continue;                                   // ごく短い通話は対象外
+    var mb = recEstimateMB_(sec, 64);
+    out.items.push({
+      date: ymd, time: String(rows[i][2] || ""), company: String(rows[i][3] || ""),
+      result: String(rows[i][6] || ""), sec: sec, mb: mb,
+      big: mb >= REC_FREE_LIMIT_MB
+    });
+    if (mb >= REC_FREE_LIMIT_MB) out.longOnly++;
+  }
+  out.total = out.items.length;
+  return out;
+}
+
+// 自動回収を1日2回にする（昼と夜）。取りこぼしを早く見つけるため。
+function setNightlyTwice(on, hourA, hourB) {
+  var drop = [NIGHTLY_FN, "autoRecScan", "kanriWorkbookRefresh", "kanriDriveRefresh", "kanriBackupDaily", "middayCollect"];
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (drop.indexOf(t.getHandlerFunction()) >= 0) ScriptApp.deleteTrigger(t);
+  });
+  if (!on) { logAudit("自動処理", "管理者", "停止", ""); return { on: false }; }
+  var h1 = Number(hourA); if (isNaN(h1) || h1 < 0 || h1 > 23) h1 = 21;
+  ScriptApp.newTrigger(NIGHTLY_FN).timeBased().everyDays(1).atHour(h1).create();
+  var h2 = (hourB === null || hourB === undefined || hourB === "") ? NaN : Number(hourB);
+  if (!isNaN(h2) && h2 >= 0 && h2 <= 23) {
+    ScriptApp.newTrigger("middayCollect").timeBased().everyDays(1).atHour(h2).create();
+  }
+  logAudit("自動処理", "管理者", "夜" + h1 + "時" + (isNaN(h2) ? "" : " / 昼" + h2 + "時"), "");
+  return { on: true, hour: h1, hour2: isNaN(h2) ? null : h2 };
+}
+// 昼の回収（録音の回収と保管庫への複製だけを行う軽い処理）
+function middayCollect() {
+  var out = { ok: true };
+  try {
+    var pr = PropertiesService.getScriptProperties();
+    var ing = recIngestAll(2, recRootFolder_(), pr.getProperty("REC_INBOX_FOLDER") || "");
+    var saved = 0; (ing || []).forEach(function (r) { saved += (r.saved || 0); });
+    out.saved = saved;
+  } catch (e) { out.ok = false; out.error = String(e); }
+  try {
+    var a = recArchiveSweepAll(2);
+    out.archived = a.total;
+  } catch (e2) { out.ok = false; out.error2 = String(e2); }
+  try {
+    var reps = recScanAll(null, 2);
+    var m = 0; (reps || []).forEach(function (r) { m += (r.matched || 0); });
+    out.matched = m;
+  } catch (e3) {}
+  logAudit("昼の回収", "trigger", "保存" + (out.saved || 0) + "／保管庫" + (out.archived || 0) + "／紐づけ" + (out.matched || 0), "");
+  return out;
 }

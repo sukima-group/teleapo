@@ -1,11 +1,11 @@
 /* ==========================================================================
-   川嶋メソッド PWA Service Worker v98
+   川嶋メソッド PWA Service Worker v99
    - HTMLは network-first (古いキャッシュ問題を回避)
    - 静的アセットは cache-first (バックグラウンド更新)
    - install時に全ての旧キャッシュを強制削除
    - skipWaiting + clients.claim で即座に新SWを適用
    ========================================================================== */
-const VERSION = "v98.0.0-2026-08-19";
+const VERSION = "v99.0.0-2026-08-19";
 const CACHE = "kawashima-" + VERSION;
 const STATIC_ASSETS = [
   "./manifest.json",
@@ -65,6 +65,12 @@ self.addEventListener("fetch", e => {
     return;
   }
   const url = u0;
+
+  /* v99: 版チェック(?rev=)は常にネットワーク直行・キャッシュにも入れない */
+  if (url.searchParams.has("rev")) {
+    e.respondWith(fetch(e.request, { cache: "no-store" }).catch(() => new Response("", { status: 503 })));
+    return;
+  }
 
   /* GAS（外部ドメイン）はキャッシュしない */
   if (url.hostname.endsWith("script.google.com") ||

@@ -1,5 +1,10 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v67
+// 川嶋メソッド テレアポ管理 — GAS完全版 v98
+// v98: (1)グローバルJ()定義＝ping/設定/全員実行が「J is not defined」で
+//         必ず失敗していた不具合の根治 (2)ext_bulk_setup重複ハンドラ統合(map対応復活)
+//      (3)ext_detect応答の平坦化(旧新クライアント両対応) (4)開けない/書けない理由の
+//         分類と共有先アカウントの動的案内 (5)ext_set_and_import(設定→検証→取込を往復1回)
+//      (6)ext_config_setでgidを保存(タブ名変更に追従) (7)全応答にhandled/gasVersion付与
 // メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
 // 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
 //
@@ -35,9 +40,36 @@
 var SHEET_ID = "1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM";
 var ADMIN_SHEET_ID = "1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ";  // v14: 管理者用 退勤レポート用
 // v95: この GAS がどの版で、どの機能に対応しているか
-var GAS_VERSION = "v95";
+var GAS_VERSION = "v98";
 var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
-  "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run"];
+  "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run",
+  "ext_set_and_import","ext_detect_flat","handled_everywhere"];
+// ═══ v98: 全ハンドラ共通のJSON応答ヘルパー（グローバル定義） ═══
+//   v95〜v97では J() が recHandle_ 等の関数内にしか定義されておらず、
+//   doPost 内の ping / ext_bulk_configure / ext_config_audit /
+//   ext_spread_setup / ext_run_everyone が
+//   「ReferenceError: J is not defined」で必ず失敗していた（設定ボタン不能の直接原因）。
+function J(o) {
+  return ContentService.createTextOutput(JSON.stringify(o))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+// v98: GASを実行しているアカウント（共有先の案内に使う。取れなければ既定値）
+function execAccount_() {
+  try { var m = Session.getEffectiveUser().getEmail(); if (m) return m; } catch (e) {}
+  return "hr.ashikaga@gmail.com";
+}
+// v98: スプレッドシートを開けない理由を、直し方つきの日本語に変換する
+function classifyOpenErr_(e) {
+  var s = String(e || "");
+  var acc = execAccount_();
+  if (/perm|denied|access|権限|承認|not have/i.test(s)) {
+    return "開けません（権限がありません）。そのスプレッドシートを " + acc + " に「編集者」で共有してください。";
+  }
+  if (/not\s*found|見つかり|missing|存在しません|invalid|そのようなファイル/i.test(s)) {
+    return "開けません（URLまたはIDが違うか、ゴミ箱にあります）。URLをご確認ください。";
+  }
+  return "開けません（" + s.slice(0, 120) + "）。" + acc + " への「編集者」共有と、URLが /spreadsheets/d/ 形式かをご確認ください。";
+}
 var PIN_MAP = {"091":"柏木", "098":"竹之内", "101":"藤田", "105":"小澤", "108":"榮"};
 // v18: 全名マップ - 出退勤・履歴・アポでは "河野由香" のような全名で記録される
 // v25: 福田貴美恵 PIN 095 追加
@@ -71,7 +103,7 @@ function doGet(e) {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok",
         message: "GAS Web App is alive",
-        version: "v67",
+        version: GAS_VERSION,
         timestamp: new Date().toISOString(),
         note: "Use ?pin=XXX to fetch list, or POST with type field"
       })).setMimeType(ContentService.MimeType.JSON);
@@ -236,14 +268,14 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
 
-    // 接続テスト用 (v15追加)
+    // 接続テスト用 (v15追加 / v98: handled・gasVersion・features・accountを返す)
     if (d.type === "ping") {
-      return ContentService.createTextOutput(JSON.stringify({
-        status: "ok",
-        message: "GAS connected",
-        timestamp: new Date().toISOString(),
-        version: "v67"
-      })).setMimeType(ContentService.MimeType.JSON);
+      return J({
+        status: "ok", handled: true, message: "GAS connected",
+        gasVersion: GAS_VERSION, features: GAS_FEATURES,
+        account: execAccount_(), timestamp: new Date().toISOString(),
+        version: GAS_VERSION, serverTime: new Date().toISOString()
+      });
     }
 
     // ===== v20: idempotency チェック (write系のみ) =====
@@ -1257,8 +1289,9 @@ function doPost(e) {
             lastSync: found ? found.lastSync : "", lastResult: found ? found.lastResult : ""
           });
         }
-        return ContentService.createTextOutput(JSON.stringify({ status: "ok", configs: ecOut }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return ContentService.createTextOutput(JSON.stringify(
+          { status: "ok", handled: true, gasVersion: GAS_VERSION, account: execAccount_(), configs: ecOut }
+        )).setMimeType(ContentService.MimeType.JSON);
       } catch (ecErr) {
         return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(ecErr) }))
           .setMimeType(ContentService.MimeType.JSON);
@@ -1267,7 +1300,7 @@ function doPost(e) {
     if (d.type === "ext_config_set") {
       try {
         writeExtConfig_({
-          pin: d.pin, ssId: d.ssId, sheetName: d.sheetName, headerRow: d.headerRow,
+          pin: d.pin, ssId: d.ssId, sheetName: d.sheetName, gid: d.gid || "", headerRow: d.headerRow,
           colCompany: d.colCompany, colPhone: d.colPhone,
           colPerson: d.colPerson, colAddress: d.colAddress,
           colName: d.colName, colStep: d.colStep, colDate: d.colDate,
@@ -1275,8 +1308,7 @@ function doPost(e) {
           dateFmt: d.dateFmt, resultMapText: d.resultMapText,
           overwrite: d.overwrite, verify: d.verify, enabled: d.enabled
         });
-        return ContentService.createTextOutput(JSON.stringify({ status: "ok" }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return J({ status: "ok", handled: true, gasVersion: GAS_VERSION });
       } catch (esErr) {
         return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(esErr) }))
           .setMimeType(ContentService.MimeType.JSON);
@@ -1307,9 +1339,35 @@ function doPost(e) {
       }
     }
 
-    // ===== v58: 全メンバーの連携を一括設定（タブを名前で自動割り当て） =====
+    // ===== v58+v59統合(v98): 全メンバーの連携を一括設定 =====
+    //   v59〜v97では同名ハンドラが2つあり、map（画面で選んだタブの明示指定）を
+    //   受け取る2つ目が1つ目の影に隠れて実行されなかった。v98で統合し、
+    //   d.map があればそれを優先、無ければタブ名の自動割り当てを行う。
     if (d.type === "ext_bulk_setup") {
       try {
+        if (d.map && d.map.length) {
+          var bmDone = [], bmFail = [];
+          for (var bmi = 0; bmi < d.map.length; bmi++) {
+            var bm = d.map[bmi];
+            if (!bm || !bm.pin || (!bm.sheetName && !bm.gid)) continue;
+            var bmDet = detectColumns_(d.ssId, bm.sheetName, d.headerRow || 1, bm.gid);
+            if (!bmDet.ok) { bmFail.push((FULL_NAME_MAP[bm.pin] || bm.pin) + "：" + (bmDet.message || "検出できません")); continue; }
+            writeExtConfig_({
+              pin: String(bm.pin), ssId: d.ssId,
+              sheetName: bmDet.sheetName || bm.sheetName, gid: bmDet.gid || bm.gid || "",
+              headerRow: d.headerRow || 1,
+              colCompany: bmDet.colCompany, colPhone: bmDet.colPhone,
+              colPerson: bmDet.colPerson, colAddress: bmDet.colAddress,
+              colName: bmDet.colName, colStep: bmDet.colStep, colDate: bmDet.colDate,
+              colTime: bmDet.colTime, colResult: bmDet.colResult, colMemo: bmDet.colMemo,
+              dateFmt: d.dateFmt || "yyyy/MM/dd", resultMapText: "",
+              overwrite: d.overwrite === true, verify: d.verify !== false, enabled: true
+            });
+            bmDone.push(FULL_NAME_MAP[bm.pin] || bm.pin);
+          }
+          logAudit("連携一括設定(map)", "管理者", bmDone.length + "名を設定", bmFail.join(" / "));
+          return J({ status: "ok", handled: true, gasVersion: GAS_VERSION, done: bmDone, failed: bmFail });
+        }
         var bsSsId = extractSsId_(d.ssId);
         var bsInfo = listSheets_(bsSsId);
         var bsSheets = bsInfo.sheets;
@@ -1366,39 +1424,6 @@ function doPost(e) {
       }
     }
 
-    // ===== v59: 全メンバーの連携を一括設定 =====
-    // d.ssId と d.map=[{pin,sheetName,gid}] を受け取り、列は各タブの見出しから自動検出する
-    if (d.type === "ext_bulk_setup") {
-      try {
-        var bsMap = d.map || [];
-        var bsDone = [], bsFail = [];
-        for (var bi = 0; bi < bsMap.length; bi++) {
-          var m = bsMap[bi];
-          if (!m || !m.pin || (!m.sheetName && !m.gid)) continue;
-          var det = detectColumns_(d.ssId, m.sheetName, d.headerRow || 1, m.gid);
-          if (!det.ok) { bsFail.push((FULL_NAME_MAP[m.pin] || m.pin) + "：" + (det.message || "検出できません")); continue; }
-          writeExtConfig_({
-            pin: String(m.pin), ssId: d.ssId,
-            sheetName: det.sheetName || m.sheetName, gid: det.gid || m.gid || "",
-            headerRow: d.headerRow || 1,
-            colCompany: det.colCompany, colPhone: det.colPhone,
-            colPerson: det.colPerson, colAddress: det.colAddress,
-            colName: det.colName, colStep: det.colStep, colDate: det.colDate,
-            colTime: det.colTime, colResult: det.colResult, colMemo: det.colMemo,
-            dateFmt: d.dateFmt || "yyyy/MM/dd", resultMapText: "",
-            overwrite: d.overwrite === true, verify: d.verify !== false, enabled: true
-          });
-          bsDone.push(FULL_NAME_MAP[m.pin] || m.pin);
-        }
-        logAudit("連携一括設定", "管理者", bsDone.length + "名を設定", bsFail.join(" / "));
-        return ContentService.createTextOutput(JSON.stringify(
-          { status: "ok", done: bsDone, failed: bsFail }
-        )).setMimeType(ContentService.MimeType.JSON);
-      } catch (bsErr) {
-        return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(bsErr) }))
-          .setMimeType(ContentService.MimeType.JSON);
-      }
-    }
     // ===== v59: 全員分を「取り込み → 反映」まで一気に実行 =====
     if (d.type === "ext_run_all") {
       try {
@@ -1422,8 +1447,7 @@ function doPost(e) {
           one.message = (one.importMsg ? one.importMsg + " → " : "") + (sy.message || "");
           raOut.push(one);
         }
-        return ContentService.createTextOutput(JSON.stringify({ status: "ok", reports: raOut }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return J({ status: "ok", handled: true, gasVersion: GAS_VERSION, reports: raOut });
       } catch (raErr) {
         return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(raErr) }))
           .setMimeType(ContentService.MimeType.JSON);
@@ -1660,13 +1684,11 @@ function doPost(e) {
     if (d.type === "ext_sheets") {
       try {
         var lsRes = listSheets_(d.ssId);
-        return ContentService.createTextOutput(JSON.stringify(
-          { status: "ok", title: lsRes.title, sheets: lsRes.sheets, gidFromUrl: extractGid_(d.ssId) }
-        )).setMimeType(ContentService.MimeType.JSON);
+        return J({ status: "ok", handled: true, gasVersion: GAS_VERSION,
+          title: lsRes.title, sheets: lsRes.sheets, gidFromUrl: extractGid_(d.ssId) });
       } catch (lsErr) {
-        return ContentService.createTextOutput(JSON.stringify(
-          { status: "error", message: "開けません（共有設定をご確認ください）: " + lsErr }
-        )).setMimeType(ContentService.MimeType.JSON);
+        return J({ status: "error", handled: true, gasVersion: GAS_VERSION,
+          message: classifyOpenErr_(lsErr) });
       }
     }
     // v51: 自動反映トリガーの状態取得・設定
@@ -1681,12 +1703,52 @@ function doPost(e) {
       }
     }
     // v51: 設定を他メンバーへ複製（同じ元スプレッドシートでタブだけ違う運用向け）
-    if (d.type === "ping") {
-      return J({ status: "ok", handled: true, gasVersion: GAS_VERSION,
-        features: GAS_FEATURES, serverTime: new Date().toISOString() });
-    }
+    // v98: 重複していた後段のpingハンドラは削除（先頭のpingへ一本化）
     if (d.type === "ext_bulk_configure") {
-      return J({ status: "ok", handled: true, result: extBulkConfigure(d.targets || [], d.headerRow || 1) });
+      return J({ status: "ok", handled: true, gasVersion: GAS_VERSION,
+        result: extBulkConfigure(d.targets || [], d.headerRow || 1) });
+    }
+    // ═══ v98: 行の「設定」ボタン用ワンショット処理 ═══
+    //   URLを受け取り「①解析 → ②開く/タブ決定 → ③列検出 → ④保存 → ⑤リスト取込」を
+    //   サーバー側で一気に行い、どこまで進んだかを手順ログ(steps)で返す。
+    //   往復1回＝失敗点が減り、失敗時も原因の段がその場で分かる。
+    if (d.type === "ext_set_and_import") {
+      var saiSteps = [];
+      try {
+        var saiPin = String(d.pin || "").trim();
+        if (!FULL_NAME_MAP[saiPin]) {
+          return J({ status: "error", handled: true, gasVersion: GAS_VERSION,
+            steps: saiSteps, message: "名簿にない担当者です（PIN:" + saiPin + "）" });
+        }
+        var saiName = FULL_NAME_MAP[saiPin];
+        var saiRes = extBulkConfigure([{ pin: saiPin, url: d.url, sheetName: d.sheetName || "" }], d.headerRow || 1);
+        var saiM = (saiRes.members && saiRes.members[0]) || null;
+        saiSteps.push({ label: "① URLの読み取り", ok: !!(saiM && saiM.ssId),
+          detail: saiM && saiM.ssId ? ("ID: " + String(saiM.ssId).slice(0, 18) + "…") : ((saiM && saiM.message) || "URLを読み取れません") });
+        saiSteps.push({ label: "② スプレッドシートを開く／タブ決定", ok: !!(saiM && saiM.sheetName),
+          detail: saiM && saiM.sheetName ? ("タブ「" + saiM.sheetName + "」" + (saiM.note ? ("（" + saiM.note + "）") : "")) : ((saiM && saiM.message) || "開けません") });
+        saiSteps.push({ label: "③ 見出しから列を検出", ok: !!(saiM && saiM.ok),
+          detail: (saiM && (saiM.detail || saiM.message)) || "" });
+        saiSteps.push({ label: "④ 設定の保存", ok: !!(saiM && saiM.ok),
+          detail: saiM && saiM.ok ? "保存しました" : "保存していません" });
+        if (!saiM || !saiM.ok) {
+          return J({ status: "error", handled: true, gasVersion: GAS_VERSION, account: execAccount_(),
+            steps: saiSteps, member: saiM, message: (saiM && saiM.message) || "設定できません" });
+        }
+        var saiCfgs = readExtConfigs_(), saiCfg = null;
+        for (var sci2 = 0; sci2 < saiCfgs.length; sci2++) {
+          if (String(saiCfgs[sci2].pin) === saiPin) { saiCfg = saiCfgs[sci2]; break; }
+        }
+        var saiIm = saiCfg ? importFromExternal_(saiCfg) : { ok: false, imported: 0, message: "保存直後の設定を読み出せません" };
+        saiSteps.push({ label: "⑤ 架電リストの取込", ok: !!saiIm.ok,
+          detail: saiIm.message || ("取込 " + (saiIm.imported || 0) + "件") });
+        return J({ status: saiIm.ok ? "ok" : "error", handled: true, gasVersion: GAS_VERSION,
+          account: execAccount_(), steps: saiSteps, member: saiM,
+          set: true, imported: saiIm.imported || 0, message: saiIm.ok ? ("設定＋取込 " + saiIm.imported + "件") : saiIm.message });
+      } catch (saiErr) {
+        return J({ status: "error", handled: true, gasVersion: GAS_VERSION,
+          steps: saiSteps, message: String(saiErr) });
+      }
     }
     if (d.type === "ext_config_audit") {
       return J({ status: "ok", handled: true, result: extConfigAudit() });
@@ -1736,9 +1798,17 @@ function doPost(e) {
     if (d.type === "ext_detect") {
       try {
         var dtRes = detectColumns_(d.ssId, d.sheetName, d.headerRow, d.gid);
-        return ContentService.createTextOutput(JSON.stringify(
-          { status: dtRes.ok ? "ok" : "error", detect: dtRes, message: dtRes.message || "" }
-        )).setMimeType(ContentService.MimeType.JSON);
+        // v98: 旧クライアント(detect入れ子)と新クライアント(トップ階層)の両対応。
+        //      追加のみの変更＝既存クライアントを壊さない（Stripe流の後方互換）。
+        var dtOut = { status: dtRes.ok ? "ok" : "error", handled: true, gasVersion: GAS_VERSION,
+          detect: dtRes, message: dtRes.message || "" };
+        var dtKeys = ["sheetName","gid","header","colCompany","colPhone","colPerson","colAddress",
+          "colDate","colTime","colName","colResult","colStep","colMemo"];
+        for (var dtk = 0; dtk < dtKeys.length; dtk++) {
+          if (dtRes[dtKeys[dtk]] !== undefined) dtOut[dtKeys[dtk]] = dtRes[dtKeys[dtk]];
+        }
+        return ContentService.createTextOutput(JSON.stringify(dtOut))
+          .setMimeType(ContentService.MimeType.JSON);
       } catch (dtErr) {
         return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(dtErr) }))
           .setMimeType(ContentService.MimeType.JSON);
@@ -1748,8 +1818,7 @@ function doPost(e) {
     if (d.type === "ext_import") {
       try {
         var imRep = importExternalAll(d.pin || null);
-        return ContentService.createTextOutput(JSON.stringify({ status: "ok", reports: imRep }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return J({ status: "ok", handled: true, gasVersion: GAS_VERSION, reports: imRep });
       } catch (imErr) {
         return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(imErr) }))
           .setMimeType(ContentService.MimeType.JSON);
@@ -1758,8 +1827,7 @@ function doPost(e) {
     if (d.type === "ext_sync") {
       try {
         var syRep = syncExternalAll(d.pin || null, d.dryRun === true);
-        return ContentService.createTextOutput(JSON.stringify({ status: "ok", reports: syRep }))
-          .setMimeType(ContentService.MimeType.JSON);
+        return J({ status: "ok", handled: true, gasVersion: GAS_VERSION, reports: syRep });
       } catch (syErr) {
         return ContentService.createTextOutput(JSON.stringify({ status: "error", message: String(syErr) }))
           .setMimeType(ContentService.MimeType.JSON);
@@ -2865,7 +2933,7 @@ function importFromExternal_(cfg) {
   var tsh;
   try {
     tsh = resolveSheet_(SpreadsheetApp.openById(cfg.ssId), cfg.sheetName, cfg.gid);  // v51
-  } catch (e) { rep.message = "元スプレッドシートを開けません（共有設定をご確認ください）"; return rep; }
+  } catch (e) { rep.message = classifyOpenErr_(e); return rep; }
   if (!tsh) { rep.message = "シートが見つかりません（シート名「" + cfg.sheetName + "」/ GID " + (cfg.gid || "未設定") + "）"; return rep; }
 
   var hr = cfg.headerRow || 1;
@@ -2986,7 +3054,7 @@ function syncExternalFor_(cfg, dryRun) {
     target = SpreadsheetApp.openById(cfg.ssId);
     tsh = resolveSheet_(target, cfg.sheetName, cfg.gid);   // v51: gidでも特定できる
   } catch (e) {
-    rep.message = "元スプレッドシートを開けません（共有設定をご確認ください）: " + e;
+    rep.message = classifyOpenErr_(e);
     return rep;
   }
   if (!tsh) { rep.message = "シートが見つかりません（シート名「" + cfg.sheetName + "」/ GID " + (cfg.gid || "未設定") + "）"; return rep; }
@@ -3147,7 +3215,13 @@ function syncExternalFor_(cfg, dryRun) {
       }
       if (String(cur) !== String(val)) { colVals[idx][0] = val; changed = true; }
     }
-    if (changed) { tsh.getRange(startRow, tg.col, nRows, 1).setValues(colVals); }
+    if (changed) {
+      try { tsh.getRange(startRow, tg.col, nRows, 1).setValues(colVals); }
+      catch (wErr) {
+        rep.message = "書き込みできません（編集権限がありません）。" + execAccount_() + " を「編集者」で共有し直してください。";
+        return rep;
+      }
+    }
   }
   wrote = Object.keys(assign).length;
 
@@ -7751,8 +7825,9 @@ function extSpreadSetup(fromPin, opts) {
   if (!src.ssId) return { ok: false, message: "雛形の設定にスプレッドシートが登録されていません" };
 
   // 元スプレッドシートのタブ一覧を取得し、名前で割り当てる
+  // v98修正: listSheets_ は {title, sheets:[...]} を返す（配列誤用の根治）
   var sheets = [];
-  try { sheets = listSheets_(src.ssId); } catch (e) {}
+  try { var spInfo = listSheets_(src.ssId); sheets = spInfo.sheets || []; } catch (e) {}
 
   var done = [], failed = [], skipped = [];
   Object.keys(FULL_NAME_MAP).forEach(function (pin) {
@@ -7903,9 +7978,12 @@ function extBulkConfigure(targets, headerRow) {
     // タブを決める（URLのgid → 指定のタブ名 → 担当者名のタブ → 先頭タブ）
     var sheetName = String(t.sheetName || "").trim();
     var gid = parsed.gid;
+    // v98修正: listSheets_ は {title, sheets:[...]} を返す。v91〜v97は戻り値を
+    //          そのまま配列として使っていたため、URLにgidが無いと
+    //          extFindSheetFor_ が空振りし必ず「タブを特定できません」になっていた。
     var sheets = [];
-    try { sheets = listSheets_(parsed.ssId); }
-    catch (e) { row.message = "開けません（hr.ashikaga@gmail.com への共有をご確認ください）"; out.push(row); return; }
+    try { var lsInfo2 = listSheets_(parsed.ssId); sheets = lsInfo2.sheets || []; }
+    catch (e) { row.message = classifyOpenErr_(e); out.push(row); return; }
     row.sheets = sheets.length;
 
     if (!gid && !sheetName) {
@@ -7924,6 +8002,8 @@ function extBulkConfigure(targets, headerRow) {
     var v = extConfigVerdict_(det);
     row.detail = v.message;
     row.warn = !!v.warn;
+    row.sheetName = det.sheetName || sheetName;   // v98: 確定タブ名で上書き
+    row.gid = det.gid || gid || "";
     if (!v.ok) { row.message = v.message; out.push(row); return; }
 
     try {

@@ -34,6 +34,10 @@
 
 var SHEET_ID = "1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM";
 var ADMIN_SHEET_ID = "1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ";  // v14: 管理者用 退勤レポート用
+// v95: この GAS がどの版で、どの機能に対応しているか
+var GAS_VERSION = "v95";
+var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
+  "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run"];
 var PIN_MAP = {"091":"柏木", "098":"竹之内", "101":"藤田", "105":"小澤", "108":"榮"};
 // v18: 全名マップ - 出退勤・履歴・アポでは "河野由香" のような全名で記録される
 // v25: 福田貴美恵 PIN 095 追加
@@ -1677,18 +1681,22 @@ function doPost(e) {
       }
     }
     // v51: 設定を他メンバーへ複製（同じ元スプレッドシートでタブだけ違う運用向け）
+    if (d.type === "ping") {
+      return J({ status: "ok", handled: true, gasVersion: GAS_VERSION,
+        features: GAS_FEATURES, serverTime: new Date().toISOString() });
+    }
     if (d.type === "ext_bulk_configure") {
-      return J({ status: "ok", result: extBulkConfigure(d.targets || [], d.headerRow || 1) });
+      return J({ status: "ok", handled: true, result: extBulkConfigure(d.targets || [], d.headerRow || 1) });
     }
     if (d.type === "ext_config_audit") {
-      return J({ status: "ok", result: extConfigAudit() });
+      return J({ status: "ok", handled: true, result: extConfigAudit() });
     }
     if (d.type === "ext_spread_setup") {
       var spRes = extSpreadSetup(d.fromPin, { overwrite: d.overwrite === true, shareTab: d.shareTab === true });
-      return J(spRes.ok ? { status: "ok", result: spRes } : { status: "error", message: spRes.message });
+      return J(spRes.ok ? { status: "ok", handled: true, result: spRes } : { status: "error", handled: true, message: spRes.message });
     }
     if (d.type === "ext_run_everyone") {
-      return J({ status: "ok", result: extRunEveryone(d.skipImport === true) });
+      return J({ status: "ok", handled: true, result: extRunEveryone(d.skipImport === true) });
     }
     if (d.type === "ext_config_copy") {
       try {
@@ -2506,8 +2514,12 @@ function doPost(e) {
       }
     }
 
-    return ContentService.createTextOutput(JSON.stringify({status:"ok", type: d.type}))
-      .setMimeType(ContentService.MimeType.JSON);
+    // v95: 対応していない要求は「未対応」と明示して返す。
+    //      これがないと、古いGASが常に status:"ok" を返してしまい、
+    //      「成功したのに何も起きない」という分かりにくい状態になる。
+    return ContentService.createTextOutput(JSON.stringify(
+      { status: "ok", handled: false, type: d.type, gasVersion: GAS_VERSION }
+    )).setMimeType(ContentService.MimeType.JSON);
 
   } catch (err) {
     Logger.log("doPost ERROR: " + err + "\nStack: " + (err.stack || "no stack"));

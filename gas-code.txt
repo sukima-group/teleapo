@@ -1677,6 +1677,19 @@ function doPost(e) {
       }
     }
     // v51: 設定を他メンバーへ複製（同じ元スプレッドシートでタブだけ違う運用向け）
+    if (d.type === "ext_bulk_configure") {
+      return J({ status: "ok", result: extBulkConfigure(d.targets || [], d.headerRow || 1) });
+    }
+    if (d.type === "ext_config_audit") {
+      return J({ status: "ok", result: extConfigAudit() });
+    }
+    if (d.type === "ext_spread_setup") {
+      var spRes = extSpreadSetup(d.fromPin, { overwrite: d.overwrite === true, shareTab: d.shareTab === true });
+      return J(spRes.ok ? { status: "ok", result: spRes } : { status: "error", message: spRes.message });
+    }
+    if (d.type === "ext_run_everyone") {
+      return J({ status: "ok", result: extRunEveryone(d.skipImport === true) });
+    }
     if (d.type === "ext_config_copy") {
       try {
         var srcList = readExtConfigs_(), src = null;
@@ -7703,4 +7716,244 @@ function kanriInstallTemplate(rootIdOrUrl, templateKey, months) {
     sheets: SpreadsheetApp.openById(wb.getId()).getSheets().length,
     sheetName: fed.sheetName, rows: fed.rows, kept: fed.kept, master: fed.master,
     unmatched: fed.unmatched, verify: ver, audit: audit, warnings: k5AuditWarnings_(audit) };
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════
+// v90: 元スプレッドシート連携を、全員分まとめて整える
+//   1人ずつ設定する必要があり、未設定の方は「取込」「反映」が
+//   使えないままだった。設定済みの1名を雛形にして、
+//   残り全員へ一度に展開できるようにする。
+// ═══════════════════════════════════════════════════════════════
+
+// 設定済みのメンバーを雛形として、未設定の全員へ展開する
+//   タブ名は各自の名前で自動的に切り替える（同じタブを共有しないため）
+function extSpreadSetup(fromPin, opts) {
+  opts = opts || {};
+  var list = readExtConfigs_(), src = null;
+  for (var i = 0; i < list.length; i++) {
+    if (String(list[i].pin) === String(fromPin)) { src = list[i]; break; }
+  }
+  if (!src) return { ok: false, message: "雛形にする設定が見つかりません（PIN:" + fromPin + "）" };
+  if (!src.ssId) return { ok: false, message: "雛形の設定にスプレッドシートが登録されていません" };
+
+  // 元スプレッドシートのタブ一覧を取得し、名前で割り当てる
+  var sheets = [];
+  try { sheets = listSheets_(src.ssId); } catch (e) {}
+
+  var done = [], failed = [], skipped = [];
+  Object.keys(FULL_NAME_MAP).forEach(function (pin) {
+    if (String(pin) === String(fromPin)) { skipped.push({ pin: pin, name: FULL_NAME_MAP[pin], why: "雛形" }); return; }
+    var already = null;
+    list.forEach(function (c) { if (String(c.pin) === String(pin) && c.ssId) already = c; });
+    if (already && opts.overwrite !== true) {
+      skipped.push({ pin: pin, name: FULL_NAME_MAP[pin], why: "設定済み" });
+      return;
+    }
+    // この人のタブを探す（姓や氏名を含むタブ名）
+    var sh = extFindSheetFor_(sheets, pin);
+    var cfg = {
+      pin: String(pin), ssId: src.ssId,
+      sheetName: sh ? sh.name : (opts.shareTab === true ? src.sheetName : ""),
+      gid: sh ? sh.gid : (opts.shareTab === true ? src.gid : ""),
+      headerRow: src.headerRow || 1,
+      colCompany: src.colCompany, colPhone: src.colPhone,
+      colPerson: src.colPerson, colAddress: src.colAddress,
+      colName: src.colName, colStep: src.colStep, colDate: src.colDate,
+      colTime: src.colTime, colResult: src.colResult, colMemo: src.colMemo,
+      dateFmt: src.dateFmt || "yyyy/MM/dd", resultMapText: src.resultMapText || "",
+      overwrite: src.overwrite === true, verify: src.verify !== false, enabled: true
+    };
+    if (!cfg.sheetName && !cfg.gid) {
+      failed.push({ pin: pin, name: FULL_NAME_MAP[pin], message: "この方のタブが見つかりません" });
+      return;
+    }
+    try { writeExtConfig_(cfg); done.push({ pin: pin, name: FULL_NAME_MAP[pin], sheetName: cfg.sheetName }); }
+    catch (e2) { failed.push({ pin: pin, name: FULL_NAME_MAP[pin], message: String(e2) }); }
+  });
+  logAudit("連携の一括展開", "管理者", done.length + "名へ展開", failed.length ? (failed.length + "名は要確認") : "");
+  return { ok: true, from: FULL_NAME_MAP[String(fromPin)] || fromPin,
+    ssId: src.ssId, sheets: sheets.length, done: done, failed: failed, skipped: skipped };
+}
+// 担当者に対応するタブを探す（フルネーム → 姓 → PIN の順）
+function extFindSheetFor_(sheets, pin) {
+  var full = FULL_NAME_MAP[String(pin)] || "";
+  var last = PIN_MAP[String(pin)] || "";
+  var cand = [full, last, String(pin)];
+  // ① まず「完全に一致するタブ」を全候補で探す（取り違えを防ぐため部分一致より先）
+  for (var k = 0; k < cand.length; k++) {
+    var key = cand[k];
+    if (!key) continue;
+    for (var i = 0; i < (sheets || []).length; i++) {
+      if (String(sheets[i].name || "") === key) return sheets[i];
+    }
+  }
+  // ② 次に「名前で始まるタブ」（例：柏木リスト）
+  for (var k2 = 0; k2 < cand.length; k2++) {
+    var key2 = cand[k2];
+    if (!key2) continue;
+    for (var j = 0; j < (sheets || []).length; j++) {
+      if (String(sheets[j].name || "").indexOf(key2) === 0) return sheets[j];
+    }
+  }
+  // ③ 最後に「名前を含むタブ」
+  for (var k3 = 0; k3 < cand.length; k3++) {
+    var key3 = cand[k3];
+    if (!key3) continue;
+    for (var m = 0; m < (sheets || []).length; m++) {
+      if (String(sheets[m].name || "").indexOf(key3) >= 0) return sheets[m];
+    }
+  }
+  return null;
+}
+// 全員分の「取込 → 反映」をまとめて実行する
+function extRunEveryone(skipImport) {
+  var cfgs = readExtConfigs_(), out = [];
+  cfgs.forEach(function (c) {
+    if (!c.enabled) return;
+    var one = { pin: c.pin, name: FULL_NAME_MAP[c.pin] || c.name || "", ok: false };
+    try {
+      if (skipImport !== true) {
+        var im = importFromExternal_(c);
+        one.imported = im.imported || 0;
+        if (!im.ok) { one.message = im.message; out.push(one); return; }
+      }
+      var sy = syncExternalFor_(c, false);
+      one.ok = sy.ok; one.written = sy.written || 0;
+      one.message = sy.message || "";
+    } catch (e) { one.message = String(e); }
+    out.push(one);
+  });
+  return { members: out, total: out.length,
+    imported: out.reduce(function (a, x) { return a + (x.imported || 0); }, 0),
+    written: out.reduce(function (a, x) { return a + (x.written || 0); }, 0) };
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// v91: 5名分のスプレッドシートURLをまとめて登録する
+//   各アポインターが別々のスプレッドシートを持つ場合、
+//   1人の設定を他人へ複製すると誤った設定になる。
+//   ここでは1人ずつURLを受け取り、開いて列を自動検出し、
+//   問題があればその場で理由を返す。
+// ═══════════════════════════════════════════════════════════════
+
+// URLから スプレッドシートID と gid を取り出す（純粋関数＝検証しやすい）
+function extParseTarget_(url) {
+  var t = String(url || "").trim();
+  var out = { ssId: "", gid: "" };
+  if (!t) return out;
+  var m = t.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (m) out.ssId = m[1];
+  else if (/^[a-zA-Z0-9-_]{20,}$/.test(t)) out.ssId = t;   // IDだけ貼られた場合
+  var g = t.match(/[#&?]gid=(\d+)/);
+  if (g) out.gid = g[1];
+  return out;
+}
+// 検出結果から、利用者向けの判定文を作る
+function extConfigVerdict_(det) {
+  if (!det || !det.ok) return { ok: false, message: (det && det.message) || "開けませんでした" };
+  var miss = [];
+  if (!det.colCompany) miss.push("会社名");
+  if (!det.colPhone) miss.push("電話番号");
+  if (miss.length) {
+    return { ok: false, message: "見出しに「" + miss.join("」「") + "」が見つかりません" };
+  }
+  var wr = [];
+  if (!det.colDate) wr.push("日付");
+  if (!det.colTime) wr.push("時刻");
+  if (!det.colName) wr.push("名前");
+  if (!det.colResult) wr.push("結果");
+  return { ok: true,
+    message: "会社名=" + det.colCompany + " 電話=" + det.colPhone +
+      (det.colPerson ? " 担当=" + det.colPerson : "") +
+      (wr.length ? "／書き込み先が未検出: " + wr.join("・") : "／書き込み先も検出"),
+    warn: wr.length > 0 };
+}
+
+// ★5名分をまとめて設定する
+//   targets: [{pin, url, sheetName?}]
+function extBulkConfigure(targets, headerRow) {
+  var out = [];
+  (targets || []).forEach(function (t) {
+    var pin = String(t.pin || "").trim();
+    var name = FULL_NAME_MAP[pin] || pin;
+    var row = { pin: pin, name: name, ok: false };
+    if (!FULL_NAME_MAP[pin]) { row.message = "名簿にない担当者です"; out.push(row); return; }
+    var url = String(t.url || "").trim();
+    if (!url) { row.message = "URLが未入力です"; row.skipped = true; out.push(row); return; }
+
+    var parsed = extParseTarget_(url);
+    if (!parsed.ssId) { row.message = "スプレッドシートのURLとして読み取れません"; out.push(row); return; }
+    row.ssId = parsed.ssId;
+
+    // タブを決める（URLのgid → 指定のタブ名 → 担当者名のタブ → 先頭タブ）
+    var sheetName = String(t.sheetName || "").trim();
+    var gid = parsed.gid;
+    var sheets = [];
+    try { sheets = listSheets_(parsed.ssId); }
+    catch (e) { row.message = "開けません（hr.ashikaga@gmail.com への共有をご確認ください）"; out.push(row); return; }
+    row.sheets = sheets.length;
+
+    if (!gid && !sheetName) {
+      var hit = extFindSheetFor_(sheets, pin);
+      if (hit) { sheetName = hit.name; gid = hit.gid; }
+      else if (sheets.length === 1) { sheetName = sheets[0].name; gid = sheets[0].gid; }
+      else if (sheets.length > 1) { sheetName = sheets[0].name; gid = sheets[0].gid; row.note = "先頭のタブを使いました"; }
+    }
+    if (!sheetName && !gid) { row.message = "タブを特定できません"; out.push(row); return; }
+    row.sheetName = sheetName;
+
+    // 列を自動検出
+    var det;
+    try { det = detectColumns_(parsed.ssId, sheetName, headerRow || 1, gid); }
+    catch (e2) { row.message = "見出しを読めません: " + e2; out.push(row); return; }
+    var v = extConfigVerdict_(det);
+    row.detail = v.message;
+    row.warn = !!v.warn;
+    if (!v.ok) { row.message = v.message; out.push(row); return; }
+
+    try {
+      writeExtConfig_({
+        pin: pin, ssId: parsed.ssId,
+        sheetName: det.sheetName || sheetName, gid: det.gid || gid || "",
+        headerRow: headerRow || 1,
+        colCompany: det.colCompany, colPhone: det.colPhone,
+        colPerson: det.colPerson, colAddress: det.colAddress,
+        colName: det.colName, colStep: det.colStep, colDate: det.colDate,
+        colTime: det.colTime, colResult: det.colResult, colMemo: det.colMemo,
+        dateFmt: "yyyy/MM/dd", resultMapText: "",
+        overwrite: false, verify: true, enabled: true
+      });
+      row.ok = true;
+    } catch (e3) { row.message = "保存できません: " + e3; }
+    out.push(row);
+  });
+  var okN = out.filter(function (x) { return x.ok; }).length;
+  logAudit("連携の一括登録", "管理者", okN + "名を設定", "");
+  return { members: out, ok: okN, total: out.length };
+}
+
+// いまの設定が誰のどのシートを指しているかを確認する（取り違えの発見用）
+function extConfigAudit() {
+  var cfgs = readExtConfigs_(), out = [], byS = {};
+  Object.keys(FULL_NAME_MAP).forEach(function (pin) {
+    var c = null;
+    cfgs.forEach(function (x) { if (String(x.pin) === String(pin)) c = x; });
+    var row = { pin: pin, name: FULL_NAME_MAP[pin], set: !!(c && c.ssId) };
+    if (c && c.ssId) {
+      row.ssId = c.ssId;
+      row.sheetName = c.sheetName || "";
+      try { row.title = SpreadsheetApp.openById(c.ssId).getName(); }
+      catch (e) { row.title = "（開けません）"; row.error = true; }
+      var key = c.ssId + "|" + (c.sheetName || c.gid || "");
+      byS[key] = (byS[key] || 0) + 1;
+      row.key = key;
+    }
+    out.push(row);
+  });
+  // 同じシートを複数人が見ていないか
+  out.forEach(function (r) { if (r.key && byS[r.key] > 1) r.duplicated = byS[r.key]; });
+  return { members: out, duplicates: Object.keys(byS).filter(function (k) { return byS[k] > 1; }).length };
 }

@@ -35,7 +35,7 @@
 var SHEET_ID = "1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM";
 var ADMIN_SHEET_ID = "1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ";  // v14: 管理者用 退勤レポート用
 // v95: この GAS がどの版で、どの機能に対応しているか
-var GAS_VERSION = "v100";
+var GAS_VERSION = "v101";
 var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
   "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run"];
 var PIN_MAP = {"091":"柏木", "101":"藤田", "110":"田中", "112":"中村", "114":"片山"};
@@ -5141,6 +5141,9 @@ function setupRecording() {
 function recHandle_(d) {
   function J(o){return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON)}
   try {
+    if (d.type === "system_diagnose") {
+      return J({ status: "ok", handled: true, result: systemDiagnose(d.appVersion || "") });
+    }
     if (d.type === "roster_get") {
       return J({ status: "ok", handled: true, result: rosterForClient() });
     }
@@ -8487,4 +8490,127 @@ function rosterForClient() {
   return { members: r.active.map(function (m) { return { id: "s" + m.pin, nm: m.name, pin: m.pin, sh: m.sh, email: m.email }; }),
     retired: r.all.filter(function (m) { return m.status !== "稼働"; }).map(function (m) { return { pin: m.pin, nm: m.name }; }),
     updatedAt: new Date().toISOString() };
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// v101: 総合診断 — 名簿・録音・KPI・経営連動・夜間処理が
+//        すべてつながっているかを1回で点検し、直す場所を示す。
+// ═══════════════════════════════════════════════════════════════
+// 点検結果から合否と要約を作る（純粋関数＝検証しやすい）
+function diagSummarize_(checks) {
+  var ok = 0, ng = 0, warn = 0;
+  (checks || []).forEach(function (c) { if (c.level === "ng") ng++; else if (c.level === "warn") warn++; else ok++; });
+  var score = checks && checks.length ? Math.round((ok + warn * 0.5) / checks.length * 100) : 0;
+  return { ok: ok, ng: ng, warn: warn, total: (checks || []).length, score: score,
+    verdict: ng === 0 && warn === 0 ? "すべて正常" : ng === 0 ? "おおむね正常（注意あり）" : "未完了の項目があります" };
+}
+function diagItem_(group, name, level, detail, fix) {
+  return { group: group, name: name, level: level, detail: detail || "", fix: fix || "" };
+}
+function systemDiagnose(appVersion) {
+  var checks = [];
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+
+  // ── ① サーバーとアプリの版 ──
+  var same = !appVersion || String(appVersion) === GAS_VERSION;
+  checks.push(diagItem_("基盤", "アプリ版とサーバー版の一致",
+    same ? "ok" : "ng", "アプリ " + (appVersion || "?") + " ／ サーバー " + GAS_VERSION,
+    same ? "" : "gas-code.txt を貼り付けて「新しいバージョン」でデプロイしてください"));
+
+  // ── ② 名簿 ──
+  var roster = null;
+  try { roster = rosterLoad_(true); } catch (e) {}
+  if (!roster) checks.push(diagItem_("名簿", "アポインター名簿シート", "ng", "読めません", "GASを再デプロイし、管理者画面を開き直してください"));
+  else {
+    checks.push(diagItem_("名簿", "稼働中のアポインター", roster.active.length ? "ok" : "ng",
+      roster.active.length + "名（退職" + (roster.all.length - roster.active.length) + "名）",
+      roster.active.length ? "" : "「👥 アポインター名簿」から追加してください"));
+    roster.active.forEach(function (m) {
+      var probs = [];
+      if (!m.email) probs.push("会社Gmail未登録");
+      checks.push(diagItem_("名簿", m.name + "（" + m.pin + "）", probs.length ? "warn" : "ok",
+        probs.length ? probs.join("・") : "メール登録済み",
+        probs.length ? "名簿の「編集」からメールを入れてください（録音フォルダの共有に使います）" : ""));
+    });
+  }
+
+  // ── ③ 設定の網羅（KPI目標・録音・連携） ──
+  var pins = Object.keys(FULL_NAME_MAP);
+  try {
+    var kt = kpiTargetsRead_();
+    var kMiss = pins.filter(function (p) { return !kt[p]; });
+    checks.push(diagItem_("KPI", "KPI目標の設定", kMiss.length ? "warn" : "ok",
+      kMiss.length ? ("未設定: " + kMiss.map(function (p) { return FULL_NAME_MAP[p]; }).join("・") + "（既定値で動作）") : pins.length + "名分あり",
+      kMiss.length ? "「📈 KPIを集計」を押すと既定値で作成されます" : ""));
+  } catch (e2) { checks.push(diagItem_("KPI", "KPI目標の設定", "ng", String(e2), "")); }
+  try {
+    var rc = readRecConfigs_();
+    var rHave = {}; rc.forEach(function (c) { if (c.folderId) rHave[String(c.pin)] = true; });
+    pins.forEach(function (p) { if (REC_MEMBER_FOLDERS[p]) rHave[p] = true; });
+    var rMiss = pins.filter(function (p) { return !rHave[p]; });
+    checks.push(diagItem_("録音", "録音フォルダ", rMiss.length ? "warn" : "ok",
+      rMiss.length ? ("未作成: " + rMiss.map(function (p) { return FULL_NAME_MAP[p]; }).join("・")) : pins.length + "名分あり",
+      rMiss.length ? "「🆕 ② 新メンバーの初期設定」を押してください" : ""));
+  } catch (e3) { checks.push(diagItem_("録音", "録音フォルダ", "ng", String(e3), "")); }
+  try {
+    var arc = DriveApp.getFolderById(REC_ARCHIVE_FOLDER);
+    checks.push(diagItem_("録音", "全体保管庫", "ok", arc.getName(), ""));
+  } catch (e4) { checks.push(diagItem_("録音", "全体保管庫", "ng", "開けません", "保管庫フォルダを hr.ashikaga@gmail.com に編集者で共有してください")); }
+  try {
+    var ec = readExtConfigs_();
+    var eHave = {}; ec.forEach(function (c) { if (c.ssId) eHave[String(c.pin)] = true; });
+    var eMiss = pins.filter(function (p) { return !eHave[p]; });
+    checks.push(diagItem_("連携", "元スプレッドシート連携", eMiss.length ? "warn" : "ok",
+      eMiss.length ? ("未設定: " + eMiss.map(function (p) { return FULL_NAME_MAP[p]; }).join("・")) : pins.length + "名分あり",
+      eMiss.length ? "「🔗 元スプレッドシート連携」で各自のURLを登録してください（使わない方は不要）" : ""));
+  } catch (e5) { checks.push(diagItem_("連携", "元スプレッドシート連携", "warn", String(e5), "")); }
+
+  // ── ④ 経営管理システム ──
+  var wbId = "";
+  try { wbId = PropertiesService.getScriptProperties().getProperty("KANRI_WB_ID") || ""; } catch (e6) {}
+  if (!wbId) checks.push(diagItem_("経営", "経営管理システムの設置", "ng", "未設置", "「📊 作成／更新する」を押してください"));
+  else {
+    try {
+      var wb = SpreadsheetApp.openById(wbId);
+      checks.push(diagItem_("経営", "経営管理システムの設置", "ok", wb.getName() + "（" + wb.getSheets().length + "シート）", ""));
+      var master = [];
+      try { master = k5ReadMaster_(wb); } catch (e7) {}
+      var mMiss = pins.filter(function (p) { return !k5MatchName_(FULL_NAME_MAP[p], master); });
+      checks.push(diagItem_("経営", "名簿の一致（アポインターマスタ）", mMiss.length ? "ng" : "ok",
+        mMiss.length ? ("経営システム側にない: " + mMiss.map(function (p) { return FULL_NAME_MAP[p]; }).join("・")) : "全員一致",
+        mMiss.length ? "「🔗 ③ 経営システムの名簿を今の名簿に合わせる」を押してください" : ""));
+      var kSheet = wb.getSheetByName(KANRI_KPI_SHEET);
+      checks.push(diagItem_("経営", "KPIシートの反映", kSheet && kSheet.getLastRow() > 1 ? "ok" : "warn",
+        kSheet ? ((kSheet.getLastRow() - 1) + "名分") : "未作成",
+        kSheet && kSheet.getLastRow() > 1 ? "" : "「📤 経営システムへ反映」を押してください"));
+    } catch (e8) { checks.push(diagItem_("経営", "経営管理システムの設置", "ng", "開けません", "「📊 作成／更新する」を押し直してください")); }
+  }
+
+  // ── ⑤ 自動化 ──
+  var on = false;
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === NIGHTLY_FN) on = true; });
+  var lastOk = 0;
+  try { lastOk = Number(PropertiesService.getScriptProperties().getProperty("NIGHTLY_LAST_OK") || 0); } catch (e9) {}
+  var wd = nightlyWatchdog_(lastOk, new Date().getTime());
+  checks.push(diagItem_("自動化", "夜間自動処理", on ? (wd.state === "正常" || wd.state === "未実行" ? "ok" : "warn") : "ng",
+    on ? ("ON／最終成功: " + (lastOk ? formatDateTimeStr(new Date(lastOk)) : "まだ") + "（" + wd.state + "）") : "OFF",
+    on ? (wd.state === "正常" || wd.state === "未実行" ? "" : "「▶ 今すぐ実行して確かめる」で状態を確認してください") : "「🌙 夜間自動処理」で時刻を選んでONにしてください"));
+
+  // ── ⑥ データの流れ ──
+  try {
+    var today = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd");
+    var cs = ss.getSheetByName("架電結果"), n7 = 0, nT = 0;
+    if (cs && cs.getLastRow() > 1) {
+      var cv = cs.getDataRange().getValues();
+      var since = kanriDateKey_(new Date(Date.now() - 7 * 86400000));
+      for (var i = 1; i < cv.length; i++) { var k = normalizeYMD(cv[i][1]); if (k >= since) n7++; if (k === today) nT++; }
+    }
+    checks.push(diagItem_("データ", "架電結果の記録", n7 ? "ok" : "warn", "直近7日 " + n7 + "件／本日 " + nT + "件",
+      n7 ? "" : "架電が記録されると、KPIと経営システムに数字が入ります"));
+  } catch (e10) {}
+
+  var sum = diagSummarize_(checks);
+  logAudit("総合診断", "管理者", sum.verdict, "OK" + sum.ok + "/注意" + sum.warn + "/未完" + sum.ng);
+  return { checks: checks, summary: sum, gasVersion: GAS_VERSION, at: formatDateTimeStr(new Date()) };
 }

@@ -35,16 +35,17 @@
 var SHEET_ID = "1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM";
 var ADMIN_SHEET_ID = "1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ";  // v14: 管理者用 退勤レポート用
 // v95: この GAS がどの版で、どの機能に対応しているか
-var GAS_VERSION = "v95";
+var GAS_VERSION = "v100";
 var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
   "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run"];
-var PIN_MAP = {"101":"藤田", "110":"田中", "112":"中村", "114":"片山"};
+var PIN_MAP = {"091":"柏木", "101":"藤田", "110":"田中", "112":"中村", "114":"片山"};
 // v18: 全名マップ - 出退勤・履歴・アポでは "河野由香" のような全名で記録される
 // v25: 福田貴美恵 PIN 095 追加
 // v26: 藪内亜希 PIN 097 追加 / 発信件数通知 (dial_count_notify) 追加
-var FULL_NAME_MAP = {"101":"藤田直美", "110":"田中久美子", "112":"中村花林", "114":"片山佳代"};
+var FULL_NAME_MAP = {"091":"柏木幸代", "101":"藤田直美", "110":"田中久美子", "112":"中村花林", "114":"片山佳代"};
 // v45: 各アポインター本人のGmail (空欄=未登録・送信スキップ)
 var STAFF_EMAILS = {
+  "091":"kashiwagi.sukimagroup@gmail.com",
   "101":"fujita.sukimagroup@gmail.com",
   "110":"tanaka.sukimagroup@gmail.com",
   "112":"nakamura.sukimagroup@gmail.com",
@@ -64,6 +65,7 @@ var APPO_MAIL_TO = "a.kusunoki@sukimagroup.jp";
 
 // アポインターがログインした時に呼ばれる（架電リスト取得）
 function doGet(e) {
+  try { rosterApply_(false); } catch (eR) {}   // v100
   try {
     // ping 接続テスト (v15: ブラウザから直接アクセスしたとき用)
     if (!e || !e.parameter || (!e.parameter.pin && !e.parameter.action)) {
@@ -191,6 +193,7 @@ function doGet(e) {
 
 // 勤怠 / 架電結果 / 再架電 / アポ詳細 / シフト申請 / 退勤レポート の書き込み
 function doPost(e) {
+  try { rosterApply_(false); } catch (eR) {}   // v100: 名簿はシートから
   try {
     // 防御的パース: postData がない場合は parameter からも取得を試みる
     var raw = "";
@@ -5138,6 +5141,17 @@ function setupRecording() {
 function recHandle_(d) {
   function J(o){return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON)}
   try {
+    if (d.type === "roster_get") {
+      return J({ status: "ok", handled: true, result: rosterForClient() });
+    }
+    if (d.type === "roster_upsert") {
+      var up = rosterUpsert(d.member || {});
+      return J(up.ok ? { status: "ok", handled: true, result: up, roster: rosterForClient() } : { status: "error", handled: true, message: up.message });
+    }
+    if (d.type === "roster_retire") {
+      var rt = rosterRetire(d.pin);
+      return J(rt.ok ? { status: "ok", handled: true, result: rt, roster: rosterForClient() } : { status: "error", handled: true, message: rt.message });
+    }
     if (d.type === "roster_cleanup") {
       return J({ status: "ok", handled: true, result: rosterCleanup(d.dryRun === true) });
     }
@@ -6904,8 +6918,8 @@ var REC_ROOT_V81 = "1Hslq_b1D9S5kv2Jb5cTSFVbtmeTGc8CV";   // 録音の保管先�
 var REC_ARCHIVE_FOLDER = "1P7MOlAg7gRR1X_imtjSjl81MmUUZFQ7V";
 // v84: 担当者ごとの保存先フォルダ（ご指定のURL）。ここが最優先で使われる。
 var REC_MEMBER_FOLDERS = {
+  "091":"1QSuwdlfZyFMhnog7u71OAQ6-UWQJCELS",
   "101":"1fNCpuY4o2QUUEzcSWn8ngCA6NQ56tQMz"
-  // 田中・中村・片山は「① フォルダを用意・共有」で自動作成されます
 };
 
 function recRootFolder_() {
@@ -8333,4 +8347,144 @@ function kpiAlertsNow(days) {
   });
   Object.keys(by).forEach(function (p) { by[p].sort(function (a, b) { return a.d < b.d ? -1 : 1; }); });
   return kpiAlerts_(by, kpiTargetsRead_(), 3, 60);
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// v100: 名簿をスプレッドシートで管理する
+//   これまで名簿はコードに埋め込まれており、追加・退職のたびに
+//   コード修正が必要で、漏れの原因になっていた。
+//   v100では「アポインター名簿」シートが唯一の正であり、
+//   すべての処理はこのシートから名簿を読み込む。
+// ═══════════════════════════════════════════════════════════════
+var ROSTER_SHEET = "アポインター名簿";
+var ROSTER_HEADER = ["PIN", "氏名", "姓", "会社Gmail", "状態", "録音フォルダID", "備考", "更新日時"];
+var ROSTER_CACHE_KEY = "roster_v100";
+
+// PINを3桁に揃える（"91"→"091"）
+function rosterNormPin_(p) {
+  var t = String(p === null || p === undefined ? "" : p).trim()
+    .replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })   // 全角→半角
+    .replace(/[^\d]/g, "");
+  if (!t) return "";
+  while (t.length < 3) t = "0" + t;
+  return t;
+}
+// 姓を氏名から推定する（明示があればそれを使う）
+function rosterSurname_(full, given) {
+  if (given) return String(given).trim();
+  var f = String(full || "").replace(/[\s\u3000]/g, "");
+  return f.slice(0, 2);
+}
+// シートの行 → 名簿オブジェクト（純粋関数）
+function rosterParse_(values) {
+  var out = { active: [], all: [] };
+  (values || []).forEach(function (r, i) {
+    if (i === 0) return;               // 見出し
+    var pin = rosterNormPin_(r[0]);
+    var name = String(r[1] || "").trim();
+    if (!pin || !name) return;
+    var m = { pin: pin, name: name, sh: rosterSurname_(name, r[2]),
+      email: String(r[3] || "").trim(), status: String(r[4] || "稼働").trim() || "稼働",
+      folderId: String(r[5] || "").trim(), note: String(r[6] || "").trim() };
+    out.all.push(m);
+    if (m.status === "稼働") out.active.push(m);
+  });
+  return out;
+}
+// 既定値（初回だけシートへ書き出す）
+function rosterDefaults_() {
+  return Object.keys(FULL_NAME_MAP).map(function (p) {
+    return [p, FULL_NAME_MAP[p], PIN_MAP[p] || "", STAFF_EMAILS[p] || "", "稼働", REC_MEMBER_FOLDERS[p] || "", "", new Date()];
+  });
+}
+function rosterSheet_() {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sh = ss.getSheetByName(ROSTER_SHEET);
+  if (!sh) {
+    sh = ensureSheet(ss, ROSTER_SHEET, ROSTER_HEADER);
+    var rows = rosterDefaults_();
+    if (rows.length) sh.getRange(2, 1, rows.length, ROSTER_HEADER.length).setValues(rows);
+    sh.setFrozenRows(1);
+    try { sh.getRange(1, 1, 1, ROSTER_HEADER.length).setFontWeight("bold").setBackground("#e0f2fe"); } catch (e) {}
+  }
+  return sh;
+}
+// 名簿を読み込む（5分キャッシュ）
+function rosterLoad_(force) {
+  var cache = null;
+  try { cache = CacheService.getScriptCache(); } catch (e) {}
+  if (!force && cache) {
+    try { var c = cache.get(ROSTER_CACHE_KEY); if (c) return JSON.parse(c); } catch (e2) {}
+  }
+  var sh = rosterSheet_();
+  var vals = sh.getLastRow() >= 1 ? sh.getRange(1, 1, sh.getLastRow(), ROSTER_HEADER.length).getValues() : [];
+  var r = rosterParse_(vals);
+  if (cache) { try { cache.put(ROSTER_CACHE_KEY, JSON.stringify(r), 300); } catch (e3) {} }
+  return r;
+}
+// 読み込んだ名簿を、既存コードが参照するマップへ反映する（稼働中のみ）
+function rosterApply_(force) {
+  var r;
+  try { r = rosterLoad_(force); } catch (e) { return false; }
+  if (!r || !r.active || !r.active.length) return false;
+  Object.keys(FULL_NAME_MAP).forEach(function (k) { delete FULL_NAME_MAP[k]; });
+  Object.keys(PIN_MAP).forEach(function (k) { delete PIN_MAP[k]; });
+  Object.keys(STAFF_EMAILS).forEach(function (k) { delete STAFF_EMAILS[k]; });
+  Object.keys(REC_MEMBER_FOLDERS).forEach(function (k) { delete REC_MEMBER_FOLDERS[k]; });
+  r.active.forEach(function (m) {
+    FULL_NAME_MAP[m.pin] = m.name;
+    PIN_MAP[m.pin] = m.sh;
+    STAFF_EMAILS[m.pin] = m.email;
+    if (m.folderId) REC_MEMBER_FOLDERS[m.pin] = m.folderId;
+  });
+  return true;
+}
+// 名簿の追加・更新（管理画面から）
+function rosterUpsert(m) {
+  var pin = rosterNormPin_(m.pin);
+  var name = String(m.name || "").trim();
+  if (!pin) return { ok: false, message: "PINが空です" };
+  if (!name) return { ok: false, message: "氏名が空です" };
+  var email = String(m.email || "").trim();
+  if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { ok: false, message: "メールの形式が正しくありません（" + email + "）" };
+  var sh = rosterSheet_();
+  var row = 0;
+  if (sh.getLastRow() > 1) {
+    var v = sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues();
+    for (var i = 0; i < v.length; i++) { if (rosterNormPin_(v[i][0]) === pin) { row = i + 2; break; } }
+  }
+  var line = [pin, name, rosterSurname_(name, m.sh), email, String(m.status || "稼働"), String(m.folderId || ""), String(m.note || ""), new Date()];
+  if (row) sh.getRange(row, 1, 1, line.length).setValues([line]);
+  else sh.appendRow(line);
+  try { CacheService.getScriptCache().remove(ROSTER_CACHE_KEY); } catch (e) {}
+  rosterApply_(true);
+  logAudit("名簿更新", "管理者", name + "(" + pin + ")", String(m.status || "稼働"));
+  return { ok: true, pin: pin, name: name, updated: row > 0 };
+}
+// 退職（削除ではなく状態を変える：履歴を守るため）
+function rosterRetire(pin) {
+  var p = rosterNormPin_(pin);
+  var sh = rosterSheet_();
+  if (sh.getLastRow() > 1) {
+    var v = sh.getRange(2, 1, sh.getLastRow() - 1, 2).getValues();
+    for (var i = 0; i < v.length; i++) {
+      if (rosterNormPin_(v[i][0]) === p) {
+        sh.getRange(i + 2, 5).setValue("退職");
+        sh.getRange(i + 2, 8).setValue(new Date());
+        try { CacheService.getScriptCache().remove(ROSTER_CACHE_KEY); } catch (e) {}
+        rosterApply_(true);
+        logAudit("退職", "管理者", String(v[i][1]) + "(" + p + ")", "");
+        return { ok: true, pin: p, name: String(v[i][1]) };
+      }
+    }
+  }
+  return { ok: false, message: "名簿に見つかりません（PIN " + p + "）" };
+}
+// 画面へ返す名簿（稼働中）
+function rosterForClient() {
+  var r = rosterLoad_(true);
+  return { members: r.active.map(function (m) { return { id: "s" + m.pin, nm: m.name, pin: m.pin, sh: m.sh, email: m.email }; }),
+    retired: r.all.filter(function (m) { return m.status !== "稼働"; }).map(function (m) { return { pin: m.pin, nm: m.name }; }),
+    updatedAt: new Date().toISOString() };
 }

@@ -191,11 +191,10 @@ var LOGO="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAKAAAACgCAIAAAAErfB6AAA3
 })();
 
 var STAFF=[
-  {id:"s091",nm:"柏木幸代",pin:"091",sh:"柏木"},
-  {id:"s098",nm:"竹之内優子",pin:"098",sh:"竹之内"},
   {id:"s101",nm:"藤田直美",pin:"101",sh:"藤田"},
-  {id:"s105",nm:"小澤幸枝",pin:"105",sh:"小澤"},
-  {id:"s108",nm:"榮智子",pin:"108",sh:"榮"}
+  {id:"s110",nm:"田中久美子",pin:"110",sh:"田中"},
+  {id:"s112",nm:"中村花林",pin:"112",sh:"中村"},
+  {id:"s114",nm:"片山佳代",pin:"114",sh:"片山"}
 ];
 
 /* v19: 5ステップ式 川嶋メソッド */
@@ -804,7 +803,6 @@ var extEditPin="";        /* 設定編集中のPIN ("" =閉じている) */
 var extForm={};           /* 編集中フォーム値 */
 var extReports=null;      /* 同期結果レポート */
 function fetchExtConfig(){
-  try{checkForNewBuild(true)}catch(e){}
   if(!GAS||!navigator.onLine){flash("⚠️ オンライン接続が必要です");return}
   extCfgLoading=true;render();
   directGasPost({type:"ext_config_get"},60000)
@@ -1714,28 +1712,101 @@ function runExtEveryone(){
   flash("🔁 全員分を実行しています…");
   directGasPost({type:"ext_run_everyone"},540000)
     .then(function(res){
-      if(res&&res.handled===true&&res.result){
+      if(res&&res.status==="ok"){
         extEveryone=res.result;vib([40,30,40]);
         flash("✅ 取込"+extEveryone.imported+"件／反映"+extEveryone.written+"件");
-        fetchExtConfig();render();
-        return;
-      }
-      /* v98: 旧GASは ext_run_everyone に未対応（handledが無い）→ 互換手順へ */
-      flash("ℹ️ サーバーが旧版のため、互換手順（設定済み全員を順に実行）に切り替えます…");
-      return runExtAll(null);
+        fetchExtConfig();
+      }else flash("⚠️ 失敗: "+((res&&res.message)||"不明"));
+      render();
     })
-    .catch(function(err){
-      if(isStaleGasError(err&&err.message)){
-        flash("ℹ️ サーバーが旧版のため、互換手順に切り替えます…");
-        return runExtAll(null);
-      }
-      flash("⚠️ 失敗: "+err.message);render();
-    });
+    .catch(function(err){flash("⚠️ 失敗: "+err.message);render()});
 }
+/* ═══ v99: 名簿変更の完全反映 ＋ KPIの経営システム連携 ═══ */
+var rosterClean=null,rosterInit=null,kpiPush=null,kpiAlerts=null,rosterBusy=false;
+function runRosterCleanup(dry){
+  if(!GAS||!navigator.onLine){flash("⚠️ オンライン接続が必要です");return}
+  if(!dry&&!confirm("退職した方（現在の名簿にない方）の設定を片付けます。\n・連携設定／録音設定／KPI目標から削除\n・個人シートは「旧_」を付けて残します（履歴は消えません）\n\nよろしいですか？"))return;
+  rosterBusy=true;render();
+  flash(dry?"🔎 片付け対象を確認しています…":"🧹 片付けています…");
+  directGasPost({type:"roster_cleanup",dryRun:!!dry},180000)
+    .then(function(res){
+      rosterBusy=false;
+      if(res&&res.status==="ok"){rosterClean=res.result;vib([40,30,40]);
+        flash(dry?("🔎 対象 PIN "+(res.result.stalePins.join("・")||"なし")):"✅ 片付けました");}
+      else flash("⚠️ 失敗: "+((res&&res.message)||"不明"));
+      render();
+    }).catch(function(err){rosterBusy=false;flash("⚠️ 失敗: "+err.message);render()});
+}
+function runRosterInit(){
+  if(!GAS||!navigator.onLine){flash("⚠️ オンライン接続が必要です");return}
+  rosterBusy=true;render();
+  flash("🆕 新メンバーの初期設定をしています…（1分ほど）");
+  directGasPost({type:"roster_init_new"},300000)
+    .then(function(res){
+      rosterBusy=false;
+      if(res&&res.status==="ok"){rosterInit=res.result;vib([40,30,40]);flash("✅ "+res.result.members.length+"名の初期設定が完了");}
+      else flash("⚠️ 失敗: "+((res&&res.message)||"不明"));
+      render();
+    }).catch(function(err){rosterBusy=false;flash("⚠️ 失敗: "+err.message);render()});
+}
+function runKpiPush(){
+  if(!GAS||!navigator.onLine){flash("⚠️ オンライン接続が必要です");return}
+  flash("📤 KPIを経営管理システムへ書き込んでいます…");
+  directGasPost({type:"kanri_push_kpi",days:kpiDays},180000)
+    .then(function(res){
+      if(res&&res.status==="ok"){kpiPush=res.result;vib([40,30,40]);flash("✅ "+res.result.rows+"名分を「"+res.result.sheet+"」へ反映");}
+      else{kpiPush={ok:false,message:(res&&res.message)||"失敗"};flash("⚠️ "+kpiPush.message)}
+      render();
+    }).catch(function(err){flash("⚠️ 失敗: "+err.message)});
+}
+function fetchKpiAlerts(){
+  directGasPost({type:"kpi_alerts",days:14},90000)
+    .then(function(res){if(res&&res.status==="ok"){kpiAlerts=res.result;render()}}).catch(function(){});
+}
+/* ═══ v98: アポインター別KPI ＋ 経営システムの名簿同期 ═══ */
+var kpiData=null,kpiBusy=false,kpiEdit=null,kpiDays=30,kpiMine=null,masterSyncRes=null;
+function fetchKpi(pin){
+  if(!GAS||!navigator.onLine){flash("⚠️ オンライン接続が必要です");return}
+  kpiBusy=true;render();
+  directGasPost({type:"kpi_summary",pin:pin||"",days:kpiDays},120000)
+    .then(function(res){
+      kpiBusy=false;
+      if(res&&res.status==="ok"){
+        if(pin){kpiMine=res.result.members[0]||null}else{kpiData=res.result}
+        vib(30);
+      }else flash("⚠️ 失敗: "+((res&&res.message)||"不明"));
+      render();
+    })
+    .catch(function(err){kpiBusy=false;flash("⚠️ 失敗: "+err.message);render()});
+}
+function saveKpiTarget(pin){
+  var g=function(id){var el=document.getElementById(id);return el?Number(el.value)||0:0};
+  var t={calls:g("kt_calls"),connRate:g("kt_conn"),apoRate:g("kt_apo"),apos:g("kt_apos"),hours:g("kt_hours")};
+  flash("💾 目標を保存しています…");
+  directGasPost({type:"kpi_target_set",pin:pin,target:t},60000)
+    .then(function(res){
+      if(res&&res.status==="ok"){vib([40,30,40]);flash("✅ 目標を保存しました");kpiEdit=null;fetchKpi("")}
+      else flash("⚠️ 失敗");
+    }).catch(function(err){flash("⚠️ 失敗: "+err.message)});
+}
+function runMasterSync(){
+  if(!GAS||!navigator.onLine){flash("⚠️ オンライン接続が必要です");return}
+  flash("🔗 経営システムの名簿を合わせています…");
+  directGasPost({type:"kanri_sync_master"},120000)
+    .then(function(res){
+      if(res&&res.status==="ok"){
+        masterSyncRes=res.result;vib([40,30,40]);
+        flash(res.result.added.length?("✅ "+res.result.added.join("・")+" を名簿に追加しました"):"✅ 名簿はすでに一致しています");
+      }else{masterSyncRes={ok:false,message:(res&&res.message)||"失敗"};flash("⚠️ "+masterSyncRes.message)}
+      render();
+    })
+    .catch(function(err){flash("⚠️ 失敗: "+err.message)});
+}
+function kpiColor(a){return a>=100?"#059669":a>=80?"#1d4ed8":a>=60?"#b45309":"#dc2626"}
 /* ═══ v97: 端末に新しい版が届かないときの強制更新 ═══
    キャッシュとService Workerを消してから読み込み直す。 */
-function forceUpdateApp(silent){
-  if(!silent&&!confirm("アプリを最新の状態に更新します。\n（保存済みのデータは消えません）\n\nよろしいですか？"))return;
+function forceUpdateApp(){
+  if(!confirm("アプリを最新の状態に更新します。\n（保存済みのデータは消えません）\n\nよろしいですか？"))return;
   flash("🔄 更新しています…");
   var jobs=[];
   try{
@@ -1764,43 +1835,6 @@ function forceUpdateApp(silent){
     },400);
   });
 }
-/* ═══ v99: 配信済みの新しい版を自動検知して知らせる（配達保証） ═══
-   GitHub Pages は max-age=600（10分）でキャッシュされるため、コミット済みでも
-   端末には旧版が表示され続けることがある。そこで sw.js を「?rev=時刻」付きの
-   no-store で直接取得して VERSION を読み、動作中の版より新しければ
-   画面最上部に青い更新バーを常設表示する。押せば forceUpdateApp で入れ替わる。 */
-var buildSkew=null,_buildChkLast=0;
-function checkForNewBuild(force){
-  var now=Date.now();
-  if(!force&&(now-_buildChkLast)<10*60*1000)return Promise.resolve(buildSkew);
-  _buildChkLast=now;
-  if(!navigator.onLine)return Promise.resolve(null);
-  var f;try{f=fetch("sw.js?rev="+now,{cache:"no-store"})}catch(e){return Promise.resolve(null)}
-  return f.then(function(r){return r&&r.ok?r.text():null})
-  .then(function(t){
-    if(!t)return null;
-    var m=String(t).match(/VERSION\s*=\s*"v(\d+)/);
-    if(!m)return null;
-    var remote=parseInt(m[1],10);
-    var local=parseInt(String(APP_VERSION).replace(/\D/g,""),10)||0;
-    buildSkew=(remote>local)?{remote:"v"+remote,local:APP_VERSION}:false;
-    renderUpdateBar();
-    return buildSkew;
-  }).catch(function(){return null});
-}
-function renderUpdateBar(){
-  var bar=document.getElementById("updBar");
-  if(!buildSkew){if(bar&&bar.remove)bar.remove();return;}
-  if(!bar){
-    bar=document.createElement("div");bar.id="updBar";
-    bar.style.cssText="position:fixed;top:0;left:0;right:0;z-index:99999;background:#1d4ed8;color:#fff;padding:10px 12px;font-size:12px;font-weight:800;display:flex;gap:10px;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.25)";
-    document.body.appendChild(bar);
-  }
-  bar.innerHTML='🆕 新しい版 '+buildSkew.remote+' が配信されています（今の画面は '+buildSkew.local+'）<button id="updGoBtn" style="padding:6px 14px;border:none;border-radius:8px;background:#fff;color:#1d4ed8;font-weight:800;font-size:12px;font-family:inherit">今すぐ更新</button>';
-  var b=document.getElementById("updGoBtn");
-  if(b)b.onclick=function(){renderUpdateBar._going=true;forceUpdateApp(true)};
-}
-
 /* ═══ v96: 連携設定の「失敗」を最後まで追跡する診断 ═══
    推測ではなく、実際の通信内容と返答をそのまま画面に出す。 */
 var extDiag=null,extDiagBusy=false;
@@ -1838,7 +1872,7 @@ function runExtDiag(pin,url){
   .then(function(){
     return step("② スプレッドシートを開けるか",{type:"ext_sheets",ssId:url},function(r){
       if(!r)return {ok:false,detail:"応答がありません"};
-      if(r.status!=="ok")return {ok:false,detail:(r.message||"開けません")+"（"+gasAccount()+" への編集者共有をご確認ください）"};
+      if(r.status!=="ok")return {ok:false,detail:(r.message||"開けません")+"（hr.ashikaga@gmail.com への編集者共有をご確認ください）"};
       if(!r.sheets||!r.sheets.length)return {ok:false,detail:"タブが1つもありません"};
       return {ok:true,detail:r.sheets.length+"個のタブ： "+r.sheets.map(function(x){return x.name}).join("・")};
     }).then(function(r){
@@ -1855,17 +1889,15 @@ function runExtDiag(pin,url){
     return step("④ 見出しを読めるか",{type:"ext_detect",ssId:url,sheetName:sheetPick.name,gid:sheetPick.gid,headerRow:1},function(r){
       if(!r)return {ok:false,detail:"応答がありません"};
       if(r.status!=="ok")return {ok:false,detail:r.message||"見出しを読めません"};
-      /* v98修正: 列情報は r.detect の下（v96はここを直下から読んで常に×になっていた） */
-      var dd=(r.detect&&typeof r.detect==="object")?r.detect:r;
-      det=dd;
+      det=r;
       var found=[];
-      if(dd.colCompany)found.push("会社名="+dd.colCompany);
-      if(dd.colPhone)found.push("電話番号="+dd.colPhone);
-      if(dd.colPerson)found.push("担当="+dd.colPerson);
-      if(dd.colDate)found.push("日付="+dd.colDate);
-      if(dd.colTime)found.push("時刻="+dd.colTime);
-      if(dd.colResult)found.push("結果="+dd.colResult);
-      if(!dd.colCompany&&!dd.colPhone)return {ok:false,detail:"1行目に「会社名」「電話番号」の見出しがありません"+(dd.header?("／実際の見出し: "+String(dd.header).slice(0,120)):"")};
+      if(r.colCompany)found.push("会社名="+r.colCompany);
+      if(r.colPhone)found.push("電話番号="+r.colPhone);
+      if(r.colPerson)found.push("担当="+r.colPerson);
+      if(r.colDate)found.push("日付="+r.colDate);
+      if(r.colTime)found.push("時刻="+r.colTime);
+      if(r.colResult)found.push("結果="+r.colResult);
+      if(!r.colCompany&&!r.colPhone)return {ok:false,detail:"1行目に「会社名」「電話番号」の見出しがありません"+(r.header?("／実際の見出し: "+String(r.header).slice(0,120)):"")};
       return {ok:true,detail:found.join("　")};
     });
   })
@@ -1905,25 +1937,16 @@ function runExtDiag(pin,url){
     render();
   });
 }
-/* v98: 共有先として案内するアカウント（GAS v98のpingが返すaccountを優先） */
-function gasAccount(){return (gasInfo&&gasInfo.account)||"hr.ashikaga@gmail.com"}
-/* v98: 「J is not defined」＝v95〜v97のGASに残る既知不具合の署名 */
-function isStaleGasError(msg){return String(msg||"").indexOf("J is not defined")>=0}
 /* v95: GAS側が新しい機能に対応しているかを確かめる */
 var gasInfo=null;
 function checkGas(){
   return directGasPost({type:"ping"},40000)
     .then(function(res){
-      if(res&&res.handled===true&&res.gasVersion){ gasInfo={ok:true,version:res.gasVersion,features:res.features||[],account:res.account||""}; }
+      if(res&&res.handled===true&&res.gasVersion){ gasInfo={ok:true,version:res.gasVersion,features:res.features||[]}; }
       else { gasInfo={ok:false,version:(res&&res.gasVersion)||"不明"}; }
       return gasInfo;
     })
-    .catch(function(err){
-      /* v98: v95〜v97のGASは ping 自体が「J is not defined」で落ちる。これで版を特定できる */
-      if(isStaleGasError(err&&err.message)){ gasInfo={ok:false,version:"v95〜v97（要デプロイ）",stale:true}; }
-      else { gasInfo={ok:false,version:"確認できません"}; }
-      return gasInfo;
-    });
+    .catch(function(){ gasInfo={ok:false,version:"確認できません"}; return gasInfo; });
 }
 function gasOutdatedMessage(){
   return "GAS（サーバー側）が古いため、この操作に対応していません。\n\n"+
@@ -1950,121 +1973,76 @@ function extLegacySet(pin,url,nm){
       return directGasPost({type:"ext_detect",ssId:url,sheetName:pick.name,gid:pick.gid,headerRow:1},90000)
         .then(function(r2){
           if(!r2||r2.status!=="ok")throw new Error((r2&&r2.message)||"見出しを読めません");
-          /* v98修正: ext_detect の列情報は r2.detect の下に入る（v94〜v97はここを
-             直下から読んでいたため、必ず「見出しが見つかりません」になっていた） */
-          var d3=(r2.detect&&typeof r2.detect==="object")?r2.detect:r2;
-          if(!d3.colCompany&&!d3.colPhone)throw new Error("見出しに「会社名」「電話番号」が見つかりません"+(d3.header?("／実際の見出し: "+String(d3.header).slice(0,120)):""));
+          if(!r2.colCompany&&!r2.colPhone)throw new Error("見出しに「会社名」「電話番号」が見つかりません");
           return directGasPost({type:"ext_config_set",pin:pin,ssId:url,sheetName:pick.name,gid:pick.gid,
-            headerRow:1,colCompany:d3.colCompany,colPhone:d3.colPhone,colPerson:d3.colPerson,
-            colAddress:d3.colAddress,colName:d3.colName,colStep:d3.colStep,colDate:d3.colDate,
-            colTime:d3.colTime,colResult:d3.colResult,colMemo:d3.colMemo,
+            headerRow:1,colCompany:r2.colCompany,colPhone:r2.colPhone,colPerson:r2.colPerson,
+            colAddress:r2.colAddress,colName:r2.colName,colStep:r2.colStep,colDate:r2.colDate,
+            colTime:r2.colTime,colResult:r2.colResult,colMemo:r2.colMemo,
             dateFmt:"yyyy/MM/dd",resultMapText:"",overwrite:false,verify:true,enabled:true},90000)
             .then(function(r3){
               if(!r3||r3.status!=="ok")throw new Error((r3&&r3.message)||"保存できません");
-              var d4=(r2.detect&&typeof r2.detect==="object")?r2.detect:r2;
               return {ok:true,sheetName:pick.name,
-                detail:"会社名="+(d4.colCompany||"?")+" 電話="+(d4.colPhone||"?")};
+                detail:"会社名="+(r2.colCompany||"?")+" 電話="+(r2.colPhone||"?")};
             });
         });
     });
 }
-/* ═══ v98: 行の「設定」ボタン ═══
-   第一経路: ext_set_and_import（GAS v98）＝設定→検証→取込を往復1回で実行。
-   第二経路: 旧GAS(v95〜v97)なら自動で旧手順（タブ一覧→列検出→保存→取込）に切替。
-             ※旧GASの既知不具合「J is not defined」は ping/一括系のみで、
-               旧手順が使う ext_sheets / ext_detect / ext_config_set / ext_import は無傷。
-   第三経路: それでも失敗したら理由別の案内＋1手ずつの診断を自動起動。 */
-var extRowMsg={};   /* pin → 行の下に出す直近の実行結果 */
-function extRowNote(pin,ok,msg){extRowMsg[pin]={ok:!!ok,msg:String(msg||"")}}
-function runExtQuickSet(pin,thenSync){
-  if(!GAS||!navigator.onLine){flash("⚠️ オンライン接続が必要です");return Promise.reject(new Error("オフライン"))}
+/* v94: その場で1名分だけ設定する（一覧の行から直接） */
+function runExtQuickSet(pin){
+  if(!GAS||!navigator.onLine){flash("⚠️ オンライン接続が必要です");return}
   var el=document.getElementById("exq_"+pin);
   var url=el?el.value.trim():"";
-  if(!url){flash("⚠️ URLを貼ってください");if(el)try{el.focus()}catch(e){}return Promise.reject(new Error("URL未入力"))}
+  if(!url){flash("⚠️ URLを貼ってください");return}
   var nm="";(extCfgData||[]).forEach(function(c){if(c.pin===pin)nm=c.name});
-  flash("⚙️ "+nm+" さん：設定 → 取込 を実行しています…");
-  extRowNote(pin,true,"⏳ 実行中…");render();
-  return directGasPost({type:"ext_set_and_import",pin:pin,url:url,headerRow:1},240000)
+  flash("⚙️ "+nm+" さんの設定を確認しています…");
+  directGasPost({type:"ext_bulk_configure",targets:[{pin:pin,url:url}],headerRow:1},240000)
     .then(function(res){
-      if(res&&res.handled===true){
-        extForm5Res={ok:res.status==="ok"?1:0,total:1,steps:res.steps||[],
-          members:[{pin:pin,name:nm,ok:res.status==="ok",sheetName:res.member&&res.member.sheetName,
-            message:res.message,detail:res.member&&res.member.detail}]};
-        if(res.status!=="ok")throw new Error(res.message||"設定できません");
-        vib([40,30,40]);
-        extRowNote(pin,true,"✅ 設定＋取込 "+(res.imported||0)+"件（"+new Date().toLocaleTimeString("ja-JP",{hour:"2-digit",minute:"2-digit"})+"）");
-        flash("✅ "+nm+" さん：設定＋取込 "+(res.imported||0)+"件 完了");
-        fetchExtConfig();
-        if(thenSync)return runExtSync(pin,false);
-        return res;
+      /* GASが対応していない（古い）場合は、代替手順で設定する */
+      if(!res||res.handled!==true||!res.result){
+        return extLegacySet(pin,url,nm).then(function(r){
+          vib([40,30,40]);
+          flash("✅ "+nm+" さん設定完了（タブ「"+r.sheetName+"」）");
+          extForm5Res={ok:1,total:1,members:[{pin:pin,name:nm,ok:true,sheetName:r.sheetName,detail:r.detail}]};
+          fetchExtConfig();
+        });
       }
-      /* handledが無い＝GASが旧版 → 旧手順に切替 */
-      return quickSetLegacyFlow(pin,url,nm,thenSync);
-    },function(err){
-      /* 通信不達・旧GASのJ不具合など、第一経路の失敗はすべて旧手順で再試行 */
-      if(isStaleGasError(err&&err.message)){gasInfo={ok:false,version:"v95〜v97（要デプロイ）",stale:true}}
-      return quickSetLegacyFlow(pin,url,nm,thenSync);
+      var m=res.result.members&&res.result.members[0];
+      if(!m){ throw new Error("結果を受け取れませんでした"); }
+      extForm5Res={ok:m.ok?1:0,total:1,members:[m]};
+      if(m.ok){ vib([40,30,40]); flash("✅ "+nm+" さん設定完了（タブ「"+(m.sheetName||"")+"」）"); fetchExtConfig(); }
+      else { vib([100,60,100]); flash("⚠️ "+nm+" さん："+(m.message||"設定できません")); render(); }
     })
     .catch(function(err){
+      /* 代替手順でも駄目なら、原因を具体的に伝える */
       var msg=String((err&&err.message)||err||"不明");
       vib([100,60,100]);
-      extRowNote(pin,false,"⚠️ "+msg);
       extForm5Res={ok:0,total:1,members:[{pin:pin,name:nm,ok:false,message:msg}]};
       flash("⚠️ "+nm+" さん："+msg);
       render();
-      if(msg.indexOf("開けません")>=0||msg.indexOf("共有")>=0||msg.indexOf("権限")>=0){
+      if(msg.indexOf("開けません")>=0||msg.indexOf("共有")>=0){
         setTimeout(function(){
           alert(nm+" さんのスプレッドシートを開けませんでした。\n\n"+
             "【確認してください】\n"+
-            "① そのスプレッドシートを "+gasAccount()+" に「編集者」で共有\n"+
+            "① そのスプレッドシートを hr.ashikaga@gmail.com に「編集者」で共有\n"+
             "② URLが正しいか（/spreadsheets/d/... の形）\n"+
             "③ ゴミ箱に入っていないか");
         },400);
-      }else{
-        /* 原因が読めない失敗は、1手ずつの診断を自動で起動して段を特定する */
-        setTimeout(function(){runExtDiag(pin,url)},300);
       }
-      throw err;
     });
-}
-/* v98: 旧GAS(v95〜v97)でも確実に通る順路（タブ一覧→列検出→保存→取込） */
-function quickSetLegacyFlow(pin,url,nm,thenSync){
-  return extLegacySet(pin,url,nm).then(function(r){
-    flash("✅ "+nm+" さん設定完了（タブ「"+r.sheetName+"」）→ 続けて取込します…");
-    extForm5Res={ok:1,total:1,members:[{pin:pin,name:nm,ok:true,sheetName:r.sheetName,detail:r.detail}]};
-    return directGasPost({type:"ext_import",pin:pin},180000).then(function(r2){
-      if(!r2||r2.status!=="ok")throw new Error((r2&&r2.message)||"取込できません");
-      var im=0;((r2&&r2.reports)||[]).forEach(function(x){im+=(x.imported||0)});
-      var bad=((r2&&r2.reports)||[]).filter(function(x){return x&&x.ok===false})[0];
-      if(bad&&!im)throw new Error(bad.message||"取込できません");
-      vib([40,30,40]);
-      extRowNote(pin,true,"✅ 設定＋取込 "+im+"件（旧GAS互換の手順で完了）");
-      flash("✅ "+nm+" さん：設定＋取込 "+im+"件 完了");
-      fetchExtConfig();
-      if(thenSync)return runExtSync(pin,false);
-      return r2;
-    });
-  });
 }
 /* v94: 未設定の方の「取込」「反映」を押したとき、その場で設定へ誘導する */
 function guideToSetup(pin,what){
   var nm="";
   (extCfgData||[]).forEach(function(c){if(c.pin===pin)nm=c.name});
   vib([60,40,60]);
-  /* v98: 目の前の行にURL欄があるので、そこへ誘導する（別画面を開かない） */
-  extRowNote(pin,false,"URLが未設定のため"+what+"できません。左の欄にスプレッドシートURLを貼って「設定」を押してください（設定後は取込まで自動で行います）");
-  render();
-  setTimeout(function(){
-    var el=document.getElementById("exq_"+pin);
-    if(el){ try{ el.focus(); el.scrollIntoView({block:"center"}); }catch(e){} flash("👇 "+nm+" さんの欄にURLを貼って「設定」を押してください"); return; }
-    /* 行内の欄が無いときだけ、まとめて登録フォームへ */
+  if(confirm(nm+" さんはスプレッドシートが未設定のため、"+what+"できません。\n\n今すぐ設定しますか？\n（この方のスプレッドシートURLを貼るだけです）")){
     openExtForm5();
     setTimeout(function(){
-      var el2=document.getElementById("ex5_"+pin);
-      if(el2){ try{ el2.focus(); el2.scrollIntoView({block:"center"}); }catch(e){} }
+      var el=document.getElementById("ex5_"+pin);
+      if(el){ try{ el.focus(); el.scrollIntoView({block:"center"}); }catch(e){} }
       flash("👇 "+nm+" さんの欄にURLを貼ってください");
-    },250);
-  },200);
+    },300);
+  }
 }
 function runExtImport(pin){
   if(!GAS||!navigator.onLine){flash("⚠️ オンライン接続が必要です");return}
@@ -2165,7 +2143,7 @@ function loadUser(id){
   cbs=ld("cb-"+id)||[];
   listStamp=ld("listStamp-"+id)||0;   /* v58 */
   restorePos(true);   /* v53: 続きから再開 */
-  setTimeout(function(){try{fetchRecSelf();fetchRecUploadStatus();fetchRecPending()}catch(e){}},1800);   /* v65/v82/v87 */
+  setTimeout(function(){try{fetchRecSelf();fetchRecUploadStatus();fetchRecPending();fetchKpi(U.pin)}catch(e){}},1800);   /* v65/v82/v87/v98 */
   setTimeout(function(){try{pickupSharedRecordings()}catch(e){}},2400);   /* v82: 共有からの受け取り */
   if(keepAwake)setTimeout(function(){try{acquireWake()}catch(e){}},300);
   /* v26: オートコール設定と発信件数を復元 */
@@ -6231,14 +6209,6 @@ if(V==="admin"){
   h+='<div style="font-size:10px;color:#94a3b8;margin-bottom:10px">各アポインターの「元のスプレッドシート」に、架電結果の <b>日付・時刻・名前・結果</b> を会社名（または電話番号）で照合して書き込みます。</div>';
   h+='<button id="exFetch" style="width:100%;padding:11px;border:1px solid #c4b5fd;border-radius:10px;background:#f5f3ff;color:#6d28d9;font-weight:800;font-size:12px;margin-bottom:8px">'+(extCfgLoading?"⏳ 取得中...":"🔄 連携設定を表示")+'</button>';
   if(extCfgData!==null){
-    /* v98: サーバー(GAS)の版と共有先アカウントを常に表示（原因切り分けの起点） */
-    if(gasInfo){
-      if(gasInfo.ok){
-        h+='<div style="font-size:10px;font-weight:800;color:#059669;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:7px;margin-bottom:8px">✅ アプリ '+APP_VERSION+' ／ サーバー(GAS) '+htmlEsc(gasInfo.version)+'　共有先: '+htmlEsc(gasAccount())+'</div>';
-      }else{
-        h+='<div style="font-size:10px;font-weight:800;color:#dc2626;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:8px;padding:8px;margin-bottom:8px;line-height:1.7">⚠️ アプリ '+APP_VERSION+' ／ サーバー(GAS)が古い版（'+htmlEsc(gasInfo.version)+'）です。<br><span style="font-weight:700;color:#7f1d1d">設定・取込・反映は<b>互換手順で動きます</b>が、gas-code.txt を貼り付けて「デプロイを管理 → ✏️ → 新しいバージョン → デプロイ」を行うと、より速く・確実になります。</span></div>';
-      }
-    }
     if(extEditPin){
       var em=null;(extCfgData||[]).forEach(function(x){if(x.pin===extEditPin)em=x});
       h+='<div style="border:1.5px solid #8b5cf6;border-radius:10px;padding:12px;margin-bottom:8px;background:#faf5ff">';
@@ -6296,7 +6266,7 @@ if(V==="admin"){
       h+='<button id="exCancel" style="padding:11px;border:1px solid #cbd5e1;border-radius:9px;background:#f8fafc;color:#64748b;font-weight:700;font-size:12px">キャンセル</button>';
       h+='</div>';
       h+='<button id="exCopy" style="width:100%;padding:9px;border:1px solid #c4b5fd;border-radius:8px;background:#faf5ff;color:#6d28d9;font-weight:700;font-size:11px;margin-top:6px">📋 この設定を他のメンバーへコピー</button>';
-      h+='<div style="font-size:9px;color:#94a3b8;margin-top:8px;line-height:1.5">※ 元スプレッドシートは、GASの実行アカウント（'+htmlEsc(gasAccount())+'）に<b>編集権限で共有</b>してください。</div>';
+      h+='<div style="font-size:9px;color:#94a3b8;margin-top:8px;line-height:1.5">※ 元スプレッドシートは、GASの実行アカウント（hr.ashikaga@gmail.com）に<b>編集権限で共有</b>してください。</div>';
       h+='</div>';
     }else{
       h+='<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:8px">';
@@ -6311,16 +6281,11 @@ if(V==="admin"){
         h+=' <button class="exImp" data-pin="'+c.pin+'" data-set="'+(c.set?"1":"0")+'" style="font-size:10px;color:'+(c.set?"#1d4ed8":"#94a3b8")+';background:'+(c.set?"#eff6ff":"#f8fafc")+';border:1px solid '+(c.set?"#bfdbfe":"#e2e8f0")+';border-radius:6px;padding:4px 8px;font-weight:700">取込</button>';
         h+=' <button class="exOne" data-pin="'+c.pin+'" data-set="'+(c.set?"1":"0")+'" style="font-size:10px;color:'+(c.set?"#059669":"#94a3b8")+';background:'+(c.set?"#ecfdf5":"#f8fafc")+';border:1px solid '+(c.set?"#6ee7b7":"#e2e8f0")+';border-radius:6px;padding:4px 8px;font-weight:700">反映</button>';
         h+='</td></tr>';
-        /* v98: 直近の実行結果を行の下に残す（成功=緑・失敗=赤） */
-        var rm=extRowMsg[c.pin];
-        if(rm&&rm.msg){
-          h+='<tr><td colspan="4" style="padding:0 6px 5px"><div style="font-size:9.5px;font-weight:700;color:'+(rm.ok?"#059669":"#dc2626")+';line-height:1.6;word-break:break-all">'+htmlEsc(rm.msg)+'</div></td></tr>';
-        }
         /* v94: 未設定の方は、その行の下にURL入力欄を出して即設定できるようにする */
         if(!c.set){
           h+='<tr><td colspan="4" style="padding:0 6px 7px">';
           h+='<div style="display:flex;gap:5px;align-items:center;background:#fffbeb;border:1px solid #fcd34d;border-radius:7px;padding:6px">';
-          h+='<input id="exq_'+c.pin+'" type="text" placeholder="'+htmlEsc(c.name)+' さんのURLを貼る→設定で取込まで自動" style="flex:1;padding:7px;border:1px solid #fcd34d;border-radius:6px;font-size:10px;box-sizing:border-box">';
+          h+='<input id="exq_'+c.pin+'" type="text" placeholder="'+htmlEsc(c.name)+' さんのスプレッドシートURLを貼る" style="flex:1;padding:7px;border:1px solid #fcd34d;border-radius:6px;font-size:10px;box-sizing:border-box">';
           h+='<button class="exQuick" data-pin="'+c.pin+'" style="padding:7px 11px;border:none;border-radius:6px;background:#f59e0b;color:#fff;font-size:10px;font-weight:800;white-space:nowrap;font-family:inherit">設定</button>';
           h+='</div></td></tr>';
         }
@@ -6348,7 +6313,7 @@ if(V==="admin"){
           h+='<div style="font-size:10.5px;font-weight:800;color:#dc2626;margin-bottom:3px">👉 ここを直してください</div>';
           h+='<div style="font-size:10px;color:#7f1d1d;line-height:1.7">';
           if(ngStep.label.indexOf("①")===0)h+='GASのURLが違うか、デプロイされていません。Apps Scriptで「デプロイを管理」→ 新しいバージョン → デプロイしてください。';
-          else if(ngStep.label.indexOf("②")===0)h+='そのスプレッドシートを <b>'+htmlEsc(gasAccount())+'</b> に<b>「編集者」で共有</b>してください。URLが正しいかもご確認ください。';
+          else if(ngStep.label.indexOf("②")===0)h+='そのスプレッドシートを <b>hr.ashikaga@gmail.com</b> に<b>「編集者」で共有</b>してください。URLが正しいかもご確認ください。';
           else if(ngStep.label.indexOf("④")===0)h+='そのタブの<b>1行目</b>に「<b>会社名</b>」「<b>電話番号</b>」という見出しが必要です。';
           else if(ngStep.label.indexOf("⑤")===0||ngStep.label.indexOf("⑥")===0)h+='GAS（サーバー側）が古い可能性があります。<b>gas-code.txt を貼り付けて、新しいバージョンでデプロイ</b>してください。';
           else h+='上の × の内容をご確認ください。';
@@ -6916,6 +6881,70 @@ if(V==="admin"){
     h+='</tbody></table></div>';
   }
   h+='</div>';
+  /* v98: アポインター別KPI管理 */
+  h+='<div style="background:#fff;border-radius:14px;padding:14px;border:2px solid #7c3aed;margin-bottom:14px">';
+  h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">';
+  h+='<span style="font-size:13px;font-weight:800;color:#6d28d9">📈 アポインター別 KPI</span>';
+  h+='<span style="font-size:10px;color:#94a3b8">直近'+kpiDays+'日</span></div>';
+  h+='<div style="font-size:10px;color:#94a3b8;margin-bottom:8px;line-height:1.6">目標に対する達成率を、担当者ごとに5指標で見ます。目標は担当者ごとに変えられます。</div>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:8px">';
+  [[7,"7日"],[30,"30日"],[90,"90日"]].forEach(function(x){
+    var on=(kpiDays===x[0]);
+    h+='<button class="kpiDays" data-d="'+x[0]+'" style="padding:7px;border:1.5px solid '+(on?"#7c3aed":"#e2e8f0")+';border-radius:8px;background:'+(on?"#f5f3ff":"#fff")+';color:'+(on?"#6d28d9":"#64748b")+';font-weight:800;font-size:11px;font-family:inherit">'+x[1]+'</button>';
+  });
+  h+='</div>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">';
+  h+='<button id="kpiFetch" style="padding:11px;border:none;border-radius:10px;background:#7c3aed;color:#fff;font-weight:800;font-size:12px">'+(kpiBusy?"⏳ 集計中...":"📈 KPIを集計")+'</button>';
+  h+='<button id="kpiPush" style="padding:11px;border:1.5px solid #7c3aed;border-radius:10px;background:#fff;color:#6d28d9;font-weight:800;font-size:12px">📤 経営システムへ反映</button>';
+  h+='</div>';
+  if(kpiPush){
+    h+='<div style="font-size:10px;padding:7px 9px;border-radius:8px;margin-bottom:8px;background:'+(kpiPush.ok?"#f0fdf4":"#fef2f2")+';border:1px solid '+(kpiPush.ok?"#86efac":"#fca5a5")+';color:'+(kpiPush.ok?"#15803d":"#dc2626")+';font-weight:700">'+(kpiPush.ok?("✅ 「"+htmlEsc(kpiPush.sheet)+"」に"+kpiPush.rows+"名分を書き込みました"+(kpiPush.synced&&kpiPush.synced.length?("／①設定の目標も更新（"+htmlEsc(kpiPush.synced.join("・"))+"）"):"")):("⚠️ "+htmlEsc(kpiPush.message||"")))+'</div>';
+  }
+  if(kpiAlerts&&kpiAlerts.length){
+    h+='<div style="border:1.5px solid #dc2626;border-radius:9px;background:#fef2f2;padding:9px;margin-bottom:8px">';
+    h+='<div style="font-size:11px;font-weight:800;color:#dc2626;margin-bottom:3px">⚠️ 3日連続で架電が目標の6割未満</div>';
+    kpiAlerts.forEach(function(a){h+='<div style="font-size:10px;color:#7f1d1d">・'+htmlEsc(a.name)+'：平均'+a.avgCalls+'件／目標'+a.target+'件</div>'});
+    h+='<div style="font-size:9px;color:#94a3b8;margin-top:3px">夜間処理のメールでも通知されます</div></div>';
+  }else if(kpiAlerts){
+    h+='<div style="font-size:10px;color:#059669;font-weight:700;margin-bottom:8px">✅ 低調が続いている担当者はいません</div>';
+  }
+  if(kpiData&&kpiData.members){
+    kpiData.members.forEach(function(m){
+      var ev=m.eval,gc=kpiColor(ev.overall);
+      h+='<div style="border:1.5px solid '+gc+';border-radius:10px;padding:9px;margin-bottom:7px;background:#fff">';
+      h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">';
+      h+='<span style="font-size:12px;font-weight:800;color:#334155">'+htmlEsc(m.name)+'</span>';
+      h+='<span style="font-size:11px;font-weight:800;color:'+gc+'">'+(ev.grade!=="—"?("総合 "+ev.overall+"%　"+ev.grade):"実績なし")+'</span></div>';
+      if(ev.actual.days){
+        h+='<table style="width:100%;border-collapse:collapse;font-size:9.5px"><thead><tr style="background:#f8fafc"><th style="padding:3px;text-align:left;color:#64748b">指標</th><th style="padding:3px;color:#64748b">実績</th><th style="padding:3px;color:#64748b">目標</th><th style="padding:3px;color:#64748b">達成</th></tr></thead><tbody>';
+        ev.items.forEach(function(it){
+          h+='<tr style="border-top:1px solid #f1f5f9"><td style="padding:3px;color:#334155">'+htmlEsc(it.label)+'</td>';
+          h+='<td style="padding:3px;text-align:center;font-weight:700">'+it.actual+it.unit+'</td>';
+          h+='<td style="padding:3px;text-align:center;color:#64748b">'+it.goal+it.unit+'</td>';
+          h+='<td style="padding:3px;text-align:center;font-weight:800;color:'+kpiColor(it.ach)+'">'+it.ach+'%</td></tr>';
+        });
+        h+='</tbody></table>';
+        h+='<div style="font-size:9px;color:#64748b;margin-top:4px">稼働'+ev.actual.days+'日／架電'+ev.actual.total.calls+'件／アポ'+ev.actual.total.appos+'件／架電'+ev.actual.callsPerHour+'件/h</div>';
+      }
+      if(kpiEdit===m.pin){
+        h+='<div style="margin-top:7px;padding:8px;border:1px solid #ddd6fe;border-radius:8px;background:#faf5ff">';
+        h+='<div style="font-size:10px;font-weight:800;color:#6d28d9;margin-bottom:5px">目標を編集</div>';
+        h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;font-size:9.5px">';
+        [["kt_calls","1日の架電（件）",m.target.calls],["kt_conn","接続率（%）",m.target.connRate],["kt_apo","アポ率（%）",m.target.apoRate],["kt_apos","1日のアポ（件）",m.target.apos],["kt_hours","1日の実働（h）",m.target.hours]].forEach(function(f){
+          h+='<label style="color:#475569">'+f[1]+'<input id="'+f[0]+'" type="number" step="0.1" value="'+f[2]+'" style="width:100%;padding:5px;border:1px solid #ddd6fe;border-radius:6px;font-size:11px;box-sizing:border-box;margin-top:2px"></label>';
+        });
+        h+='</div>';
+        h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:6px">';
+        h+='<button class="kpiSave" data-pin="'+m.pin+'" style="padding:8px;border:none;border-radius:7px;background:#7c3aed;color:#fff;font-weight:800;font-size:11px;font-family:inherit">保存</button>';
+        h+='<button class="kpiCancel" style="padding:8px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#64748b;font-weight:700;font-size:11px;font-family:inherit">取消</button>';
+        h+='</div></div>';
+      }else{
+        h+='<button class="kpiEditBtn" data-pin="'+m.pin+'" style="margin-top:6px;padding:6px 10px;border:1px solid #ddd6fe;border-radius:7px;background:#fff;color:#6d28d9;font-weight:800;font-size:10px;font-family:inherit">✏️ 目標を変える</button>';
+      }
+      h+='</div>';
+    });
+  }
+  h+='</div>';
   /* v74: 夜間自動処理 */
   h+='<div style="background:#fff;border-radius:14px;padding:14px;border:2px solid #1e293b;margin-bottom:14px">';
   h+='<div style="font-size:13px;font-weight:800;color:#0f172a;margin-bottom:4px">🌙 夜間自動処理（毎晩ここで全部が回ります）</div>';
@@ -6988,6 +7017,35 @@ if(V==="admin"){
     h+='<div style="font-size:8.5px;color:#94a3b8;line-height:1.4;margin-top:2px">'+t[2]+'</div></button>';
   });
   h+='</div>';
+  /* v99: 名簿変更を3手順で完全反映 */
+  h+='<div style="border:2px solid #0f766e;border-radius:10px;padding:10px;margin-bottom:8px;background:#f0fdfa">';
+  h+='<div style="font-size:11px;font-weight:800;color:#0f766e;margin-bottom:4px">👥 名簿変更の反映（4名体制）</div>';
+  h+='<div style="font-size:9.5px;color:#475569;line-height:1.6;margin-bottom:7px">上から順に押してください。すべて完了すると、退職者の設定が消え、新メンバーの準備が整い、経営システムの名簿も一致します。</div>';
+  h+='<button id="rcClean" style="width:100%;padding:10px;border:1px solid #fca5a5;border-radius:9px;background:#fff;color:#dc2626;font-weight:800;font-size:11px;margin-bottom:5px">'+(rosterBusy?"⏳ 処理中...":"🧹 ① 退職者の設定を片付ける")+'</button>';
+  if(rosterClean){
+    h+='<div style="font-size:9.5px;color:#334155;line-height:1.6;padding:6px 8px;background:#fff;border:1px solid #e2e8f0;border-radius:7px;margin-bottom:5px">';
+    h+=(rosterClean.dryRun?"🔎 確認のみ：":"✅ 完了：")+'対象PIN '+htmlEsc(rosterClean.stalePins.join("・")||"なし");
+    var rr=rosterClean.removedRows||{};Object.keys(rr).forEach(function(k){h+='<br>　'+htmlEsc(k)+'：'+rr[k]+'行'});
+    if(rosterClean.archivedSheets&&rosterClean.archivedSheets.length)h+='<br>　シート退避：'+htmlEsc(rosterClean.archivedSheets.join("・"));
+    h+='</div>';
+  }
+  h+='<button id="rcInit" style="width:100%;padding:10px;border:1px solid #6ee7b7;border-radius:9px;background:#fff;color:#047857;font-weight:800;font-size:11px;margin-bottom:5px">'+(rosterBusy?"⏳ 処理中...":"🆕 ② 新メンバーの初期設定（シート・KPI・録音フォルダ）")+'</button>';
+  if(rosterInit&&rosterInit.members){
+    h+='<div style="font-size:9.5px;color:#334155;line-height:1.6;padding:6px 8px;background:#fff;border:1px solid #e2e8f0;border-radius:7px;margin-bottom:5px">';
+    rosterInit.members.forEach(function(m){h+=(m.sheet&&m.kpi&&m.rec?"✓ ":"△ ")+htmlEsc(m.name)+'：シート'+(m.sheet?"○":"×")+' KPI'+(m.kpi?"○":"×")+' 録音'+(m.rec?"○":"×")+(m.shared?"（共有:"+htmlEsc(m.shared)+"）":"")+'<br>'});
+    h+='</div>';
+  }
+  h+='<button id="kwMaster" style="width:100%;padding:10px;border:1px solid #0f766e;border-radius:9px;background:#fff;color:#0f766e;font-weight:800;font-size:11px">🔗 ③ 経営システムの名簿を今の4名に合わせる</button>';
+  h+='</div>';
+  if(masterSyncRes){
+    h+='<div style="border:1px solid '+(masterSyncRes.ok?"#86efac":"#fca5a5")+';border-radius:8px;background:'+(masterSyncRes.ok?"#f0fdf4":"#fef2f2")+';padding:8px;margin-bottom:8px;font-size:10px;line-height:1.6">';
+    if(masterSyncRes.ok){
+      h+='<div style="font-weight:800;color:#15803d">✅ 名簿を確認しました</div>';
+      if(masterSyncRes.added&&masterSyncRes.added.length)h+='<div style="color:#334155">追加：'+htmlEsc(masterSyncRes.added.join("・"))+'</div>';
+      if(masterSyncRes.existing&&masterSyncRes.existing.length)h+='<div style="color:#64748b">登録済み：'+htmlEsc(masterSyncRes.existing.join("・"))+'</div>';
+    }else h+='<div style="font-weight:800;color:#dc2626">'+htmlEsc(masterSyncRes.message||"失敗")+'</div>';
+    h+='</div>';
+  }
   h+='<button id="kwDiag" style="width:100%;padding:11px;border:1.5px solid #dc2626;border-radius:10px;background:#fef2f2;color:#dc2626;font-weight:800;font-size:12px;margin-bottom:8px">'+(kanriDiagBusy?"⏳ 調査中...":"🩺 反映されない原因を調べる")+'</button>';
   if(kanriDiag){
     h+='<div style="border:1.5px solid '+(kanriDiag.ok?"#86efac":"#fca5a5")+';border-radius:10px;background:'+(kanriDiag.ok?"#f0fdf4":"#fef2f2")+';padding:10px;margin-bottom:8px">';
@@ -7432,6 +7490,28 @@ else if(V==="home"&&!isA){
     h+='</div></div>';
   })();
 
+  /* v98: 自分のKPI（目標との差が分かる） */
+  if(kpiMine&&kpiMine.eval){
+    var kev=kpiMine.eval,kc=kpiColor(kev.overall);
+    h+='<div style="background:#fff;border:1.5px solid '+kc+';border-radius:12px;padding:11px;margin-bottom:10px">';
+    h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
+    h+='<span style="font-size:12px;font-weight:800;color:#334155">📈 あなたのKPI（直近'+kpiMine.period+'日）</span>';
+    h+='<span style="font-size:13px;font-weight:800;color:'+kc+'">'+(kev.grade!=="—"?(kev.overall+"%　"+kev.grade):"実績なし")+'</span></div>';
+    if(kev.actual.days){
+      h+='<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px">';
+      kev.items.forEach(function(it){
+        h+='<div style="text-align:center;padding:5px 2px;border-radius:7px;background:#f8fafc">';
+        h+='<div style="font-size:8px;color:#64748b">'+htmlEsc(it.label)+'</div>';
+        h+='<div style="font-size:12px;font-weight:800;color:'+kpiColor(it.ach)+'">'+it.actual+'<span style="font-size:8px">'+it.unit+'</span></div>';
+        h+='<div style="font-size:8px;color:#94a3b8">目標'+it.goal+'</div></div>';
+      });
+      h+='</div>';
+      var weak=kev.items.slice().sort(function(a,b){return a.ach-b.ach})[0];
+      if(weak&&weak.ach<100)h+='<div style="font-size:10px;color:#475569;margin-top:6px;line-height:1.5">💡 いちばん伸ばせるのは<b>「'+htmlEsc(weak.label)+'」</b>（目標'+weak.goal+weak.unit+'に対して'+weak.actual+weak.unit+'）</div>';
+      else if(weak)h+='<div style="font-size:10px;color:#059669;margin-top:6px;font-weight:700">🎉 すべての目標を達成しています</div>';
+    }
+    h+='</div>';
+  }
   /* v82: 録音のアップロード（同期アプリ不要） */
   (function(){
     var upl=recUpStat||{};
@@ -8664,6 +8744,15 @@ Array.prototype.slice.call(document.querySelectorAll(".ngOn")).forEach(function(
 Array.prototype.slice.call(document.querySelectorAll(".kwTpl")).forEach(function(b){
   b.addEventListener("click",function(){kanriTpl=b.getAttribute("data-t");vib(20);render()});
 });
+B("kpiFetch",function(){fetchKpi("");fetchKpiAlerts()});
+B("kpiPush",function(){runKpiPush()});
+B("rcClean",function(){runRosterCleanup(false)});
+B("rcInit",function(){runRosterInit()});
+B("kwMaster",function(){runMasterSync()});
+Array.prototype.slice.call(document.querySelectorAll(".kpiDays")).forEach(function(b){b.addEventListener("click",function(){kpiDays=parseInt(b.getAttribute("data-d"));kpiData=null;render()})});
+Array.prototype.slice.call(document.querySelectorAll(".kpiEditBtn")).forEach(function(b){b.addEventListener("click",function(){kpiEdit=b.getAttribute("data-pin");render()})});
+Array.prototype.slice.call(document.querySelectorAll(".kpiSave")).forEach(function(b){b.addEventListener("click",function(){saveKpiTarget(b.getAttribute("data-pin"))})});
+Array.prototype.slice.call(document.querySelectorAll(".kpiCancel")).forEach(function(b){b.addEventListener("click",function(){kpiEdit=null;render()})});
 B("gasCheck",function(){
   flash("🩺 サーバー側を確認しています…");
   checkGas().then(function(g){
@@ -9153,7 +9242,7 @@ B("ex5Cancel",function(){extForm5=null;render()});
 B("exAudit",function(){runExtAudit()});
 B("exEveryone",function(){runExtEveryone()});
 Array.prototype.slice.call(document.querySelectorAll(".exQuick")).forEach(function(b){
-  b.addEventListener("click",function(){runExtQuickSet(b.getAttribute("data-pin")).catch(function(){})});
+  b.addEventListener("click",function(){runExtQuickSet(b.getAttribute("data-pin"))});
 });
 B("loginUpd",function(){forceUpdateApp()});
 B("admUpd",function(){forceUpdateApp()});
@@ -9182,12 +9271,7 @@ Array.prototype.slice.call(document.querySelectorAll(".exTrOn")).forEach(functio
 B("exImpAll",function(){if(confirm("元スプレッドシートから各アポインターの架電リストを取り込みます。\n現在のリストは置き換わります。よろしいですか？"))runExtImport(null)});
 Array.prototype.slice.call(document.querySelectorAll(".exImp")).forEach(function(b){b.addEventListener("click",function(){
   var pin=b.getAttribute("data-pin");
-  if(b.getAttribute("data-set")!=="1"){
-    /* v98: 行のURL欄にURLが貼ってあれば、設定→取込まで自動で実行する */
-    var qel=document.getElementById("exq_"+pin);
-    if(qel&&qel.value.trim()){ runExtQuickSet(pin).catch(function(){}); return; }
-    guideToSetup(pin,"取込"); return;
-  }
+  if(b.getAttribute("data-set")!=="1"){ guideToSetup(pin,"取込"); return; }
   if(confirm("この方の架電リストを元シートから取り込みます。現在のリストは置き換わります。"))runExtImport(pin);
 })});
 B("exSave",function(){saveExtConfig()});
@@ -9197,12 +9281,7 @@ B("exRun",function(){if(confirm("全員分の架電結果を元スプレッド�
 Array.prototype.slice.call(document.querySelectorAll(".exEdit")).forEach(function(b){b.addEventListener("click",function(){openExtEdit(b.getAttribute("data-pin"))})});
 Array.prototype.slice.call(document.querySelectorAll(".exOne")).forEach(function(b){b.addEventListener("click",function(){
   var pin=b.getAttribute("data-pin");
-  if(b.getAttribute("data-set")!=="1"){
-    /* v98: URLが貼ってあれば 設定→取込→反映 まで一気に実行する */
-    var qel=document.getElementById("exq_"+pin);
-    if(qel&&qel.value.trim()){ runExtQuickSet(pin,true).catch(function(){}); return; }
-    guideToSetup(pin,"反映"); return;
-  }
+  if(b.getAttribute("data-set")!=="1"){ guideToSetup(pin,"反映"); return; }
   runExtSync(pin,false);
 })});
 B("dgClean",function(){
@@ -9733,12 +9812,6 @@ if("serviceWorker" in navigator){
     }).catch(function(){})
   });
 }
-
-/* v99: 起動1秒後と、アプリに戻ってきたとき（10分に1回まで）に配信版を確認 */
-window.addEventListener("load",function(){setTimeout(function(){checkForNewBuild(true)},1000)});
-document.addEventListener("visibilitychange",function(){
-  if(document.visibilityState==="visible")checkForNewBuild(false);
-});
 
 /* v54: 前回のセッションが生きていれば、入り直さずに続きから再開する */
 (function(){

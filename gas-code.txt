@@ -35,7 +35,7 @@
 var SHEET_ID = "1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM";
 var ADMIN_SHEET_ID = "1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ";  // v14: 管理者用 退勤レポート用
 // v95: この GAS がどの版で、どの機能に対応しているか
-var GAS_VERSION = "v101";
+var GAS_VERSION = "v103";
 var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
   "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run"];
 var PIN_MAP = {"091":"柏木", "101":"藤田", "110":"田中", "112":"中村", "114":"片山"};
@@ -66,6 +66,7 @@ var APPO_MAIL_TO = "a.kusunoki@sukimagroup.jp";
 // アポインターがログインした時に呼ばれる（架電リスト取得）
 function doGet(e) {
   try { rosterApply_(false); } catch (eR) {}   // v100
+  try { ensureAllMemberSheets_(false); } catch (eS) {}   // v102
   try {
     // ping 接続テスト (v15: ブラウザから直接アクセスしたとき用)
     if (!e || !e.parameter || (!e.parameter.pin && !e.parameter.action)) {
@@ -194,6 +195,7 @@ function doGet(e) {
 // 勤怠 / 架電結果 / 再架電 / アポ詳細 / シフト申請 / 退勤レポート の書き込み
 function doPost(e) {
   try { rosterApply_(false); } catch (eR) {}   // v100: 名簿はシートから
+  try { ensureAllMemberSheets_(false); } catch (eS) {}   // v102: 全員のリストタブを保証
   try {
     // 防御的パース: postData がない場合は parameter からも取得を試みる
     var raw = "";
@@ -5141,6 +5143,9 @@ function setupRecording() {
 function recHandle_(d) {
   function J(o){return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON)}
   try {
+    if (d.type === "list_status") {
+      return J({ status: "ok", handled: true, result: listStatus() });
+    }
     if (d.type === "system_diagnose") {
       return J({ status: "ok", handled: true, result: systemDiagnose(d.appVersion || "") });
     }
@@ -6100,8 +6105,9 @@ function nightlyPipeline() {
   });
   // ③ 経営連携の再集計（即時反映のズレを直す）
   run("snapshot", function () { kanriSnapshotDaily(); return "再集計しました"; });
-  // ④ 経営管理システム（21シート）の更新
+  // ④ 経営管理システム（21シート）の更新（v103: 先に名簿を合わせる）
   run("workbook", function () {
+    try { kanriSyncMaster(); } catch (eM) {}
     var r = kanriWorkbookRefresh();
     if (r && r.ok === false) throw new Error(r.message || "更新に失敗");
     return (r && r.rows !== undefined) ? (r.rows + "行を投入") : "更新しました";
@@ -8406,7 +8412,7 @@ function rosterSheet_() {
   var sh = ss.getSheetByName(ROSTER_SHEET);
   if (!sh) {
     sh = ensureSheet(ss, ROSTER_SHEET, ROSTER_HEADER);
-    var rows = rosterDefaults_();
+    var rows = rosterDefaultsStatic_();
     if (rows.length) sh.getRange(2, 1, rows.length, ROSTER_HEADER.length).setValues(rows);
     sh.setFrozenRows(1);
     try { sh.getRange(1, 1, 1, ROSTER_HEADER.length).setFontWeight("bold").setBackground("#e0f2fe"); } catch (e) {}
@@ -8423,6 +8429,15 @@ function rosterLoad_(force) {
   var sh = rosterSheet_();
   var vals = sh.getLastRow() >= 1 ? sh.getRange(1, 1, sh.getLastRow(), ROSTER_HEADER.length).getValues() : [];
   var r = rosterParse_(vals);
+  // v102: コード既定の在籍者がシートに無ければ補う（古い名簿シートを引き継いだ場合の救済）
+  try {
+    var added = rosterEnsureDefaults_(sh, r);
+    if (added.length) {
+      vals = sh.getRange(1, 1, sh.getLastRow(), ROSTER_HEADER.length).getValues();
+      r = rosterParse_(vals);
+      logAudit("名簿の補完", "システム", added.join("・"), "");
+    }
+  } catch (eD) {}
   if (cache) { try { cache.put(ROSTER_CACHE_KEY, JSON.stringify(r), 300); } catch (e3) {} }
   return r;
 }
@@ -8566,6 +8581,16 @@ function systemDiagnose(appVersion) {
       eMiss.length ? "「🔗 元スプレッドシート連携」で各自のURLを登録してください（使わない方は不要）" : ""));
   } catch (e5) { checks.push(diagItem_("連携", "元スプレッドシート連携", "warn", String(e5), "")); }
 
+  // ── ③-2 リストタブ（v102） ──
+  try {
+    var ls = ensureAllMemberSheets_(true) || [];
+    ls.forEach(function (r) {
+      if (!r.ok) checks.push(diagItem_("リスト", r.name + "のリストタブ", "ng", r.message || "作れません", "名簿の「編集」で姓を設定してください"));
+      else checks.push(diagItem_("リスト", r.name + "のリストタブ「" + r.tab + "」", r.rows ? "ok" : "warn",
+        r.rows ? (r.rows + "件") : "タブはあるがリストが空", r.rows ? "" : "スプレッドシートのタブ「" + r.tab + "」にリストを貼り付けてください"));
+    });
+  } catch (eL) {}
+
   // ── ④ 経営管理システム ──
   var wbId = "";
   try { wbId = PropertiesService.getScriptProperties().getProperty("KANRI_WB_ID") || ""; } catch (e6) {}
@@ -8613,4 +8638,87 @@ function systemDiagnose(appVersion) {
   var sum = diagSummarize_(checks);
   logAudit("総合診断", "管理者", sum.verdict, "OK" + sum.ok + "/注意" + sum.warn + "/未完" + sum.ng);
   return { checks: checks, summary: sum, gasVersion: GAS_VERSION, at: formatDateTimeStr(new Date()) };
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// v102: 新メンバーのリストが「反映できない」を根本から直す
+//   原因：各人のリストタブは「本人が初めてログインしたとき」に
+//   しか作られず、管理者がリストを貼る先が存在しなかった。
+//   対策：① 稼働中の全員分のタブを事前に用意する（自動）
+//         ② 名簿シートにコード既定の在籍者が抜けていれば補う
+//         ③ リストの状況（タブの有無・行数）を画面で確認できる
+// ═══════════════════════════════════════════════════════════════
+
+// ① 各メンバーのリストタブを保証する（無ければ見出しつきで作る）
+function ensureMemberSheet_(pin) {
+  var name = memberSheetName_(pin);
+  if (!name) return null;
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sh = ss.getSheetByName(name);
+  var created = false;
+  if (!sh) {
+    sh = ss.insertSheet(name);
+    writeListHeader_(sh);
+    created = true;
+  } else if (sh.getLastRow() === 0) {
+    writeListHeader_(sh);
+  }
+  return { sheet: sh, created: created, name: name };
+}
+// 稼働中の全員分をまとめて（10分に1回だけ実行して負荷を抑える）
+function ensureAllMemberSheets_(force) {
+  var cache = null, key = "member_sheets_ok";
+  try { cache = CacheService.getScriptCache(); } catch (e) {}
+  if (!force && cache) { try { if (cache.get(key)) return null; } catch (e2) {} }
+  var out = [];
+  Object.keys(FULL_NAME_MAP).forEach(function (pin) {
+    try {
+      var r = ensureMemberSheet_(pin);
+      if (!r) { out.push({ pin: pin, name: FULL_NAME_MAP[pin], ok: false, message: "姓が未設定" }); return; }
+      var rows = Math.max(0, r.sheet.getLastRow() - 1);
+      out.push({ pin: pin, name: FULL_NAME_MAP[pin], tab: r.name, ok: true, created: r.created,
+        rows: rows, gid: r.sheet.getSheetId() });
+    } catch (e3) { out.push({ pin: pin, name: FULL_NAME_MAP[pin], ok: false, message: String(e3) }); }
+  });
+  if (cache) { try { cache.put(key, "1", 600); } catch (e4) {} }
+  return out;
+}
+
+// ② 名簿シートに、コード既定の在籍者が「まったく無い」場合だけ補う（退職済みは触らない）
+function rosterEnsureDefaults_(sh, parsed) {
+  var have = {};
+  (parsed.all || []).forEach(function (m) { have[m.pin] = true; });
+  var added = [];
+  var defs = rosterDefaultsStatic_();
+  defs.forEach(function (d) {
+    if (have[d[0]]) return;
+    sh.appendRow(d);
+    added.push(d[1]);
+  });
+  return added;
+}
+// コードに書かれた既定の名簿（rosterApply_ で上書きされる前の値を保持する）
+var ROSTER_STATIC = null;
+function rosterDefaultsStatic_() {
+  if (ROSTER_STATIC) return ROSTER_STATIC;
+  ROSTER_STATIC = [
+    ["091", "柏木幸代", "柏木", "kashiwagi.sukimagroup@gmail.com", "稼働", "1QSuwdlfZyFMhnog7u71OAQ6-UWQJCELS", "", new Date()],
+    ["101", "藤田直美", "藤田", "fujita.sukimagroup@gmail.com", "稼働", "1fNCpuY4o2QUUEzcSWn8ngCA6NQ56tQMz", "", new Date()],
+    ["110", "田中久美子", "田中", "tanaka.sukimagroup@gmail.com", "稼働", "", "", new Date()],
+    ["112", "中村花林", "中村", "nakamura.sukimagroup@gmail.com", "稼働", "", "", new Date()],
+    ["114", "片山佳代", "片山", "katayama.sukimagroup@gmail.com", "稼働", "", "", new Date()]
+  ];
+  return ROSTER_STATIC;
+}
+
+// ③ リストの状況（管理者向け）
+function listStatus() {
+  var rep = ensureAllMemberSheets_(true) || [];
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var base = ss.getUrl();
+  rep.forEach(function (r) {
+    if (r.gid !== undefined) r.url = base + "#gid=" + r.gid;
+  });
+  return { members: rep, spreadsheetUrl: base, spreadsheetName: ss.getName() };
 }

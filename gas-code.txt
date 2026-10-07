@@ -1,5 +1,6 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v67
+// 川嶋メソッド テレアポ管理 — GAS完全版（v105）
+// v105: 収支・KPI管理（財務_◯◯シート・同期・稼働集計・KPI自動設定）／pingの版表示を修正／J()未定義の修正
 // メインスプレッドシート: 1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM
 // 管理者用スプレッドシート: 1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ
 //
@@ -35,9 +36,11 @@
 var SHEET_ID = "1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM";
 var ADMIN_SHEET_ID = "1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ";  // v14: 管理者用 退勤レポート用
 // v95: この GAS がどの版で、どの機能に対応しているか
-var GAS_VERSION = "v104";
+var GAS_VERSION = "v105";
 var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
-  "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run"];
+  "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run","fin_v105"];
+// v105: 応答を返す共通の道具（以前は recHandle_ の中だけにあり、doPost から呼ぶと「J is not defined」になっていた）
+function J(o){return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON)}
 var PIN_MAP = {"091":"柏木", "101":"藤田", "110":"田中", "112":"中村", "114":"片山"};
 // v18: 全名マップ - 出退勤・履歴・アポでは "河野由香" のような全名で記録される
 // v25: 福田貴美恵 PIN 095 追加
@@ -240,15 +243,19 @@ function doPost(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
 
-    // 接続テスト用 (v15追加)
+    // 接続テスト用 (v15追加) — v105: アプリが版を判定できる形で返す（以前は古い形式で「サーバーが古い」と誤表示されていた）
     if (d.type === "ping") {
       return ContentService.createTextOutput(JSON.stringify({
-        status: "ok",
+        status: "ok", handled: true,
         message: "GAS connected",
-        timestamp: new Date().toISOString(),
-        version: "v67"
+        timestamp: new Date().toISOString(), serverTime: new Date().toISOString(),
+        version: GAS_VERSION, gasVersion: GAS_VERSION, features: GAS_FEATURES
       })).setMimeType(ContentService.MimeType.JSON);
     }
+
+    // ===== v105: 収支・KPI管理（fin_*）。同じ内容の再送は結果が変わらない作りのため、重複判定より前で処理する =====
+    var finRes = finHandle_(d);
+    if (finRes) return finRes;
 
     // ===== v20: idempotency チェック (write系のみ) =====
     // fetch_state は読み取りなのでスキップ (毎回最新を返す必要)
@@ -8892,4 +8899,278 @@ function extPrepareMember(pin, url, opts) {
 
   logAudit("連携の準備", "管理者", name, steps.filter(function (x) { return !x.ok; }).length ? "要確認" : "完了");
   return { ok: steps.every(function (x) { return x.ok; }), steps: steps, name: name, pin: p };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v105: 収支・KPI管理（案件・アポ台帳・売上・入金・入出金明細・報酬マスタ・分類ルール）
+//   ・保存先：メインスプレッドシートの「財務_◯◯」シート（1行＝1件、末尾列にJSON全体）
+//   ・同期：行ごとの「更新(ms)」が新しい方を採用（最終更新優先）／サーバー版番号で差分取得
+//   ・冪等：同じ内容を何回送っても結果は同じ（ID＋更新時刻で判定）
+//   ・監査：すべての変更を「財務_変更履歴」に記録（誰が・いつ・何を・前→後）
+//   ・保護：経営パスコード（スクリプトプロパティ FIN_PASS）。未設定なら最初の1回で設定
+// ═══════════════════════════════════════════════════════════════════════════
+var FIN_VERSION = "fin-1.0.0";
+var FIN_TABLES = {
+  settings: { sheet: "財務_設定", cols: [["annualTarget", "年商目標"], ["fyStart", "期首"], ["fyEnd", "期末"], ["defaultUnitPrice", "標準アポ単価"], ["otherMonthly", "非アポ売上の月見込み"]] },
+  projects: { sheet: "財務_案件", cols: [["name", "案件名"], ["client", "会社名"], ["billing", "請求方式"], ["unitPrice", "単価(税抜)"], ["payTerms", "支払条件"], ["status", "状態"], ["start", "開始"], ["end", "終了"], ["memo", "メモ"]] },
+  appos: { sheet: "財務_アポ台帳", cols: [["date", "商談日"], ["time", "時刻"], ["projectId", "案件ID"], ["alias", "案件(元表記)"], ["rep", "担当"], ["company", "会社名"], ["status", "状態"], ["person", "先方担当"], ["phone", "電話"]] },
+  sales: { sheet: "財務_売上", cols: [["date", "計上日"], ["projectId", "案件ID"], ["kind", "種別"], ["qty", "数量"], ["unitPrice", "単価"], ["amount", "金額(税抜・上書き)"], ["staffId", "担当ID"], ["invoiceNo", "請求書番号"], ["memo", "メモ"]] },
+  receipts: { sheet: "財務_入金登録", cols: [["date", "入金日"], ["projectId", "案件ID"], ["amount", "金額(税込)"], ["account", "入金口座"], ["memo", "メモ"]] },
+  bank: { sheet: "財務_入出金明細", cols: [["date", "日付"], ["time", "時刻"], ["out", "出金"], ["inn", "入金"], ["bal", "残高"], ["desc", "摘要"], ["cat", "分類(手動)"], ["projectId", "案件ID"], ["staffId", "担当ID"]] },
+  rules: { sheet: "財務_分類ルール", cols: [["pattern", "名義(含む)"], ["dir", "入出"], ["cat", "分類"], ["projectId", "案件ID"], ["staffId", "担当ID"], ["priority", "優先度"], ["mode", "処理"]] },
+  staff: { sheet: "財務_報酬マスタ", cols: [["name", "氏名"], ["pin", "PIN"], ["payType", "報酬方式"], ["monthlyFixed", "月額固定"], ["hourlyRate", "時給"], ["appoRate", "アポ単価"], ["insRate", "社保(会社負担率)"], ["employment", "契約"], ["active", "在籍"]] },
+  shiftOverrides: { sheet: "財務_シフト補正", cols: [["staffId", "担当ID"], ["d", "日付"], ["hours", "時間"]] }
+};
+var FIN_BASE = ["ID", "版", "更新(ms)", "削除", "更新端末"];
+var FIN_LOG_SHEET = "財務_変更履歴";
+
+function finJ_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+function finHeader_(t) { return FIN_BASE.concat(FIN_TABLES[t].cols.map(function (c) { return c[1]; })).concat(["JSON"]); }
+function finProps_() { return PropertiesService.getScriptProperties(); }
+function finRev_() { return Number(finProps_().getProperty("FIN_REV") || 0); }
+
+// 経営パスコード：未設定のあいだはデータを渡さない（パスコードの設定だけ受け付ける）。
+// 間違いが1時間に10回を超えたら、その1時間はすべて断る（総当たり対策）。
+var FIN_FAIL_LIMIT = 10;
+function finFailKey_() { return "fin_fail_" + Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyyMMddHH"); }
+function finLocked_() { try { return Number(CacheService.getScriptCache().get(finFailKey_()) || 0) >= FIN_FAIL_LIMIT; } catch (e) { return false; } }
+function finCountFail_() { try { var c = CacheService.getScriptCache(), k = finFailKey_(); c.put(k, String(Number(c.get(k) || 0) + 1), 3700); } catch (e) {} }
+function finAuth_(d) {
+  var saved = finProps_().getProperty("FIN_PASS") || "";
+  if (!saved) return { ok: false, passSet: false, code: "nopass" };
+  if (finLocked_()) return { ok: false, passSet: true, code: "locked" };
+  var ok = String(d.fk || "") === saved;
+  if (!ok && d.fk) finCountFail_();
+  return { ok: ok, passSet: true, code: ok ? "" : "auth" };
+}
+// 表示列に入れる文字が「= + - @」で始まると、シートが数式として動かしてしまうため先頭に ' を付ける
+function finCell_(v) {
+  if (typeof v === "string" && /^[=+\-@]/.test(v)) return "'" + v;
+  return v;
+}
+function finIdOk_(id) { return typeof id === "string" && /^[^<>"'&\s]{1,120}$/.test(id); }
+function finSheet_(ss, t) {
+  var sh = ss.getSheetByName(FIN_TABLES[t].sheet);
+  var hdr = finHeader_(t);
+  if (!sh) {
+    sh = ss.insertSheet(FIN_TABLES[t].sheet);
+    sh.getRange(1, 1, 1, hdr.length).setValues([hdr]).setFontWeight("bold").setBackground("#e0f2fe");
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+function finReadTable_(ss, t) {
+  var sh = ss.getSheetByName(FIN_TABLES[t].sheet);
+  if (!sh || sh.getLastRow() < 2) return [];
+  var hdr = finHeader_(t), last = sh.getLastRow();
+  var vals = sh.getRange(2, 1, last - 1, hdr.length).getValues(), out = [];
+  for (var i = 0; i < vals.length; i++) {
+    var v = vals[i], id = String(v[0] || "");
+    if (!id) continue;
+    var obj = null;
+    try { obj = JSON.parse(String(v[hdr.length - 1] || "{}")); } catch (e) { obj = null; }
+    if (!obj || typeof obj !== "object") obj = {};
+    // 正はJSON列（表示列は閲覧用。日付・時刻の自動変換の影響を受けないようにJSONだけを読む）
+    obj.id = id;
+    obj._rev = Number(v[1]) || 0;
+    obj.updatedAt = Number(v[2]) || Number(obj.updatedAt) || 0;
+    obj.deleted = v[3] === true || String(v[3]) === "TRUE" || String(v[3]) === "true";
+    obj._row = i + 2;
+    out.push(obj);
+  }
+  return out;
+}
+function finRowValues_(t, obj, rev, device) {
+  var clean = {};
+  for (var k in obj) { if (k.charAt(0) !== "_") clean[k] = obj[k]; }
+  var line = [String(obj.id), rev, Number(obj.updatedAt) || Date.now(), obj.deleted ? true : false, String(device || obj.updatedBy || "")];
+  FIN_TABLES[t].cols.forEach(function (c) {
+    var v = obj[c[0]];
+    if (v === null || v === undefined) v = "";
+    if (typeof v === "object") v = JSON.stringify(v);
+    line.push(finCell_(v));
+  });
+  line.push(JSON.stringify(clean));
+  return line;
+}
+function finSummary_(o) {
+  if (!o) return "";
+  var keys = ["name", "date", "company", "amount", "unitPrice", "status", "cat", "projectId", "staffId", "desc", "qty"];
+  var parts = [];
+  keys.forEach(function (k) { if (o[k] !== undefined && o[k] !== null && o[k] !== "") parts.push(k + "=" + String(o[k]).slice(0, 40)); });
+  return parts.join(" ");
+}
+
+function finGet_(d) {
+  var ss = SpreadsheetApp.openById(SHEET_ID), since = Number(d.since || 0), tables = {}, maxRev = finRev_();
+  Object.keys(FIN_TABLES).forEach(function (t) {
+    tables[t] = finReadTable_(ss, t).filter(function (r) { return r._rev > since; }).map(function (r) { delete r._row; return r; });
+  });
+  return { status: "ok", handled: true, finVersion: FIN_VERSION, gasVersion: GAS_VERSION, rev: maxRev, tables: tables,
+    serverTime: Date.now(), passSet: !!finProps_().getProperty("FIN_PASS") };
+}
+
+function finUpsert_(d) {
+  var t = String(d.table || "");
+  if (!FIN_TABLES[t]) return { status: "error", handled: true, message: "未対応の表です: " + t };
+  var rows = d.rows || [];
+  if (!rows.length) return { status: "ok", handled: true, applied: 0, conflicts: [], rev: finRev_() };
+  if (rows.length > 300) return { status: "error", handled: true, message: "一度に送れるのは300件までです" };
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(20000); } catch (le) { return { status: "error", handled: true, message: "混み合っています。少し待って再送してください" }; }
+  try {
+    var ss = SpreadsheetApp.openById(SHEET_ID), sh = finSheet_(ss, t), hdr = finHeader_(t);
+    var existing = finReadTable_(ss, t), idx = {};
+    existing.forEach(function (r) { idx[r.id] = r; });
+    var rev = finRev_() + 1, applied = 0, rejected = 0, conflicts = [], appends = [], logs = [], device = String(d.device || "").slice(0, 60);
+    rows.forEach(function (row) {
+      if (!row || !finIdOk_(String(row.id || ""))) { rejected++; return; }
+      var cur = idx[String(row.id)];
+      var inc = Number(row.updatedAt) || 0;
+      if (cur && Number(cur.updatedAt) > inc) { var c2 = JSON.parse(JSON.stringify(cur)); delete c2._row; conflicts.push(c2); return; }
+      if (cur && Number(cur.updatedAt) === inc && finSame_(cur, row)) return;   // 同じ内容の再送（冪等）
+      var line = finRowValues_(t, row, rev, device);
+      if (cur) sh.getRange(cur._row, 1, 1, hdr.length).setValues([line]);
+      else appends.push(line);
+      applied++;
+      logs.push([new Date(), t, String(row.id), !cur ? "新規" : (row.deleted && !cur.deleted ? "削除" : (!row.deleted && cur.deleted ? "復元" : "更新")),
+        device, finCell_(cur ? finSummary_(cur) : ""), finCell_(finSummary_(row))]);
+    });
+    if (appends.length) sh.getRange(sh.getLastRow() + 1, 1, appends.length, hdr.length).setValues(appends);
+    if (applied) finProps_().setProperty("FIN_REV", String(rev));
+    if (logs.length) {
+      try {
+        var lg = ensureSheet(ss, FIN_LOG_SHEET, ["日時", "表", "ID", "操作", "端末", "変更前", "変更後"]);
+        lg.getRange(lg.getLastRow() + 1, 1, logs.length, 7).setValues(logs);
+        if (lg.getLastRow() > 6000) lg.deleteRows(2, 1000);
+      } catch (lgE) {}
+    }
+    return { status: "ok", handled: true, applied: applied, rejected: rejected, conflicts: conflicts, rev: applied ? rev : finRev_() };
+  } finally {
+    try { lock.releaseLock(); } catch (e2) {}
+  }
+}
+function finSame_(a, b) {
+  function strip(o) { var c = {}; for (var k in o) if (k.charAt(0) !== "_" && k !== "updatedBy") c[k] = o[k]; c.deleted = !!o.deleted; c.id = String(o.id); return c; }
+  try { return JSON.stringify(finSort_(strip(a))) === JSON.stringify(finSort_(strip(b))); } catch (e) { return false; }
+}
+function finSort_(o) {
+  if (Array.isArray(o)) return o.map(finSort_);
+  if (o && typeof o === "object") { var r = {}; Object.keys(o).sort().forEach(function (k) { r[k] = finSort_(o[k]); }); return r; }
+  return o;
+}
+
+// 稼働データ：勤怠・架電結果（既存の純粋集計 kanriAggregate_ を再利用）＋シフト明細＋アプリのアポ報告
+function finOps_(d) {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  function vals(n) { var x = ss.getSheetByName(n); return (x && x.getLastRow() > 1) ? x.getDataRange().getValues() : []; }
+  var from = String(d.from || kanriDateKey_(new Date(Date.now() - 120 * 86400000)));
+  var to = String(d.to || "9999-12-31");
+  var agg = kanriAggregate_(vals("勤怠"), vals("架電結果"), vals("アポイント"), from);
+  var days = agg.days.filter(function (x) { return x.d <= to; });
+  var shifts = [];
+  vals("シフト明細").forEach(function (r, i) {
+    if (i === 0) return;
+    var dk = kanriDateKey_(r[1]);
+    if (!dk || dk < from || dk > to) return;
+    shifts.push({ d: dk, pin: String(r[2] || "").replace(/^'/, ""), name: String(r[3] || ""), mins: Number(r[7]) || 0,
+      start: kanriHM_(r[4]), end: kanriHM_(r[5]) });
+  });
+  var appos = [];
+  vals("アポイント").forEach(function (r, i) {
+    if (i === 0) return;
+    var reg = kanriDateKey_(r[0]);
+    if (!reg || reg < from) return;
+    appos.push({ regDate: reg, reporter: String(r[1] || ""), project: String(r[2] || ""), md: kanriDateKey_(r[3]),
+      mt: kanriHM_(r[4]), company: String(r[5] || ""), phone: String(r[6] || ""), person: String(r[7] || ""),
+      role: String(r[9] || ""), email: String(r[10] || ""), address: String(r[11] || "") });
+  });
+  return { status: "ok", handled: true, ops: { days: days, shifts: shifts, appos: appos, from: from, to: to, loadedAt: Date.now() } };
+}
+
+// 自動配賦した目標を、アポインター本人の「あなたのKPI」へ反映（既存のKPI目標シートを使う）
+function finKpiPush_(d) {
+  var list = d.targets || [], done = [];
+  list.forEach(function (t) {
+    if (!t || !t.pin || !FULL_NAME_MAP[String(t.pin)]) return;
+    kpiTargetsWrite_(String(t.pin), { calls: Math.max(1, Math.round(Number(t.calls) || 0)), connRate: Number(t.connRate) || 30,
+      apoRate: Math.max(0.1, Math.round((Number(t.apoRate) || 1) * 10) / 10), apos: Math.max(0.01, Math.round((Number(t.apos) || 0) * 100) / 100),
+      hours: Math.max(0.5, Math.round((Number(t.hours) || 0) * 10) / 10) });
+    done.push(FULL_NAME_MAP[String(t.pin)]);
+  });
+  try { logAudit("KPI自動設定", "管理者(収支・KPI)", done.join("・"), JSON.stringify(list).slice(0, 400)); } catch (e) {}
+  return { status: "ok", handled: true, result: { members: done } };
+}
+
+// 画面で計算した集計表をスプレッドシートにも書き出す（閲覧・共有用）
+function finReport_(d) {
+  var ss = SpreadsheetApp.openById(SHEET_ID), written = [];
+  var sheets = d.sheets || {};
+  Object.keys(sheets).forEach(function (name) {
+    if (String(name).indexOf("財務_レポート") !== 0) return;
+    var rows = sheets[name] || [];
+    if (!rows.length) return;
+    var w = 0; rows.forEach(function (r) { w = Math.max(w, r.length); });
+    var norm = rows.map(function (r) { var x = r.slice(0, w).map(finCell_); while (x.length < w) x.push(""); return x; });
+    var sh = ss.getSheetByName(name) || ss.insertSheet(name);
+    sh.clear();
+    sh.getRange(1, 1, norm.length, w).setValues(norm);
+    sh.getRange(1, 1, 1, w).setFontWeight("bold").setBackground("#e0f2fe");
+    written.push(name + "（" + (norm.length - 1) + "行）");
+  });
+  return { status: "ok", handled: true, result: { written: written, url: ss.getUrl() } };
+}
+
+function finHandle_(d) {
+  if (!d || typeof d.type !== "string" || d.type.indexOf("fin_") !== 0) return null;
+  try {
+    if (d.type === "fin_ping") {
+      var pa = d.fk ? finAuth_(d) : { ok: false, passSet: !!finProps_().getProperty("FIN_PASS"), code: "" };
+      return finJ_({ status: "ok", handled: true, finVersion: FIN_VERSION, gasVersion: GAS_VERSION, passSet: pa.passSet, authOk: pa.ok, locked: pa.code === "locked", rev: finRev_() });
+    }
+    if (d.type === "fin_pass") {
+      var saved = finProps_().getProperty("FIN_PASS") || "";
+      var nf = String(d.newFk || "");
+      if (nf.length < 16 || nf.length > 128) return finJ_({ status: "error", handled: true, code: "bad", message: "パスコードの形式が正しくありません" });
+      if (saved && finLocked_()) return finJ_({ status: "error", handled: true, code: "locked", message: "パスコードの間違いが続いたため1時間ロック中です" });
+      if (saved && String(d.fk || "") !== saved) { finCountFail_(); return finJ_({ status: "error", handled: true, code: "auth", message: "現在のパスコードが違います" }); }
+      finProps_().setProperty("FIN_PASS", nf);
+      try { logAudit("経営パスコード", "管理者", "", saved ? "変更" : "初回設定"); } catch (e) {}
+      return finJ_({ status: "ok", handled: true, passSet: true });
+    }
+    var au = finAuth_(d);
+    if (!au.ok) {
+      var msg = au.code === "nopass" ? "経営パスコードがまだ設定されていません（最初にパスコードを決めてください）" :
+        au.code === "locked" ? "パスコードの間違いが続いたため1時間ロック中です（時間をおいてください）" : "経営パスコードが違います";
+      return finJ_({ status: "error", handled: true, code: au.code, message: msg });
+    }
+    if (d.type === "fin_get") return finJ_(finGet_(d));
+    if (d.type === "fin_upsert") return finJ_(finUpsert_(d));
+    if (d.type === "fin_ops") return finJ_(finOps_(d));
+    if (d.type === "fin_kpi_push") return finJ_(finKpiPush_(d));
+    if (d.type === "fin_report") return finJ_(finReport_(d));
+    return finJ_({ status: "error", handled: true, message: "未対応の要求です: " + d.type });
+  } catch (err) {
+    return finJ_({ status: "error", handled: true, message: String(err && err.message || err) });
+  }
+}
+
+// エディタから実行：経営パスコードを忘れたときの初期化（次に開いた端末で設定し直します）
+function finResetPasscode() {
+  finProps_().deleteProperty("FIN_PASS");
+  Logger.log("経営パスコードを初期化しました。アプリの「収支・KPI」を開くと新しいパスコードを設定できます。");
+}
+// エディタから実行：パスコードの間違いによるロックを解除
+function finUnlock() {
+  CacheService.getScriptCache().remove(finFailKey_());
+  Logger.log("ロックを解除しました。");
+}
+// エディタから実行：財務シートの状態を確認
+function finStatus() {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  Object.keys(FIN_TABLES).forEach(function (t) {
+    var n = finReadTable_(ss, t).length;
+    Logger.log(FIN_TABLES[t].sheet + "：" + n + "件");
+  });
+  Logger.log("版番号 FIN_REV=" + finRev_() + "／パスコード " + (finProps_().getProperty("FIN_PASS") ? "設定済み" : "未設定"));
 }

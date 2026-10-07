@@ -1,11 +1,11 @@
 /* ==========================================================================
-   川嶋メソッド PWA Service Worker v104
+   川嶋メソッド PWA Service Worker v105
    - HTMLは network-first (古いキャッシュ問題を回避)
    - 静的アセットは cache-first (バックグラウンド更新)
    - install時に全ての旧キャッシュを強制削除
    - skipWaiting + clients.claim で即座に新SWを適用
    ========================================================================== */
-const VERSION = "v104.0.0-2026-09-28";
+const VERSION = "v105.0.0-2026-10-07";
 const CACHE = "kawashima-" + VERSION;
 const STATIC_ASSETS = [
   "./manifest.json",

@@ -36,9 +36,330 @@
 var SHEET_ID = "1RIyROMNIhFXhr1c0CXfDeWfFoWEK8AkA6cfvLltzVaM";
 var ADMIN_SHEET_ID = "1_jjHIMCqwuaBht8NbsMmML112eWDEkEx09PmjJAsWMQ";  // v14: 管理者用 退勤レポート用
 // v95: この GAS がどの版で、どの機能に対応しているか
-var GAS_VERSION = "v105";
+var GAS_VERSION = "v107";
 var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
-  "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run","fin_v105"];
+  "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run","fin_v105","apo_dedupe_v107"];
+/* ===== v107: アポの同一判定（アプリ＝index.html とサーバー＝gas-code.txt で、同じこのファイルを使う） =====
+   ・同じアポ：報告者・法人名・案件名・商談日付・商談時間がすべて同じ
+     法人名は「株式会社」「(株)」などの法人の種類・空白・全角/半角・大文字/小文字・区切りの記号の違いを無視する
+     （「株式会社テスト商事」「㈱テスト商事」「テスト商事 」は同じ会社）
+   ・同じ会社のアポ（要確認）：法人名と案件名が同じで、商談日が60日以内（日時を変えて登録し直したもの・別の人の登録など）。
+     法人名と商談日時が同じなら、案件名が違っても空でも要確認（案件名は書かないこともある自由な欄なので、同じ商談のことが多い）
+   ・送信の待ち行列：送っている途中（fetch）の項目と、すでに beacon で送った項目は、画面が隠れたときに送り直さない
+   日付は「2026-10-22」「2026/10/22」、時刻は「14:00」「9:05」「14時」の形の文字で受け取る（シートの日付セルはサーバー側で文字にしてから渡す） */
+var ApoDup = (function () {
+  "use strict";
+  var ENTITY = /(株式会社|有限会社|合同会社|合資会社|合名会社|一般社団法人|一般財団法人|公益社団法人|公益財団法人|社会福祉法人|医療法人社団|医療法人財団|医療法人|学校法人|宗教法人|特定非営利活動法人|npo法人|社団法人|財団法人|\(株\)|\(有\)|\(合\)|\(同\)|\(医\)|\(社\)|\(財\)|\(福\)|\(学\))/g;
+  function nfkc(s) { s = String(s === null || s === undefined ? "" : s); return s.normalize ? s.normalize("NFKC") : s; }
+  /* 法人名：NFKC（㈱→(株)・全角英数→半角・半角カナ→全角）→ 小文字 → 法人の種類を外す → 空白・区切りの記号を外す */
+  function normCompany(s) {
+    return nfkc(s).toLowerCase().replace(ENTITY, "").replace(/[\s　・.,、。'"`’‘”“()「」『』【】\[\]]/g, "").replace(/[‐‑‒–—―−-]/g, "-");
+  }
+  function normText(s) { return nfkc(s).toLowerCase().replace(/[\s　]/g, ""); }
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  function normDate(s) {
+    var m = /(\d{4})\D+(\d{1,2})\D+(\d{1,2})/.exec(nfkc(s));
+    if (!m) return "";
+    var mo = +m[2], d = +m[3];
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return "";
+    return m[1] + "-" + pad2(mo) + "-" + pad2(d);
+  }
+  function normTime(s) {
+    var t = nfkc(s).replace(/\s/g, ""), m = /^(\d{1,2})(?::(\d{1,2})|時(?:(\d{1,2})分?)?)/.exec(t);
+    if (!m) { m = /^(\d{1,2})(\d{2})$/.exec(t); if (!m) return ""; m = [m[0], m[1], m[2]]; }
+    var h = +m[1], mi = +(m[2] || m[3] || 0);
+    if (h > 47 || mi > 59) return "";
+    return pad2(h) + ":" + pad2(mi);
+  }
+  /* 同じアポの鍵（法人名が無いものは鍵を作らない＝重複とみなさない） */
+  function key(a) {
+    a = a || {};
+    var co = normCompany(a.company);
+    if (!co) return "";
+    return [normText(a.reporter), co, normText(a.project), normDate(a.meetingDate), normTime(a.meetingTime)].join("|");
+  }
+  /* 同じ会社の鍵（法人名＋案件名） */
+  function coKey(a) {
+    a = a || {};
+    var co = normCompany(a.company);
+    return co ? co + "|" + normText(a.project) : "";
+  }
+  function dayNo(s) { var d = normDate(s); return d ? Math.round(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) / 86400000) : null; }
+  /* 一覧から同じアポを1件にする（先に出てきたものを残す）。keep：残す要素、dups：{ item, index, of }（of＝残した方の番号） */
+  function uniq(list) {
+    var seen = {}, keep = [], dups = [];
+    (list || []).forEach(function (a, i) {
+      var k = key(a);
+      if (k && Object.prototype.hasOwnProperty.call(seen, k)) { dups.push({ item: a, index: i, of: seen[k] }); return; }
+      if (k) seen[k] = i;
+      keep.push(a);
+    });
+    return { keep: keep, dups: dups };
+  }
+  /* 法人名と商談日時の鍵（案件名・報告者は見ない） */
+  function slotKey(a) {
+    a = a || {};
+    var co = normCompany(a.company), dt = normDate(a.meetingDate), tm = normTime(a.meetingTime);
+    return co && dt && tm ? co + "|" + dt + "|" + tm : "";
+  }
+  /* 登録しようとしているアポ a と、登録済みの一覧 list を比べる
+     exact：同じアポ（送り直さない）、near：同じ会社・同じ案件で商談日が days 日以内の別のアポ、
+     または同じ会社・同じ商談日時で案件名だけが違う（空の）アポ（登録の前に確かめる） */
+  function check(a, list, days) {
+    var win = days === undefined ? 60 : days, k = key(a), ck = coKey(a), sk = slotKey(a), d0 = dayNo(a && a.meetingDate), exact = null, near = [];
+    (list || []).forEach(function (b) {
+      if (!b) return;
+      if (k && key(b) === k) { if (!exact) exact = b; return; }
+      if (sk && slotKey(b) === sk) { near.push(b); return; }
+      if (!ck || coKey(b) !== ck) return;
+      var d1 = dayNo(b.meetingDate);
+      if (d0 === null || d1 === null || Math.abs(d1 - d0) <= win) near.push(b);
+    });
+    return { exact: exact, near: near };
+  }
+  /* 同じ会社・同じ案件で商談日が days 日以内のアポの組（同じアポは除いて数える）、
+     と、同じ会社・同じ商談日時で案件名が違うアポの組：管理者の確認用 */
+  function nearGroups(list, days) {
+    var win = days === undefined ? 60 : days, by = {}, out = [], slots = {};
+    var keep = uniq(list).keep;
+    keep.forEach(function (a) { var ck = coKey(a); if (ck) (by[ck] = by[ck] || []).push(a); });
+    keep.forEach(function (a) { var sk = slotKey(a); if (sk) (slots[sk] = slots[sk] || []).push(a); });
+    Object.keys(slots).forEach(function (sk) {
+      var g = slots[sk], pj = {};
+      g.forEach(function (a) { pj[normText(a.project)] = 1; });
+      if (g.length > 1 && Object.keys(pj).length > 1) out.push(g);
+    });
+    Object.keys(by).forEach(function (ck) {
+      var arr = by[ck].slice().sort(function (x, y) { var a = dayNo(x.meetingDate), b = dayNo(y.meetingDate); return (a === null ? 1e9 : a) - (b === null ? 1e9 : b); });
+      var grp = [];
+      for (var i = 0; i < arr.length; i++) {
+        var prev = grp.length ? grp[grp.length - 1] : null, d1 = dayNo(arr[i].meetingDate), d0 = prev ? dayNo(prev.meetingDate) : null;
+        if (prev && (d0 === null || d1 === null || d1 - d0 > win)) { if (grp.length > 1) out.push(grp); grp = []; }
+        grp.push(arr[i]);
+      }
+      if (grp.length > 1) out.push(grp);
+    });
+    return out;
+  }
+  /* 架電結果の同じ記録：名前とCID（記録した時刻のミリ秒）が同じ。CIDが無い古い行は重複とみなさない */
+  function callKey(name, cid) {
+    var c = String(cid === null || cid === undefined ? "" : cid).replace(/^'/, "").trim();
+    return c ? normText(name) + "|" + c : "";
+  }
+  /* 画面が隠れたときに beacon で送る項目：送っている途中（先頭・fetch 中）・すでに beacon で送った項目・
+     順番を守って送る項目（_noBeacon：前の要求の返事を待ってから送るもの）は除く */
+  function beaconPick(queue, sending) {
+    var out = [];
+    (queue || []).forEach(function (item, i) {
+      if (!item) return;
+      if (i === 0 && sending) return;
+      if (item._beaconAt || item._noBeacon) return;
+      out.push(i);
+    });
+    return out;
+  }
+  return { normCompany: normCompany, normText: normText, normDate: normDate, normTime: normTime, key: key, coKey: coKey, slotKey: slotKey, uniq: uniq, check: check, nearGroups: nearGroups, callKey: callKey, beaconPick: beaconPick };
+})();
+if (typeof module !== "undefined" && module.exports) module.exports = ApoDup;
+// ── v107：アポイント・架電結果の「同じ記録」（サーバー＝gas-code.txt に組み込む。判定そのものは apodup.js の ApoDup） ──
+// アポイントの列：0登録日,1報告者,2案件名,3商談日付,4商談時間,5法人名,6電話番号,7担当者,8性別,9役職,10メール,11住所,12アポ日時,13人柄,
+//                14特定技能案件,15外国人雇用,16特定技能,17技人国,18面接・採用決定者,19録音送付
+// 日付・時刻のセル（スプレッドシートが「2026-10-22」「14:00」を変えた Date）は、スプレッドシートのタイムゾーンで文字に戻してから比べる
+var APO_TZ_ = "";
+function apoTz_() {
+  if (APO_TZ_) return APO_TZ_;
+  try { APO_TZ_ = SpreadsheetApp.openById(SHEET_ID).getSpreadsheetTimeZone() || "Asia/Tokyo"; } catch (e) { APO_TZ_ = "Asia/Tokyo"; }
+  return APO_TZ_;
+}
+function apoIsDate_(v) { return Object.prototype.toString.call(v) === "[object Date]" && !isNaN(v); }
+function apoCellDate_(v) { return apoIsDate_(v) ? Utilities.formatDate(v, apoTz_(), "yyyy-MM-dd") : kanriDateKey_(v); }
+function apoCellTime_(v) { return apoIsDate_(v) ? Utilities.formatDate(v, apoTz_(), "HH:mm") : kanriHM_(v); }
+// 日付だけ（「2026年10月19日」「2026/10/19」・日付のセル）→ yyyy-MM-dd
+function apoDay_(v) { return apoIsDate_(v) ? apoCellDate_(v) : ApoDup.normDate(v); }
+// fetch_state（ログイン時のアポ一覧）の書き方（v105 と同じ yyyy-MM-dd・HH:mm:ss）。日付・時刻のセルはスプレッドシートのタイムゾーンで
+function apoCellYMD_(v) { return apoIsDate_(v) ? Utilities.formatDate(v, apoTz_(), "yyyy-MM-dd") : formatDateKey(v); }
+function apoCellHMS_(v) { return apoIsDate_(v) ? Utilities.formatDate(v, apoTz_(), "HH:mm:ss") : formatTimeStr(v); }
+// 報告者の名前：呼び名（「田中」＝古い行・名簿のシート名）は、名簿の氏名（「田中久美子」）にそろえて比べる
+function apoReporter_(name) {
+  var s = String(name === null || name === undefined ? "" : name).trim();
+  try { for (var p in PIN_MAP) if (String(PIN_MAP[p]) === s && FULL_NAME_MAP[p]) return String(FULL_NAME_MAP[p]); } catch (e) {}
+  return s;
+}
+function apoRowKey_(r) {
+  return ApoDup.key({ reporter: apoReporter_(r[1]), project: r[2], meetingDate: apoCellDate_(r[3]), meetingTime: apoCellTime_(r[4]), company: r[5] });
+}
+// 要求のアポの鍵（報告者は名簿の氏名にそろえる）
+function apoReqKey_(d) {
+  return ApoDup.key({ reporter: apoReporter_(d.reporter || d.name), company: d.company, project: d.project, meetingDate: d.meetingDate, meetingTime: d.meetingTime });
+}
+// キャッシュの鍵に使う短い目印（FNV-1a 32bit。法人名が長くてもキャッシュの鍵の長さの上限を超えない）
+function apoHash_(s) {
+  var h = 0x811c9dc5, t = String(s);
+  for (var i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0; }
+  return ("0000000" + h.toString(16)).slice(-8);
+}
+// 見出しの行を残し、同じアポの2行目以降を外す（数えるときだけ1件にする。シートの中身は変えない）
+function apoUniqRows_(vals) {
+  if (!vals || vals.length < 3) return vals || [];
+  var seen = {}, out = [vals[0]];
+  for (var i = 1; i < vals.length; i++) {
+    var k = apoRowKey_(vals[i]);
+    if (k) { if (seen[k]) continue; seen[k] = 1; }
+    out.push(vals[i]);
+  }
+  return out;
+}
+// 架電結果：名前とCID（14列目＝記録した時刻のミリ秒）が同じ行は同じ通話。いちばん新しい行（確定した結果）だけを数える
+// （同じアポを入力し直して「その他」に直した通話も、新しい方で数える。CIDの無い古い行はそのまま）
+function callUniqRows_(vals) {
+  if (!vals || vals.length < 3) return vals || [];
+  var last = {}, keys = [], out = [vals[0]];
+  for (var i = 1; i < vals.length; i++) { var k = ApoDup.callKey(vals[i][0], vals[i][13]); keys[i] = k; if (k) last[k] = i; }
+  for (var j = 1; j < vals.length; j++) { if (keys[j] && last[keys[j]] !== j) continue; out.push(vals[j]); }
+  return out;
+}
+// 同じアポの行を上から探す（見つかれば行番号、無ければ 0）。すでに重複があるときは最初の行＝数えるときに残す行（apoUniqRows_・整理と同じ）
+function apoFindSame_(sh, key) {
+  var last = sh.getLastRow();
+  if (!key || last < 2) return 0;
+  var v = sh.getRange(2, 1, last - 1, 6).getValues();
+  for (var i = 0; i < v.length; i++) if (apoRowKey_(v[i]) === key) return i + 2;
+  return 0;
+}
+// 同じアポの入力し直し（アプリが確かめてから apoFix を付けて送ったときだけ）：直された中身を登録済みの行に書く
+//   ・空の項目では消さない ・性別は書き換えない（入力画面の初期値「男」のままのことがあるため）
+//   ・特定技能案件は「YES」にだけ、録音送付は「送付済」にだけ変える（入力し直しで印が外れても、前の記録を消さない）
+// 戻り値：直した項目の名前（「電話番号・担当者」）。何も違わなければ ""
+var APO_UPD_COLS_ = [[6, "phone", "電話番号"], [7, "person", "担当者"], [9, "role", "役職"], [10, "email", "メール"], [11, "address", "住所"],
+  [13, "personality", "人柄"], [14, "isTokutei", "特定技能案件", "YES"], [15, "gaikokujin", "外国人雇用"], [16, "tokutei", "特定技能"], [17, "gijinkoku", "技人国"],
+  [18, "decider", "面接・採用決定者"], [19, "recSent", "録音送付", "送付済"]];
+function apoUpdateRow_(sh, rowNo, d) {
+  var cur = sh.getRange(rowNo, 1, 1, 20).getValues()[0], names = [];
+  var norm = function (v, phone) {
+    var s = String(v === null || v === undefined ? "" : v).replace(/[\s　]/g, "");
+    return phone ? s.replace(/\D/g, "").replace(/^0+/, "") : s;   // 電話番号：数字だけ（シートが先頭の0を落としたものも同じ番号）
+  };
+  APO_UPD_COLS_.forEach(function (c) {
+    var nv = d[c[1]];
+    if (nv === undefined || nv === null || String(nv).trim() === "") return;
+    if (c[3] && String(nv) !== c[3]) return;
+    if (norm(nv, c[0] === 6) === norm(cur[c[0]], c[0] === 6)) return;
+    sh.getRange(rowNo, c[0] + 1).setValue(nv);
+    names.push(c[2]);
+  });
+  return names.join("・");
+}
+// 架電結果：名前とCIDが同じ行を下から探す（同じ通話の結果を直すとき。古い行まで2,000行ずつ読む）。無ければ 0
+// limit を付けると、下から limit 行だけを見る（毎回の架電結果で、同じ通話が届き直していないかを軽く確かめる）
+function callFindCid_(sh, name, cid, limit) {
+  var last = sh.getLastRow(), want = String(cid === null || cid === undefined ? "" : cid).replace(/^'/, "").trim(), nm = String(name || "");
+  if (last < 2 || !want) return 0;
+  var stop = limit ? Math.max(2, last - limit + 1) : 2;
+  for (var end = last; end >= stop; ) {
+    var start = Math.max(stop, end - 1999), v = sh.getRange(start, 1, end - start + 1, 14).getValues();
+    for (var i = v.length - 1; i >= 0; i--) {
+      if (String(v[i][13]).replace(/^'/, "").trim() === want && String(v[i][0] || "") === nm) return start + i;
+    }
+    end = start - 1;
+  }
+  return 0;
+}
+// 同じアポが別の送信で届いたとき（ほかの端末・ログインし直す前の一覧など、アプリが気づけなかった入力し直し）、
+// その送信の通話（callCid）を「アポ獲得」から「その他」に直す。同じ送信の届き直し（beacon・送り直し）は直さない。
+//   見分け方：そのアポを登録した要求の番号（キャッシュ 6時間）と比べる。キャッシュに無ければ、登録日が前の日なら別の送信とみなす
+//   戻り値：直したら true
+function apoSameCallFix_(ss, sh4, rowNo, key, d) {
+  if (!d || d.apoFix || !d.callCid) return false;
+  var creator = null;
+  try { creator = CacheService.getScriptCache().get("apoReq:" + apoHash_(key)); } catch (eC) {}
+  var other = creator ? creator !== String(d.clientReqId || "") : (function () {
+    var reg = apoDay_(sh4.getRange(rowNo, 1).getValue()), mine = apoDay_(d.date);
+    return !!(reg && mine && reg < mine);
+  })();
+  if (!other) return false;
+  var cr = ss.getSheetByName("架電結果");
+  if (!cr) return false;
+  var cRow = callFindCid_(cr, d.name || d.reporter, d.callCid);
+  if (!cRow) return false;
+  var cv = cr.getRange(cRow, 1, 1, 14).getValues()[0];
+  if (mapResultLabelToId(cv[6]) !== "appo") return false;
+  cr.getRange(cRow, 7).setValue("その他");
+  cr.getRange(cRow, 12).setValue((cv[11] ? String(cv[11]) + " " : "") + "（登録済みのアポ（同じ会社・案件・商談日時）のため、その他に直した）");
+  return true;
+}
+// 行の中身の目印（日付のセルは時刻の数値にして比べる）：同じ中身の写しが「アポイント_重複」にもうあるかを見る
+function apoSig_(vals) {
+  return JSON.stringify((vals || []).map(function (v) { return apoIsDate_(v) ? "@" + v.getTime() : String(v === null || v === undefined ? "" : v); }));
+}
+// 重複を確かめる（apply=false）・整理する（apply=true）。
+// 整理：同じアポの2行目以降を「アポイント_重複」シートへ写してから（整理日時・整理の前の行番号・同じアポの行番号つき）、元のシートから消す。最初の登録は残す。
+//   ・写しを先に確定してから消す（途中で止まっても、消した行の写しは必ず残る）
+//   ・前の整理が途中で止まって消し残した行は、同じ中身の写しがもうあるので、写さずに消す（写しが二重にならない）
+// 1回に移すのは APO_DEDUPE_BATCH_ 行まで（実行時間の上限に余裕を持たせる。残りはもう一度押す）
+var APO_DEDUPE_BATCH_ = 200;
+function apoDedupe_(apply, actor) {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sh = ss.getSheetByName("アポイント");
+  var res = { total: 0, exact: 0, groups: [], near: [], moved: 0, archived: 0, remaining: 0, applied: !!apply };
+  if (!sh || sh.getLastRow() < 2) return res;
+  var lock = null, locked = false;
+  if (apply) {
+    lock = LockService.getScriptLock();
+    try { locked = lock.tryLock(20000); } catch (eL) {}
+    if (!locked) return { error: "ほかの処理が終わるのを待てませんでした。少し待ってからもう一度押してください" };
+  }
+  try {
+    var width = Math.max(20, sh.getLastColumn());
+    var all = sh.getRange(1, 1, sh.getLastRow(), width).getValues();
+    var seen = {}, by = {}, dups = [], items = [];
+    for (var i = 1; i < all.length; i++) {
+      var r = all[i], k = apoRowKey_(r);
+      items.push({ row: i + 1, reg: apoCellDate_(r[0]), reporter: String(r[1] || ""), project: String(r[2] || ""), meetingDate: apoCellDate_(r[3]), meetingTime: apoCellTime_(r[4]), company: String(r[5] || "") });
+      if (!k) continue;
+      if (seen[k]) {
+        dups.push({ row: i + 1, of: seen[k], values: r });
+        if (!by[k]) by[k] = { keep: seen[k], rows: [], reporter: String(r[1] || ""), company: String(r[5] || ""), project: String(r[2] || ""), md: apoCellDate_(r[3]), mt: apoCellTime_(r[4]) };
+        by[k].rows.push(i + 1);
+      } else seen[k] = i + 1;
+    }
+    res.total = all.length - 1;
+    res.exact = dups.length;
+    res.groups = Object.keys(by).map(function (kk) { return by[kk]; }).slice(0, 200);
+    res.near = ApoDup.nearGroups(items, 60).slice(0, 100).map(function (g) {
+      return g.map(function (x) { return { row: x.row, reg: x.reg, reporter: x.reporter, company: x.company, project: x.project, md: x.meetingDate, mt: x.meetingTime }; });
+    });
+    if (apply && dups.length) {
+      var batch = dups.slice(0, APO_DEDUPE_BATCH_);
+      // 1) 先に写しを残して確定（途中で止まっても、消した行の写しは必ず残る）。整理日時・元の行・同じアポの行は先頭の3列
+      var arc = ensureSheet(ss, "アポイント_重複", ["整理日時", "元の行（整理の前）", "同じアポの行（整理の前）"].concat(all[0].slice(0, width).map(function (h) { return String(h || ""); })));
+      var had = {}, now = new Date(), out = [];
+      if (arc.getLastRow() > 1) arc.getRange(2, 4, arc.getLastRow() - 1, width).getValues().forEach(function (r) { had[apoSig_(r)] = 1; });
+      batch.forEach(function (x) { if (!had[apoSig_(x.values.slice(0, width))]) out.push([now, x.row, x.of].concat(x.values.slice(0, width))); });
+      if (out.length) arc.getRange(arc.getLastRow() + 1, 1, out.length, out[0].length).setValues(out);
+      SpreadsheetApp.flush();
+      res.archived = out.length;
+      // 2) 下の行から消す（続いている行はまとめて消す）
+      var rowsDesc = batch.map(function (x) { return x.row; }).sort(function (a, b) { return b - a; });
+      var j = 0;
+      while (j < rowsDesc.length) {
+        var end = rowsDesc[j], start = end;
+        while (j + 1 < rowsDesc.length && rowsDesc[j + 1] === start - 1) { j++; start = rowsDesc[j]; }
+        if (end === start) sh.deleteRow(start); else sh.deleteRows(start, end - start + 1);
+        j++;
+      }
+      SpreadsheetApp.flush();   // ロックを外す前に確定する（続けて押された整理・登録が、消したあとのシートを見るように）
+      res.moved = batch.length;
+      res.remaining = dups.length - batch.length;
+    }
+  } finally { if (locked) { try { lock.releaseLock(); } catch (eU) {} } }
+  if (apply && res.moved) {
+    try {
+      logAudit("アポの重複を整理", actor || "管理者", "アポイント", res.moved + "行を「アポイント_重複」シートへ移した" +
+        (res.archived < res.moved ? "（うち" + (res.moved - res.archived) + "行は同じ中身の写しがすでにあるため、写さずに消した）" : "") + (res.remaining ? "（残り" + res.remaining + "行）" : ""));
+    } catch (eA) {}
+  }
+  return res;
+}
 // v105: 応答を返す共通の道具（以前は recHandle_ の中だけにあり、doPost から呼ぶと「J is not defined」になっていた）
 function J(o){return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON)}
 var PIN_MAP = {"091":"柏木", "101":"藤田", "110":"田中", "112":"中村", "114":"片山"};
@@ -244,6 +565,12 @@ function doPost(e) {
     }
 
     // 接続テスト用 (v15追加) — v105: アプリが版を判定できる形で返す（以前は古い形式で「サーバーが古い」と誤表示されていた）
+    // v107: アポの重複を確かめる（apply=true で整理：同じアポの2行目以降を「アポイント_重複」シートへ移す）
+    if (d.type === "apo_dedupe") {
+      var adr = apoDedupe_(!!d.apply, String(d.by || "管理者"));
+      return J(adr.error ? { status: "error", handled: true, message: adr.error } : { status: "ok", handled: true, result: adr });
+    }
+
     if (d.type === "ping") {
       return ContentService.createTextOutput(JSON.stringify({
         status: "ok", handled: true,
@@ -260,10 +587,17 @@ function doPost(e) {
     // ===== v20: idempotency チェック (write系のみ) =====
     // fetch_state は読み取りなのでスキップ (毎回最新を返す必要)
     var READ_ONLY_TYPES = ["fetch_state", "fetch_live", "status_update"];  // v29: 現況系もidempotencyスキップ(常に最新を処理)
-    if (d.clientReqId && READ_ONLY_TYPES.indexOf(d.type) < 0) {
+    // v107: アポイントは、この重複チェック（キャッシュ）ではなく、ロックの中でシートを見て同じアポを止める。
+    //       キャッシュは消えることがあり、また「処理済み」と記録したあとで失敗すると、送り直しが捨てられてアポが消えていた
+    if (d.clientReqId && READ_ONLY_TYPES.indexOf(d.type) < 0 && d.type !== "appointment") {
       var idempCache = CacheService.getScriptCache();
       var idempKey = "req:" + d.clientReqId;
+      // v107: 同じ要求が同時に届くと、両方が「まだ見ていない」と判断して2回処理していた（アポが2行になる原因）。確認と記録をロックの中で行う
+      var idempLock = LockService.getScriptLock(), idempLocked = false;
+      try { idempLocked = idempLock.tryLock(5000); } catch (eIL) {}   // 取れなくても（長い処理の最中）待ちすぎない。アポはシートを見て止める
       var idempSeen = idempCache.get(idempKey);
+      if (!idempSeen) idempCache.put(idempKey, new Date().toISOString(), 21600);
+      if (idempLocked) { try { idempLock.releaseLock(); } catch (eIU) {} }
       if (idempSeen) {
         Logger.log("Duplicate request detected: " + d.clientReqId + " (type=" + d.type + ")");
         return ContentService.createTextOutput(JSON.stringify({
@@ -273,7 +607,6 @@ function doPost(e) {
           firstSeenAt: idempSeen
         })).setMimeType(ContentService.MimeType.JSON);
       }
-      idempCache.put(idempKey, new Date().toISOString(), 21600);
     }
 
     // ===== v18: アポインターの全データを取得 =====
@@ -367,15 +700,15 @@ function doPost(e) {
         var apoSh = ss2.getSheetByName("アポイント");
         result.appos = [];
         if (apoSh && apoSh.getLastRow() > 1) {
-          var apoRows = apoSh.getDataRange().getValues();
+          var apoRows = apoUniqRows_(apoSh.getDataRange().getValues());
           for (var i = 1; i < apoRows.length; i++) {
             if (nameMatches(apoRows[i][1])) {  // B列=報告者
               result.appos.push({
                 date: formatDateKey(apoRows[i][0]),
                 reporter: apoRows[i][1] || "",
                 project: apoRows[i][2] || "",
-                meetingDate: formatDateKey(apoRows[i][3]),
-                meetingTime: formatTimeStr(apoRows[i][4]),
+                meetingDate: apoCellYMD_(apoRows[i][3]),   // v107: 日付・時刻のセルはスプレッドシートのタイムゾーンで（同じアポの判定と同じ）
+                meetingTime: apoCellHMS_(apoRows[i][4]),
                 company: apoRows[i][5] || "",
                 phone: apoRows[i][6] || "",
                 person: apoRows[i][7] || "",
@@ -524,6 +857,7 @@ function doPost(e) {
           }
         }
       } catch (posErr) { result.posError = String(posErr); }
+      result.gasVersion = GAS_VERSION;   // v107
 
       return ContentService.createTextOutput(JSON.stringify(result))
         .setMimeType(ContentService.MimeType.JSON);
@@ -646,7 +980,7 @@ function doPost(e) {
         var csSh = csSs.getSheetByName("架電結果");
         var csSummary = [];
         if (csSh && csSh.getLastRow() > 1) {
-          var csRows = csSh.getDataRange().getValues();
+          var csRows = callUniqRows_(csSh.getDataRange().getValues());
           // 列: 0名前,1日付,2時刻,3会社名,4電話番号,5担当者,6結果,7通話時間,...
           var csByName = {};
           for (var ci = 1; ci < csRows.length; ci++) {
@@ -983,7 +1317,7 @@ function doPost(e) {
         var abByProj = {};
         var abDetails = [];
         if (abSh && abSh.getLastRow() > 1) {
-          var abRows = abSh.getDataRange().getValues();
+          var abRows = apoUniqRows_(abSh.getDataRange().getValues());
           // 列: 0登録日,1報告者,2案件名,3商談日付,4商談時間,5法人名,6電話番号,7担当者
           for (var abi = 1; abi < abRows.length; abi++) {
             var abr = abRows[abi];
@@ -1554,7 +1888,7 @@ function doPost(e) {
         // 架電件数（架電結果シート）
         var crSh = pfSs.getSheetByName("架電結果");
         if (crSh && crSh.getLastRow() > 1) {
-          var crR = crSh.getDataRange().getValues();
+          var crR = callUniqRows_(crSh.getDataRange().getValues());
           for (var ci2 = 1; ci2 < crR.length; ci2++) {
             var k2 = ymd(crR[ci2][1]);
             if (!k2 || k2.slice(0, 7) !== month) continue;
@@ -1566,7 +1900,7 @@ function doPost(e) {
         // アポ獲得数（アポイントシート・報告者=名前）
         var apSh = pfSs.getSheetByName("アポイント");
         if (apSh && apSh.getLastRow() > 1) {
-          var apR = apSh.getDataRange().getValues();
+          var apR = apoUniqRows_(apSh.getDataRange().getValues());
           for (var ai2 = 1; ai2 < apR.length; ai2++) {
             var k3 = ymd(apR[ai2][0]);
             if (!k3 || k3.slice(0, 7) !== month) continue;
@@ -1952,9 +2286,18 @@ function doPost(e) {
       // v52: 同一通話の二重登録を防ぐ（直近15秒以内に同じ担当者×同じ電話番号があれば、
       //      新規追加せず最後の行を上書き＝確定した結果で置き換える）
       var dupRowNo = 0;
+      // v107: アプリが同じ通話の結果を直して送ったとき（fix）は、名前とCIDが同じ行を探して上書きする（行を増やさない）
+      if (d.fix && d.cid) { try { dupRowNo = callFindCid_(sh2, d.name, d.cid); } catch (eFx) {} }
+      // v107: 同じ通話（名前とCID）がもう記録されていれば、届き直し（beacon・送り直し）なので書かない（文字起こしも二重にしない）。
+      //       「その他」に直した通話に、あとから元の「アポ獲得」が届いても戻さない（直近500行を見る）
+      else if (d.cid) {
+        var sameCall = 0;
+        try { sameCall = callFindCid_(sh2, d.name, d.cid, 500); } catch (eSc) {}
+        if (sameCall) return J({ status: "duplicate", handled: true, type: "callResult", message: "同じ通話は記録済みです（" + sameCall + "行目）", row: sameCall, gasVersion: GAS_VERSION });
+      }
       try {
         var lastR = sh2.getLastRow();
-        if (lastR > 1) {
+        if (lastR > 1 && !dupRowNo) {
           var scanFrom = Math.max(2, lastR - 20);
           var scanVals = sh2.getRange(scanFrom, 1, lastR - scanFrom + 1, 15).getValues();
           for (var dvi = scanVals.length - 1; dvi >= 0; dvi--) {
@@ -2051,13 +2394,36 @@ function doPost(e) {
          "法人名", "電話番号", "担当者", "性別", "役職",
          "メール", "住所", "アポ日時", "人柄",
          "特定技能案件", "外国人雇用", "特定技能", "技人国", "面接・採用決定者", "録音送付"]);
-      sh4.appendRow([
+      var apoLock = LockService.getScriptLock(), apoLocked = false;
+      try { apoLocked = apoLock.tryLock(15000); } catch (eAL) {}
+      // v107: ロックが取れないまま書くと、同時に届いた同じアポを両方書いてしまう。書かずに断り、アプリにあとで送り直してもらう（code: busy）
+      if (!apoLocked) return J({ status: "error", handled: true, type: "appointment", code: "busy", message: "混み合っています（少し待ってから自動で送り直します）", gasVersion: GAS_VERSION });
+      var apoHit = 0, apoUpd = "", apoRow = 0, apoConv = false, apoKey = apoReqKey_(d);
+      try {
+        // v107: 同じアポがすでにあれば行を足さない（連打・二重送信・時間をおいた再送）。
+        //       アプリが「同じアポの入力し直し」と確かめてから送ったとき（apoFix）だけ、直された項目（電話番号など）をその行に書く。
+        //       アプリが気づけなかった入力し直し（ほかの端末など）なら、その送信の通話を「その他」に直す（架電結果とアポの件数をずらさない）
+        apoHit = apoFindSame_(sh4, apoKey);
+        if (apoHit) { if (d.apoFix) apoUpd = apoUpdateRow_(sh4, apoHit, d); else apoConv = apoSameCallFix_(ss, sh4, apoHit, apoKey, d); }
+        else sh4.appendRow([
         d.date, d.reporter, d.project, d.meetingDate || "", d.meetingTime || "",
         d.company, d.phone, d.person, d.gender, d.role,
         d.email, d.address, d.datetime, d.personality,
         d.isTokutei || "", d.gaikokujin || "", d.tokutei || "",
         d.gijinkoku || "", d.decider || "", d.recSent || ""
       ]);
+        SpreadsheetApp.flush();   // ロックを外す前に書き込みを確定する（次に待っている要求が、この行を見られるように）
+        if (!apoHit) {
+          apoRow = sh4.getLastRow();
+          // 登録した要求の番号を覚える（同じアポが別の送信で届いたとき、同じ送信の届き直しかを見分ける）
+          try { CacheService.getScriptCache().put("apoReq:" + apoHash_(apoKey), String(d.clientReqId || ""), 21600); } catch (eRq) {}
+        }
+      } finally { try { apoLock.releaseLock(); } catch (eAU) {} }
+      if (apoHit) {
+        try { logAudit("アポの重複を受け付けず", d.reporter || d.name || "", d.company || "", "同じアポが" + apoHit + "行目にあります" + (apoUpd ? "（直した項目：" + apoUpd + "）" : "") + (apoConv ? "（この送信の通話を「その他」に直した）" : "")); } catch (eAA) {}
+        return J({ status: "duplicate", handled: true, type: "appointment", message: "同じアポは登録済みです（" + apoHit + "行目）", row: apoHit, updated: apoUpd, callFixed: apoConv, gasVersion: GAS_VERSION });
+      }
+      return J({ status: "ok", handled: true, type: "appointment", row: apoRow, gasVersion: GAS_VERSION });
     }
 
     // ===== シフト申請 (v12: 時間範囲対応) =====
@@ -2534,6 +2900,8 @@ function doPost(e) {
 
   } catch (err) {
     Logger.log("doPost ERROR: " + err + "\nStack: " + (err.stack || "no stack"));
+    // v107: 途中で失敗した要求を「処理済み」のままにしない（送り直しで処理する。アポはシートを見て二重にしない）
+    try { if (d && d.clientReqId) CacheService.getScriptCache().remove("req:" + d.clientReqId); } catch (eRm) {}
     return ContentService.createTextOutput(JSON.stringify({status:"error", message: String(err)}))
       .setMimeType(ContentService.MimeType.JSON);
   }
@@ -4113,6 +4481,7 @@ function kanriMin_(hm){ if(!hm) return null; var p=hm.split(":"); return (+p[0])
 
 // 純粋集計関数（Node単体テスト可能：Utilities非依存の整形済み値でも動く）
 function kanriAggregate_(att, hist, apo, fromKey){
+  apo = apoUniqRows_(apo); hist = callUniqRows_(hist);   // v107: 同じアポ・同じ架電の記録は1件
   var days={}; // key = name + "|" + date
   function slot(nm, dk){
     var k=nm+"|"+dk;
@@ -4173,6 +4542,7 @@ function kanriRateOk_(){
 }
 // データ品質ゲート：①勤怠の打刻漏れ ②名簿外の名前 ③アポ件数の突合（架電結果の「アポ」 vs アポイント報告）
 function kanriQuality_(att, hist, apo, fromKey){
+  apo = apoUniqRows_(apo); hist = callUniqRows_(hist);   // v107: 突合（架電結果のアポ ⇔ アポ報告）も重複を数えない
   var known={}; for (var p in FULL_NAME_MAP) known[FULL_NAME_MAP[p]]=1;
   var punchMiss=[], unknown={}, hA={}, rA={};
   for (var i=1;i<att.length;i++){
@@ -8561,6 +8931,13 @@ function systemDiagnose(appVersion) {
   checks.push(diagItem_("基盤", "アプリ版とサーバー版の一致",
     same ? "ok" : "ng", "アプリ " + (appVersion || "?") + " ／ サーバー " + GAS_VERSION,
     same ? "" : "gas-code.txt を貼り付けて「新しいバージョン」でデプロイしてください"));
+  // ── v107: アポイントの重複（同じアポが2行以上） ──
+  try {
+    var dupI = apoDedupe_(false, "");
+    checks.push(diagItem_("基盤", "アポイントの重複", dupI.exact ? "warn" : "ok",
+      dupI.exact ? ("同じアポが " + dupI.exact + "件 重複しています（請求・成績・経営連動では1件として数えています）") : ("重複なし（" + dupI.total + "件）"),
+      dupI.exact ? "管理者画面の「🧹 アポの重複」で「整理する」を押してください" : ""));
+  } catch (eDupI) {}
 
   // ── ② 名簿 ──
   var roster = null;
@@ -9077,7 +9454,7 @@ function finOps_(d) {
       start: kanriHM_(r[4]), end: kanriHM_(r[5]) });
   });
   var appos = [];
-  vals("アポイント").forEach(function (r, i) {
+  apoUniqRows_(vals("アポイント")).forEach(function (r, i) {
     if (i === 0) return;
     var reg = kanriDateKey_(r[0]);
     if (!reg || reg < from) return;

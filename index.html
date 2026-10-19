@@ -4193,6 +4193,128 @@ var FinShift = (function () {
   };
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = FinShift;
+/* ===== v107: アポの同一判定（アプリ＝index.html とサーバー＝gas-code.txt で、同じこのファイルを使う） =====
+   ・同じアポ：報告者・法人名・案件名・商談日付・商談時間がすべて同じ
+     法人名は「株式会社」「(株)」などの法人の種類・空白・全角/半角・大文字/小文字・区切りの記号の違いを無視する
+     （「株式会社テスト商事」「㈱テスト商事」「テスト商事 」は同じ会社）
+   ・同じ会社のアポ（要確認）：法人名と案件名が同じで、商談日が60日以内（日時を変えて登録し直したもの・別の人の登録など）。
+     法人名と商談日時が同じなら、案件名が違っても空でも要確認（案件名は書かないこともある自由な欄なので、同じ商談のことが多い）
+   ・送信の待ち行列：送っている途中（fetch）の項目と、すでに beacon で送った項目は、画面が隠れたときに送り直さない
+   日付は「2026-10-22」「2026/10/22」、時刻は「14:00」「9:05」「14時」の形の文字で受け取る（シートの日付セルはサーバー側で文字にしてから渡す） */
+var ApoDup = (function () {
+  "use strict";
+  var ENTITY = /(株式会社|有限会社|合同会社|合資会社|合名会社|一般社団法人|一般財団法人|公益社団法人|公益財団法人|社会福祉法人|医療法人社団|医療法人財団|医療法人|学校法人|宗教法人|特定非営利活動法人|npo法人|社団法人|財団法人|\(株\)|\(有\)|\(合\)|\(同\)|\(医\)|\(社\)|\(財\)|\(福\)|\(学\))/g;
+  function nfkc(s) { s = String(s === null || s === undefined ? "" : s); return s.normalize ? s.normalize("NFKC") : s; }
+  /* 法人名：NFKC（㈱→(株)・全角英数→半角・半角カナ→全角）→ 小文字 → 法人の種類を外す → 空白・区切りの記号を外す */
+  function normCompany(s) {
+    return nfkc(s).toLowerCase().replace(ENTITY, "").replace(/[\s　・.,、。'"`’‘”“()「」『』【】\[\]]/g, "").replace(/[‐‑‒–—―−-]/g, "-");
+  }
+  function normText(s) { return nfkc(s).toLowerCase().replace(/[\s　]/g, ""); }
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  function normDate(s) {
+    var m = /(\d{4})\D+(\d{1,2})\D+(\d{1,2})/.exec(nfkc(s));
+    if (!m) return "";
+    var mo = +m[2], d = +m[3];
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return "";
+    return m[1] + "-" + pad2(mo) + "-" + pad2(d);
+  }
+  function normTime(s) {
+    var t = nfkc(s).replace(/\s/g, ""), m = /^(\d{1,2})(?::(\d{1,2})|時(?:(\d{1,2})分?)?)/.exec(t);
+    if (!m) { m = /^(\d{1,2})(\d{2})$/.exec(t); if (!m) return ""; m = [m[0], m[1], m[2]]; }
+    var h = +m[1], mi = +(m[2] || m[3] || 0);
+    if (h > 47 || mi > 59) return "";
+    return pad2(h) + ":" + pad2(mi);
+  }
+  /* 同じアポの鍵（法人名が無いものは鍵を作らない＝重複とみなさない） */
+  function key(a) {
+    a = a || {};
+    var co = normCompany(a.company);
+    if (!co) return "";
+    return [normText(a.reporter), co, normText(a.project), normDate(a.meetingDate), normTime(a.meetingTime)].join("|");
+  }
+  /* 同じ会社の鍵（法人名＋案件名） */
+  function coKey(a) {
+    a = a || {};
+    var co = normCompany(a.company);
+    return co ? co + "|" + normText(a.project) : "";
+  }
+  function dayNo(s) { var d = normDate(s); return d ? Math.round(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10)) / 86400000) : null; }
+  /* 一覧から同じアポを1件にする（先に出てきたものを残す）。keep：残す要素、dups：{ item, index, of }（of＝残した方の番号） */
+  function uniq(list) {
+    var seen = {}, keep = [], dups = [];
+    (list || []).forEach(function (a, i) {
+      var k = key(a);
+      if (k && Object.prototype.hasOwnProperty.call(seen, k)) { dups.push({ item: a, index: i, of: seen[k] }); return; }
+      if (k) seen[k] = i;
+      keep.push(a);
+    });
+    return { keep: keep, dups: dups };
+  }
+  /* 法人名と商談日時の鍵（案件名・報告者は見ない） */
+  function slotKey(a) {
+    a = a || {};
+    var co = normCompany(a.company), dt = normDate(a.meetingDate), tm = normTime(a.meetingTime);
+    return co && dt && tm ? co + "|" + dt + "|" + tm : "";
+  }
+  /* 登録しようとしているアポ a と、登録済みの一覧 list を比べる
+     exact：同じアポ（送り直さない）、near：同じ会社・同じ案件で商談日が days 日以内の別のアポ、
+     または同じ会社・同じ商談日時で案件名だけが違う（空の）アポ（登録の前に確かめる） */
+  function check(a, list, days) {
+    var win = days === undefined ? 60 : days, k = key(a), ck = coKey(a), sk = slotKey(a), d0 = dayNo(a && a.meetingDate), exact = null, near = [];
+    (list || []).forEach(function (b) {
+      if (!b) return;
+      if (k && key(b) === k) { if (!exact) exact = b; return; }
+      if (sk && slotKey(b) === sk) { near.push(b); return; }
+      if (!ck || coKey(b) !== ck) return;
+      var d1 = dayNo(b.meetingDate);
+      if (d0 === null || d1 === null || Math.abs(d1 - d0) <= win) near.push(b);
+    });
+    return { exact: exact, near: near };
+  }
+  /* 同じ会社・同じ案件で商談日が days 日以内のアポの組（同じアポは除いて数える）、
+     と、同じ会社・同じ商談日時で案件名が違うアポの組：管理者の確認用 */
+  function nearGroups(list, days) {
+    var win = days === undefined ? 60 : days, by = {}, out = [], slots = {};
+    var keep = uniq(list).keep;
+    keep.forEach(function (a) { var ck = coKey(a); if (ck) (by[ck] = by[ck] || []).push(a); });
+    keep.forEach(function (a) { var sk = slotKey(a); if (sk) (slots[sk] = slots[sk] || []).push(a); });
+    Object.keys(slots).forEach(function (sk) {
+      var g = slots[sk], pj = {};
+      g.forEach(function (a) { pj[normText(a.project)] = 1; });
+      if (g.length > 1 && Object.keys(pj).length > 1) out.push(g);
+    });
+    Object.keys(by).forEach(function (ck) {
+      var arr = by[ck].slice().sort(function (x, y) { var a = dayNo(x.meetingDate), b = dayNo(y.meetingDate); return (a === null ? 1e9 : a) - (b === null ? 1e9 : b); });
+      var grp = [];
+      for (var i = 0; i < arr.length; i++) {
+        var prev = grp.length ? grp[grp.length - 1] : null, d1 = dayNo(arr[i].meetingDate), d0 = prev ? dayNo(prev.meetingDate) : null;
+        if (prev && (d0 === null || d1 === null || d1 - d0 > win)) { if (grp.length > 1) out.push(grp); grp = []; }
+        grp.push(arr[i]);
+      }
+      if (grp.length > 1) out.push(grp);
+    });
+    return out;
+  }
+  /* 架電結果の同じ記録：名前とCID（記録した時刻のミリ秒）が同じ。CIDが無い古い行は重複とみなさない */
+  function callKey(name, cid) {
+    var c = String(cid === null || cid === undefined ? "" : cid).replace(/^'/, "").trim();
+    return c ? normText(name) + "|" + c : "";
+  }
+  /* 画面が隠れたときに beacon で送る項目：送っている途中（先頭・fetch 中）・すでに beacon で送った項目・
+     順番を守って送る項目（_noBeacon：前の要求の返事を待ってから送るもの）は除く */
+  function beaconPick(queue, sending) {
+    var out = [];
+    (queue || []).forEach(function (item, i) {
+      if (!item) return;
+      if (i === 0 && sending) return;
+      if (item._beaconAt || item._noBeacon) return;
+      out.push(i);
+    });
+    return out;
+  }
+  return { normCompany: normCompany, normText: normText, normDate: normDate, normTime: normTime, key: key, coKey: coKey, slotKey: slotKey, uniq: uniq, check: check, nearGroups: nearGroups, callKey: callKey, beaconPick: beaconPick };
+})();
+if (typeof module !== "undefined" && module.exports) module.exports = ApoDup;
 
 </script>
 <script>
@@ -4279,6 +4401,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = FinShift;
    - Excelの読み書きを内蔵（オフラインで動く・CDN不要）。.xls だけ SheetJS を使う
    v106.0.1 (2026-10-18):
    - 🩺 総合診断の「アプリ版とサーバー版の一致」：サーバーは v105 のまま使うので v105 と比べる（「新しいバージョンでデプロイ」と出なくした）
+   v107 (2026-10-19):
+   - アポの二重登録を防ぐ（連打・メール画面を開いたときの二重送信・サーバーの同時受付）。同じアポは1行、すでにある重複も1件と数える
+   - 同じ会社・同じ案件のアポが60日以内にあれば、登録の前に確かめる。管理者画面に「🧹 アポの重複」（確かめる・整理する）
    ========================================================================== */
 (function(){
 "use strict";
@@ -4290,9 +4415,9 @@ var SHIFT_NOTIFY_TO = "tereapo01.sukima@gmail.com";
 var DAILY_REPORT_TO = "tereapo01.sukima@gmail.com";  /* v14: 退勤レポート通知先 */
 
 /* v26: 起動時キャッシュクリア - 旧バージョンのキャッシュを強制削除 */
-var APP_VERSION="v106";
+var APP_VERSION="v107";
 /* v106: サーバー（gas-code.txt）は v105 のまま使う。総合診断の「アプリ版とサーバー版の一致」は、この版で確かめる */
-var GAS_REQUIRED="v105";
+var GAS_REQUIRED="v107";
 function diagVersionNote(d){(d&&d.checks||[]).forEach(function(c){if(c.name==="アプリ版とサーバー版の一致")c.detail="アプリ "+APP_VERSION+"（使うサーバー "+GAS_REQUIRED+"）／ サーバー "+(d.gasVersion||"?");});}
 /* v35: 会社ロゴ(スキマ) 埋め込み - オフラインでも表示 */
 var LOGO="data:image/png;base64,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";
@@ -4512,6 +4637,8 @@ document.addEventListener("visibilitychange",function(){
 
 /* ---------- 同期キュー（オフライン対応） ---------- */
 var SQ=ld("sq")||[];
+/* v107: 前に開いていたとき送っている途中で閉じられた項目（_inflightAt）は、beacon で送ったものと同じ扱い（v105 は先頭も beacon で送っていた） */
+SQ.forEach(function(it){if(it&&it._inflightAt){if(!it._beaconAt)it._beaconAt=it._inflightAt;delete it._inflightAt}});
 var SQ_SENDING=false;
 var SQ_RETRIES=ld("sq_retries")||{};  /* v16: localStorage永続化 */
 function saveRetries(){sv("sq_retries",SQ_RETRIES)}
@@ -4530,15 +4657,22 @@ function beaconFlush(){
   try{
     if(!GAS||!SQ.length)return;
     if(!navigator.sendBeacon){flushSQ();return}
-    for(var i=0;i<SQ.length;i++){
+    /* v107: 圏外では送らない（届かないのに「送った」印が付き、電波が戻ったときに捨てられて、アポが消えていた） */
+    if(navigator.onLine===false)return;
+    /* v107: 送っている途中（fetch・keepalive で最後まで届く）の先頭と、すでに beacon で送った項目は送り直さない
+       （メール画面を開くと beforeunload・pagehide・visibilitychange が続けて起き、同じアポが2〜3回届いていた）。
+       送れたとき（sendBeacon が true）だけ印を付ける（大きい項目は送信枠を超えて false になる） */
+    /* v107: 送っている途中（keepalive の fetch は画面が閉じても最後まで送られる）の先頭には、送った印（_inflightAt）だけを付ける。
+       このまま閉じられたら、次に開いたときに beacon で送ったものと同じ扱い（v105 と同じ）。途中で失敗したら印を外して送り直す */
+    if(SQ_SENDING&&SQ[0]&&!SQ[0]._beaconAt&&!SQ[0]._noBeacon&&!SQ[0]._inflightAt)SQ[0]._inflightAt=Date.now();
+    ApoDup.beaconPick(SQ,SQ_SENDING).forEach(function(i){
       var item=SQ[i];
-      var payload={};for(var k in item)if(k!=="_id")payload[k]=item[k];
+      var payload={};for(var k in item)if(k.charAt(0)!=="_")payload[k]=item[k];
       try{
         var blob=new Blob([JSON.stringify(payload)],{type:"text/plain;charset=UTF-8"});
-        navigator.sendBeacon(GAS,blob);
-        item._beaconAt=Date.now();
+        if(navigator.sendBeacon(GAS,blob))item._beaconAt=Date.now();
       }catch(e){}
-    }
+    });
     sv("sq",SQ);
   }catch(e){}
 }
@@ -4552,14 +4686,22 @@ window.addEventListener("beforeunload",function(){beaconFlush()});
 
 function flushSQ(){
   if(SQ_SENDING||!navigator.onLine||!SQ.length||!GAS)return;
-  /* v42: 直近にbeacon送信済みの先頭アイテムは配信済みとみなしキューから除去 (重複メール防止) */
-  while(SQ.length&&SQ[0]._beaconAt&&(Date.now()-SQ[0]._beaconAt<43200000)){
+  /* v42: 直近にbeacon送信済みの先頭アイテムは配信済みとみなしキューから除去 (重複メール防止)
+     v107: ただし v107 以上のサーバーで、何度届いても1回分にできる要求（アポ・通話の直し：apoDurable）は捨てない
+     （届いていないことがある：通信の切断など）。beacon が届くまで60秒待ってから、同じ要求（同じ clientReqId）を送り直す。
+     1時間を過ぎたものは送り直さない（その間に管理者が直した・消した行を、古い内容で作り直さないように）。
+     それ以外の要求（退勤レポート・シフト申請など、メールを送るもの）と古いサーバー（版が分からないときも）は、v42 のとおり
+     「届いた」とみなす（サーバーの重複チェックは6時間で消えるので、翌朝の送り直しはメール・行が二重になる） */
+  while(SQ.length&&SQ[0]._beaconAt){
+    var bAge=Date.now()-SQ[0]._beaconAt;
+    if(apoSrvOk()&&apoDurable(SQ[0])&&bAge<3600000){if(bAge<60000)return;delete SQ[0]._beaconAt;break}
+    if(bAge>=43200000)break;
     SQ.shift();sv("sq",SQ);updateBadge();
   }
   if(!SQ.length)return;
   SQ_SENDING=true;
   var item=SQ[0];
-  var payload={};for(var k in item)if(k!=="_id")payload[k]=item[k];
+  var payload={};for(var k in item)if(k.charAt(0)!=="_")payload[k]=item[k];   /* v107: 端末の中の印（_）は送らない */
   /* v16: AbortController で 30秒タイムアウト */
   var ctrl=("AbortController" in window)?new AbortController():null;
   var tmout=ctrl?setTimeout(function(){ctrl.abort()},30000):null;
@@ -4577,13 +4719,15 @@ function flushSQ(){
     return res.text();
   })
   .then(function(text){
-    var ok=false,errMsg="",duplicate=false;
+    var ok=false,errMsg="",duplicate=false,busy=false;
     if(text==="ok"||text==='"ok"')ok=true;
     else{
       try{var j=JSON.parse(text);
+        if(j&&j.gasVersion)apoSrvSeen(j.gasVersion);   /* v107: サーバーの版を覚える */
+        if(j&&j.callFixed&&item.callCid)apoCallLocal(item.callCid,"登録済みのアポ（同じ会社・案件・商談日時）のため、その他");   /* v107: サーバーが通話を「その他」に直した */
         if(j.status==="ok")ok=true;
         else if(j.status==="duplicate"){ok=true;duplicate=true}  /* v16: idempotency */
-        else errMsg=j.message||text;
+        else{errMsg=j.message||text;if(j.code==="busy")busy=true}
       }catch(e){
         if(text.indexOf("error")>=0)errMsg=text;
         else ok=true;  /* 不明だが2xxなので成功扱い */
@@ -4591,10 +4735,14 @@ function flushSQ(){
     }
     if(ok){
       SQ.shift();sv("sq",SQ);
+      if(item._then)apoQueue(item._then);   /* v107: 返事が来てから続きを送る */
       delete SQ_RETRIES[item._id];saveRetries();
       SQ_SENDING=false;updateBadge();
       if(duplicate)console.log("[SQ] duplicate detected, treated as success (idempotent)");
       if(SQ.length)setTimeout(flushSQ,300);
+    }else if(busy){
+      /* v107: 混み合い（サーバーが書かずに断った）は失敗に数えない。30秒ごとの送信でもう一度送る */
+      SQ_SENDING=false;updateBadge();console.warn("[SQ] server busy, retry later: "+item.type);
     }else{
       handleSQFailure(item,errMsg||"unknown GAS error");
     }
@@ -4605,6 +4753,7 @@ function flushSQ(){
   });
 }
 function handleSQFailure(item,reason){
+  if(item._inflightAt){delete item._inflightAt;sv("sq",SQ)}   /* v107: 送れなかったので、届いたとはみなさない（端末にも残す） */
   SQ_RETRIES[item._id]=(SQ_RETRIES[item._id]||0)+1;
   var n=SQ_RETRIES[item._id];
   saveRetries();  /* v16: 永続化 */
@@ -6023,6 +6172,172 @@ function runSystemDiagnose(){
     })
     .catch(function(err){sysDiagBusy=false;flash("⚠️ 失敗: "+err.message);render()});
 }
+/* ═══ v107: アポの二重登録を防ぐ（アプリ側の補助）═══
+   ・サーバーの版：送信の返事（gasVersion）で覚える。v107 以上のサーバーは、同じアポが届いてもシートを見て1行に保つので、
+     「登録済み」と判断したアポも送り直してよい（直した項目があれば、サーバーの記録を直してもらう）
+   ・同じアポの入力し直し：直前に記録した架電結果「アポ獲得」を「その他」に直す（架電の件数はそのまま、アポの件数を二重にしない） */
+function apoSrvSeen(v){if(v&&String(v)!==String(ld("srvVer")||""))sv("srvVer",String(v))}
+function apoSrvOk(){var n=parseInt(String(ld("srvVer")||"").replace(/^v/i,""),10);return n>=107}
+/* サーバーが何度届いても1回分にできる要求（アポ＝シートの中身で止める・通話の直し＝同じ行の上書き）。
+   これだけは beacon で送ったあとも捨てずに送り直す。ほかの要求（退勤レポート・シフト申請など、メールを送るもの）は
+   v105 と同じく beacon で送ったものを「届いた」とみなす（サーバーの重複チェックは6時間なので、翌朝の送り直しは二重になる） */
+function apoDurable(it){return !!it&&(it.type==="appointment"||it.type==="callResult"&&!!it.fix)}
+/* 待ち行列に入れる（送信は呼んだ側が始める）。gasPost と同じ形の項目 */
+function apoQueue(data){var item={_id:Date.now()+"_"+Math.random().toString(36).slice(2,8),clientReqId:Date.now()+"_"+Math.random().toString(36).slice(2,12)};for(var k in data)item[k]=data[k];SQ.push(item);sv("sq",SQ);return item}
+/* アポの鍵（端末の一覧は本人の分だけなので、報告者は本人の名前で比べる） */
+function apoKeyOf(x){return ApoDup.key({reporter:U&&U.nm,company:x.company,project:x.project,meetingDate:x.meetingDate,meetingTime:x.meetingTime})}
+/* 待ち行列（SQ）・送れなかった項目（DLQ）にある同じアポの番号（無ければ -1）。待ち行列の項目は、その項目の報告者で比べる */
+function apoPendingIn(list,k){for(var i=0;i<(list||[]).length;i++){var it=list[i];if(it&&it.type==="appointment"&&ApoDup.key({reporter:it.reporter||it.name,company:it.company,project:it.project,meetingDate:it.meetingDate,meetingTime:it.meetingTime})===k)return i}return -1}
+/* 入力し直したときに比べる項目（両方に値があって違えば「食い違い」：別の施設かもしれないので確かめる） */
+var APO_FIELDS=[["phone","電話番号"],["person","担当者"],["role","役職"],["email","メール"],["address","住所"],["personality","人柄"],["gaikokujin","外国人雇用"],["tokutei","特定技能"],["gijinkoku","技人国"],["decider","面接・採用決定者"]];
+function apoNorm(v,f){var s=String(v===null||v===undefined?"":v).replace(/[\s　]/g,"");return f==="phone"?s.replace(/\D/g,"").replace(/^0+/,""):ApoDup.normText(s)}
+function apoDiff(old,a){
+  var out={changed:[],conflict:[]};
+  APO_FIELDS.forEach(function(F){
+    var f=F[0],nv=a[f],ov=old[f];
+    if(nv===undefined||nv===null||String(nv).trim()==="")return;
+    if(apoNorm(nv,f)===apoNorm(ov,f))return;
+    out.changed.push(F[1]);
+    if((f==="phone"||f==="person")&&String(ov||"").trim()!=="")out.conflict.push(F[1]+"：前「"+ov+"」→ 今回「"+nv+"」");
+  });
+  /* 待ち行列の項目は「YES」「送付済」の文字、端末の一覧は true/false で持っている */
+  if(a.isTokutei&&!(old.isTokutei===true||old.isTokutei==="YES"))out.changed.push("特定技能案件");
+  if(a.recSent&&!(old.recSent===true||old.recSent==="送付済"))out.changed.push("録音送付");
+  return out;
+}
+/* 端末に登録済みのアポへ、直した項目を写す（空の項目では消さない・性別は変えない） */
+function apoMergeLocal(old,a){
+  APO_FIELDS.forEach(function(F){var v=a[F[0]];if(v!==undefined&&v!==null&&String(v).trim()!=="")old[F[0]]=v});
+  if(a.isTokutei)old.isTokutei=true;
+  if(a.recSent)old.recSent=true;
+}
+/* 同じアポがもう一度入力されたとき：送るかどうかを決めて、画面に出す文を返す（payload＝サーバーへ送る内容、changed＝直した項目がある） */
+function apoAgainSend(a,payload,changed){
+  var k=apoKeyOf(a),dlq=ld("sq_dlq")||[],di=apoPendingIn(dlq,k),fix={};
+  for(var p in payload)fix[p]=payload[p];
+  fix.apoFix=true;
+  if(di>=0){
+    /* 送れずに残っていた（電波・サーバーの不調）→ 同じ要求（同じ clientReqId）のまま、待ち行列へ戻す */
+    var it=dlq.splice(di,1)[0];delete it._failedAt;delete it._reason;delete it._retries;delete it._beaconAt;
+    SQ.push(it);sv("sq",SQ);sv("sq_dlq",dlq);
+    if(changed&&apoSrvOk())gasPost(fix);else{updateBadge();flushSQ()}
+    return "📤 送れていなかったこのアポを、もう一度送ります";
+  }
+  if(apoPendingIn(SQ,k)>=0){
+    if(changed&&apoSrvOk())gasPost(fix);
+    return "📤 このアポは送信待ちです（電波が戻ると自動で送ります。もう一度は登録しません）";
+  }
+  if(apoSrvOk()){
+    /* サーバーがシートを見て確かめる：あれば行を増やさず直した項目だけ書く／万一届いていなければ、ここで登録される */
+    gasPost(fix);
+    return changed?"✅ 登録済みのアポです（直した項目をサーバーの記録に反映します）":"✅ このアポは登録済みです（サーバーの記録を確かめます。もう一度は登録しません）";
+  }
+  return "✅ このアポは登録済みです（もう一度は送らず、メールだけ開きます）";
+}
+/* 直前の「アポ獲得」の通話（その通話の結果を直すときに使う）。端末に残す（アプリが閉じても続きから使える） */
+var APPO_CALL=ld("apoCall")||null;
+function apoCallSet(c){APPO_CALL=c;sv("apoCall",c)}
+function apoCallKeep(entry,pay){
+  var p={};for(var k in pay)p[k]=pay[k];
+  apoCallSet({u:U.id,cid:entry.id,co:entry.co,at:Date.now(),p:p});
+}
+/* いま入力しているアポの通話のCID（本人・1時間以内）。無ければ 0 */
+function apoCallCid(){var c=APPO_CALL;return c&&c.cid&&U&&c.u===U.id&&Math.abs(Date.now()-c.at)<=3600000?c.cid:0}
+/* 端末の履歴の通話（CID）を「アポ獲得」から「その他」に直す（退勤レポートのアポ数をずらさない） */
+function apoCallLocal(cid,note){
+  for(var i=0;i<hist.length;i++)if(hist[i].id===cid){
+    if(hist[i].r==="appo"){hist[i].r="other";hist[i].memo=(hist[i].memo?hist[i].memo+" ":"")+"（"+note+"）";sv("h-"+U.id,hist);try{sendHeartbeat(true)}catch(e){}return true}
+    return false;
+  }
+  return false;
+}
+/* 直前の「アポ獲得」の通話を「その他」に直す（本人・1時間以内の通話だけ）。直したら true
+   アポの入力画面は「アポ獲得」を保存したときにだけ開き、そのたびに APPO_CALL を入れ替えるので、APPO_CALL はいま入力しているアポの通話
+   （入力画面で法人名を直していることがあるので、会社名では比べない）
+   ・その通話の記録がまだ送られていなければ（送信待ち・送れなかった一覧）、その記録そのものを「その他」に直す（元の「アポ獲得」が届かない）
+   ・送ったあとなら、v107 以上のサーバーには「同じ通話（名前とCID）の行を上書き」（fix）を1回。古い・版の分からないサーバーには、
+     v36 からある「架電結果の取消」（CIDで行と文字起こしを消す）を送り、その返事が来てから、同じCID・文字起こしつきの「その他」を送る
+     （順番を入れ替えない：取消の項目に続きを持たせ、beacon では送らない） */
+function apoCallFix(note){
+  var c=APPO_CALL;apoCallSet(null);
+  if(!c||!c.cid||!U||c.u!==U.id||Math.abs(Date.now()-c.at)>3600000)return false;
+  apoCallLocal(c.cid,note);
+  var memo=function(m){return (m?m+" ":"")+"（"+note+"）"};
+  var inQ=function(list,skipHead){for(var i=skipHead?1:0;i<(list||[]).length;i++){var it=list[i];if(it&&it.type==="callResult"&&!it.fix&&String(it.cid)===String(c.cid))return it}return null};
+  var orig=inQ(SQ,SQ_SENDING),dlq=ld("sq_dlq")||[],origD=orig?null:inQ(dlq,false);
+  if(orig&&!orig._beaconAt){orig.result="その他";orig.memo=memo(orig.memo);sv("sq",SQ);return true}
+  if(origD){origD.result="その他";origD.memo=memo(origD.memo);sv("sq_dlq",dlq);return true}
+  var p={};for(var k in c.p)p[k]=c.p[k];
+  p.result="その他";p.memo=memo(p.memo);p.fix="apo_again";
+  if(apoSrvOk()){delete p.transcript;gasPost(p)}   /* 上書きなので、文字起こしの行はそのまま */
+  else gasPost({type:"callResult_undo",cid:c.cid,name:p.name||U.nm,_noBeacon:1,_then:p});
+  return true;
+}
+/* アポ入力を「← スキップ」で閉じたとき：同じ会社のアポが登録済みで登録しなかった（確認でキャンセル）なら、その通話は「その他」 */
+function apoSkip(){
+  var c=APPO_CALL;
+  if(c&&c.nearCancel)apoCallFix("同じ会社・同じ案件のアポが登録済みのため、アポとして登録せず");
+  else apoCallSet(null);
+}
+
+/* ═══ v107: アポの重複（管理者）＝「アポイント」シートに同じアポが2行以上あるかを確かめ、整理する ═══
+   同じアポ：報告者・法人名・案件名・商談日付・商談時間が同じ（判定はサーバーの apoDedupe_ ＝ ApoDup と同じ規則）
+   整理：2行目以降を「アポイント_重複」シートへ移す（消さずに残す。最初の登録は「アポイント」に残る）。1回に200行まで */
+var apoDupInfo=null,apoDupBusy=false;
+function apoDupRun(apply,quiet){
+  if(apoDupBusy){flash("⏳ 処理中です（終わるまでお待ちください）");return}
+  if(!GAS||!navigator.onLine){flash("⚠️ オンライン接続が必要です");return}
+  apoDupBusy=true;render();
+  directGasPost({type:"apo_dedupe",apply:!!apply,by:"管理者（アプリ）"},120000)
+    .then(function(res){
+      apoDupBusy=false;
+      if(res&&res.status==="ok"&&res.handled===true&&res.result){
+        if(apply){
+          var R=res.result;
+          flash("✅ 同じアポの2行目以降 "+(R.moved||0)+"件を「アポイント_重複」シートへ移しました"+(R.remaining?"（残り "+R.remaining+"件：もう一度「整理する」を押してください）":""));
+          apoDupRun(false,true);   /* 整理したあとの行番号で、もう一度確かめる */
+          return;
+        }
+        apoDupInfo=res.result;
+        if(!quiet)flash(res.result.exact?("⚠️ 同じアポが "+res.result.exact+"件 重複しています"):"✅ 同じアポの重複はありません");
+      }else if(res&&res.handled!==true){flash("⚠️ サーバー側が古いため確認できません（gas-code.txt を貼り付けて「新しいバージョン」でデプロイしてください）")}
+      else flash("⚠️ 失敗: "+((res&&res.message)||"不明"));
+      render();
+    })
+    .catch(function(err){apoDupBusy=false;flash("⚠️ 失敗: "+err.message);render()});
+}
+function apoDupApply(){
+  if(apoDupBusy||!apoDupInfo||!apoDupInfo.exact)return;
+  var n=Math.min(apoDupInfo.exact,200);
+  if(!window.confirm("同じアポの2行目以降 "+n+"件"+(apoDupInfo.exact>n?"（全"+apoDupInfo.exact+"件のうち。残りはもう一度押します）":"")+"を「アポイント_重複」シートへ移します（最初の登録は残します）。よろしいですか？"))return;
+  apoDupRun(true);
+}
+function apoDupCard(){
+  var I=apoDupInfo,h='<div id="apoDupCard" style="background:#fff;border-radius:14px;padding:12px;border:1px solid #e2e8f0;margin-bottom:12px">';
+  h+='<div style="font-size:13px;font-weight:800;color:#0f172a;margin-bottom:4px">🧹 アポの重複</div>';
+  /* サーバーが古いまま（v107 より前）なら知らせる：アプリだけを更新しても、サーバーでの二重登録の止め・整理は動かない */
+  var sv0=ld("srvVer"),svn=parseInt(String(sv0||"").replace(/^v/i,""),10);
+  if(sv0&&svn<107)h+='<div id="apoSrvOld" style="font-size:11px;font-weight:800;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:9px;padding:8px;margin-bottom:8px;line-height:1.6">⚠️ サーバー（Apps Script）が '+htmlEsc(String(sv0))+' のままです。アポの二重登録をサーバーでも止めるには、gas-code.txt を貼り付けて「デプロイを管理」→「新しいバージョン」でデプロイしてください（README 第6章）</div>';
+  h+='<div style="font-size:10px;color:#94a3b8;line-height:1.6;margin-bottom:7px">同じアポ（報告者・法人名・案件・商談日時が同じ）が「アポイント」シートに2行あると、請求・成績・経営連動で2件と数えられていました（v107 からは1件として数えます）。整理すると2行目以降を「アポイント_重複」シートへ移します（消えません）。</div>';
+  h+='<button id="apoDupChk"'+(apoDupBusy?" disabled":"")+' style="width:100%;padding:11px;border:1px solid #cbd5e1;border-radius:10px;background:#f8fafc;color:#0f172a;font-weight:800;font-size:12px;margin-bottom:'+(I?"8px":"0")+'">'+(apoDupBusy?"⏳ 処理中...":"🔍 重複を確かめる")+'</button>';
+  if(I){
+    h+='<div style="font-size:11px;font-weight:800;color:'+(I.exact?"#b45309":"#059669")+'">'+(I.exact?("△ 同じアポの重複 "+I.exact+"件（"+(I.groups||[]).length+"組）／全"+I.total+"件"):("✓ 同じアポの重複なし（全"+I.total+"件）"))+'</div>';
+    (I.groups||[]).slice(0,10).forEach(function(g){
+      h+='<div style="font-size:10px;color:#475569;padding:2px 0">・'+htmlEsc(g.reporter)+'｜'+htmlEsc(g.company)+(g.project?'（'+htmlEsc(g.project)+'）':'')+' 商談 '+htmlEsc(g.md||"")+' '+htmlEsc(g.mt||"")+'：'+g.keep+'行目を残し、'+g.rows.join("・")+'行目を整理</div>';
+    });
+    if((I.groups||[]).length>10)h+='<div style="font-size:10px;color:#94a3b8">ほか '+((I.groups||[]).length-10)+'組</div>';
+    if(I.exact&&!apoDupBusy)h+='<button id="apoDupFix" style="width:100%;padding:11px;border:none;border-radius:10px;background:#b45309;color:#fff;font-weight:800;font-size:12px;margin-top:8px">🧹 '+Math.min(I.exact,200)+'件を整理する（「アポイント_重複」シートへ移す）</button>';
+    if((I.near||[]).length){
+      h+='<div style="font-size:10.5px;font-weight:800;color:#64748b;margin-top:9px">要確認：同じ会社・同じ案件で商談日が60日以内のアポ '+I.near.length+'組（日時を変えて登録し直したもの、同じ商談を別の人が報告したものなら、古い行・余分な行を「アポイント」シートで消してください）</div>';
+      I.near.slice(0,10).forEach(function(g){
+        var slot={},same=false;g.forEach(function(x){var s=(x.md||"")+" "+(x.mt||"");if(slot[s])same=true;slot[s]=1});
+        h+='<div style="font-size:10px;color:#64748b;padding:2px 0">・'+htmlEsc(g[0].company)+(g[0].project?'（'+htmlEsc(g[0].project)+'）':'')+'：'+g.map(function(x){return x.row+'行目 '+htmlEsc(x.md||"")+' '+htmlEsc(x.mt||"")+' '+htmlEsc(x.reporter)}).join("／")+(same?' <b style="color:#b45309">同じ商談日時で報告者が違う</b>':'')+'</div>';
+      });
+    }
+  }
+  h+='</div>';
+  return h;
+}
 /* ═══ v100: 名簿はサーバーから取得する（コード修正なしで追加・退職）═══ */
 var rosterInfo=null,rosterEdit=null,rosterBusy2=false;
 function applyRoster(members){
@@ -6821,6 +7136,7 @@ function directGasPost(payload,timeoutMs){
   .then(function(t){
     var d;
     try{d=JSON.parse(t)}catch(e){throw new Error("Invalid JSON response: "+t.slice(0,200))}
+    if(d&&d.gasVersion)apoSrvSeen(d.gasVersion);   /* v107 */
     if(d.status==="ok"||d.status==="duplicate")return d;
     throw new Error(d.message||t);
   })
@@ -6893,6 +7209,7 @@ function loadFromGAS(staff,cb,opts){
     var d;
     try{d=JSON.parse(t)}catch(e){throw new Error("Invalid JSON: "+t.slice(0,100))}
     if(d.status!=="ok")throw new Error(d.message||"GAS error");
+    if(d.gasVersion)apoSrvSeen(d.gasVersion);   /* v107: ログイン時にサーバーの版を覚える（v107 のサーバーから） */
     
     /* 1. 架電リスト (v22: サーバーが正 - 空ならローカルもクリア) */
     /* 重要: 管理者がリストを削除した場合、GASは空になる。 */
@@ -7003,7 +7320,7 @@ function loadFromGAS(staff,cb,opts){
     
     /* 4. アポ (appos) */
     if(d.appos&&d.appos.length>0){
-      appos=d.appos;
+      appos=ApoDup.uniq(d.appos).keep;   /* v107: 同じアポは1件 */
       sv("a-"+staff.id,appos);
     }
     
@@ -7115,7 +7432,7 @@ function fetchAppointerStateToLocal(staff,cb){
       merged.sort(function(a,b){var ad=(a.d||"")+"_"+(a.tm||""),bd=(b.d||"")+"_"+(b.tm||"");return bd.localeCompare(ad)});
       sv("h-"+staff.id,merged.slice(0,1000));
     }
-    if(d.appos&&d.appos.length>0)sv("a-"+staff.id,d.appos);
+    if(d.appos&&d.appos.length>0)sv("a-"+staff.id,ApoDup.uniq(d.appos).keep);
     if(d.cb&&d.cb.length>0)sv("cb-"+staff.id,d.cb);
     if(d.ngList!==undefined)sv("ng-"+staff.id,d.ngList||[]);  /* v28 */
     if(cb)cb(true,{list:(d.list||[]).length,hist:(d.hist||[]).length});
@@ -7978,7 +8295,8 @@ function saveCall(skipCbDialog){
   clearDraft();   /* v56: 保存できたので入力途中の内容は破棄 */
 
   /* スプレッドシートへ送信 (キュー経由) */
-  gasPost({type:"callResult",name:U.nm,pin:U.pin,sheet:U.sh,
+  var crPay;   /* v107: 送った内容（同じアポの入力し直しのとき、この通話の結果だけを直して送り直す） */
+  gasPost(crPay={type:"callResult",name:U.nm,pin:U.pin,sheet:U.sh,
     date:dateJP(),time:now().slice(0,5),
     company:cur?gf(cur,"co"):"",phone:cur?gf(cur,"ph"):"",person:cur?gf(cur,"pe"):"",
     result:resLabel,duration:timerStr(tsec),checkedCount:checked+"/"+CHECKS.length,
@@ -7993,6 +8311,7 @@ function saveCall(skipCbDialog){
   ck={};selRes=null;bousou=[];endStep="";
 
   if(entry.r==="appo"){
+    apoCallKeep(entry,crPay);   /* v107 */
     af={project:"",meetingDate:"",meetingTime:"",company:cur?gf(cur,"co"):"",person:cur?gf(cur,"pe"):"",gender:"男",phone:cur?gf(cur,"ph"):"",role:"",address:cur?gf(cur,"ad"):"",datetime:"",email:"",personality:"",
       isTokutei:false,gaikokujin:"",tokutei:"",gijinkoku:"",decider:""};
     V="appo";vib([50,40,50,40,80]);render()
@@ -8527,6 +8846,8 @@ function summarizeDaily(){
 }
 
 /* ---------- アポメール送信 (v11) ---------- */
+/* v107: 送信中（押してから画面が戻るまでの1.5秒）の連打を止める。押した時刻を持ち、8秒たてば外れる（画面が戻らなかったときに押せなくならないように） */
+var APPO_BUSY=0;
 function sendAppo(){
   ["project","meetingDate","meetingTime","company","person","phone","role","address","email","personality"].forEach(function(f){
     var el=document.getElementById("af_"+f);if(el)af[f]=el.value
@@ -8546,6 +8867,24 @@ function sendAppo(){
     if(!String(a.decider||"").trim())miss.push("面接・採用決定者");
     if(miss.length){flash("⚠️ 特定技能案件の必須項目が未入力です: "+miss.join("・"));vib([100,60,100]);return}
   }
+  /* v107: 同じアポ（報告者・法人名・案件・商談日時が同じ）は1回だけ登録する。同じ会社・同じ案件のアポが60日以内にあれば、登録の前に確かめる */
+  if(APPO_BUSY&&Date.now()-APPO_BUSY<8000){flash("⏳ 送信中です（同じアポは1回だけ送ります）");return}
+  var apoMine=appos.map(function(x){var y={};for(var k in x)y[k]=x[k];y.reporter=U.nm;return y});   /* 端末の一覧は本人の分 */
+  var apoChk=ApoDup.check({reporter:U.nm,company:a.company,project:a.project,meetingDate:a.meetingDate,meetingTime:a.meetingTime},apoMine,60);
+  var apoKq=apoKeyOf(a),apoDlq=ld("sq_dlq")||[];
+  /* 一覧に無くても、送信待ち・送れずに残っている同じアポがあれば「同じアポ」（ログインし直しで一覧から外れていたもの） */
+  var apoOld=apoChk.exact?appos[apoMine.indexOf(apoChk.exact)]:(SQ[apoPendingIn(SQ,apoKq)]||apoDlq[apoPendingIn(apoDlq,apoKq)]||null);
+  var apoAgain=!!apoOld,apoDf=apoAgain?apoDiff(apoOld,a):null;
+  if(apoAgain){
+    if(apoDf.conflict.length&&!window.confirm("同じ会社・同じ商談日時のアポが登録済みです：\n"+(apoOld.company||"")+(apoOld.project?"（"+apoOld.project+"）":"")+" 商談 "+(ApoDup.normDate(apoOld.meetingDate)||apoOld.meetingDate||"")+" "+(ApoDup.normTime(apoOld.meetingTime)||apoOld.meetingTime||"")+"\n\n"+apoDf.conflict.join("\n")+"\n\n同じアポの入力し直しなら「OK」（登録済みの記録を今回の内容に直します）。\n別の施設・別の会社なら「キャンセル」を押し、法人名に施設名や支店名を足してから送ってください。")){flash("登録しませんでした");return}
+  }else if(apoChk.near.length){
+    var apoNb=apoChk.near[0];
+    if(!window.confirm("同じ会社・同じ案件のアポが登録済みです：\n"+(apoNb.company||"")+(apoNb.project?"（"+apoNb.project+"）":"")+" 商談 "+(ApoDup.normDate(apoNb.meetingDate)||apoNb.meetingDate||"")+" "+(ApoDup.normTime(apoNb.meetingTime)||apoNb.meetingTime||"")+"\n\n別のアポとして登録しますか？\n（日時の変更なら「キャンセル」を押し、前の登録の整理を管理者に頼んでください）")){
+      if(APPO_CALL){APPO_CALL.nearCancel=1;apoCallSet(APPO_CALL)}   /* このあと「← スキップ」で閉じたら、この通話は「その他」 */
+      flash("登録しませんでした");return
+    }
+  }
+  APPO_BUSY=Date.now();
   var body="アポイント報告\n\n"+
     "案件名: "+a.project+"\n"+
     "商談日付: "+a.meetingDate+"\n"+
@@ -8566,18 +8905,32 @@ function sendAppo(){
     "（送付先: 楠 晶恵 様 a.kusunoki@sukimagroup.jp）\n\n"+
     "報告者: "+U.nm;
   var subj="【アポ報告】"+a.company+" "+a.person+"様 - "+U.nm;
-  appos.unshift({...a,id:Date.now(),reporter:U.nm,date:td()});
-  sv("a-"+U.id,appos);
-  gasPost({type:"appointment",name:U.nm,pin:U.pin,sheet:U.sh,
+  var apoPay={type:"appointment",name:U.nm,pin:U.pin,sheet:U.sh,
     project:a.project,meetingDate:a.meetingDate,meetingTime:a.meetingTime,
     isTokutei:a.isTokutei?"YES":"",gaikokujin:a.gaikokujin||"",tokutei:a.tokutei||"",
     gijinkoku:a.gijinkoku||"",decider:a.decider||"",recSent:a.recSent?"送付済":"未送付",
     company:a.company,person:a.person,gender:a.gender,phone:a.phone,role:a.role,address:a.address,
-    datetime:a.datetime,email:a.email,personality:a.personality,reporter:U.nm,date:dateJP()});
+    datetime:a.datetime,email:a.email,personality:a.personality,reporter:U.nm,date:dateJP()};
+  if(!apoAgain){
+    appos.unshift({...a,id:Date.now(),reporter:U.nm,date:td()});
+    sv("a-"+U.id,appos);
+    var apoCc=apoCallCid();if(apoCc)apoPay.callCid=apoCc;   /* この送信の通話：サーバーが同じアポを見つけたら、その通話を「その他」に直す */
+    gasPost(apoPay);
+    apoCallSet(null);   /* この通話は「アポ獲得」のまま（新しいアポ） */
+  }else{
+    /* v107: 同じアポの入力し直し：行を増やさない。送れていなかったものは送り直す。直した項目はサーバーの記録にも反映（v107 のサーバー） */
+    var apoMsg=apoAgainSend(a,apoPay,apoDf.changed.length>0);
+    if(apoChk.exact){if(apoDf.changed.length){apoMergeLocal(apoOld,a);sv("a-"+U.id,appos)}}
+    else{appos.unshift({...a,id:Date.now(),reporter:U.nm,date:td()});sv("a-"+U.id,appos)}
+    apoCallFix("登録済みのアポ（同じ会社・案件・商談日時）の入力し直し");   /* この通話は「アポ獲得」ではなく「その他」 */
+    flash(apoMsg);
+  }
   vib([60,40,60,40,120]);
   window.location.href="mailto:"+APPO_MAIL_TO+"?subject="+encodeURIComponent(subj)+"&body="+encodeURIComponent(body);
   var apoCo=a.company||"";
   setTimeout(function(){
+    APPO_BUSY=0;
+    if(apoAgain){af={project:"",meetingDate:"",meetingTime:"",company:"",person:"",gender:"男",phone:"",role:"",address:"",datetime:"",email:"",personality:"",isTokutei:false,gaikokujin:"",tokutei:"",gijinkoku:"",decider:""};goNext();V="home";render();return}
     af={project:"",meetingDate:"",meetingTime:"",company:"",person:"",gender:"男",phone:"",role:"",address:"",datetime:"",email:"",personality:"",isTokutei:false,gaikokujin:"",tokutei:"",gijinkoku:"",decider:""};
     goNext();
     /* v84: アポ登録の直後に、その通話の録音を送ってもらう */
@@ -12352,6 +12705,7 @@ if(V==="admin"){
     h+='<div style="font-size:9px;color:#94a3b8;margin-top:6px">点検 '+htmlEsc(sysDiag.at||"")+'／サーバー '+htmlEsc(sysDiag.gasVersion||"")+'</div>';
   }
   h+='</div>';
+  h+=apoDupCard();   /* v107 */
   h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap"><div style="font-size:17px;font-weight:800;color:#1a237e;flex:1">👑 管理者ダッシュボード</div>';
   h+='<button id="testGasA" style="padding:8px 12px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#475569;font-size:11px;font-weight:700">🌐 GAS接続テスト</button>';
   h+='<button id="adSyncAll" style="padding:8px 12px;border:1.5px solid #10b981;border-radius:8px;background:#ecfdf5;color:#059669;font-size:11px;font-weight:700">'+(adminSyncing?"⏳ 同期中...":"🔄 全員の状況を同期")+'</button>';
@@ -15259,6 +15613,7 @@ Array.prototype.slice.call(document.querySelectorAll(".alShare")).forEach(functi
 (function(){var sel=document.getElementById("alPin");if(sel&&!sel.__bound){sel.__bound=true;sel.addEventListener("change",function(){adminList.pin=sel.value})}})();
 B("lsFetch",function(){fetchListStatus()});
 B("sysDiag",function(){runSystemDiagnose()});
+B("apoDupChk",function(){apoDupRun(false)});B("apoDupFix",function(){apoDupApply()});   /* v107 */
 B("kpiFetch",function(){fetchKpi("");fetchKpiAlerts()});
 B("kpiPush",function(){runKpiPush()});
 B("rsReload",function(){flash("🔄 名簿を読み込んでいます…");fetchRoster(false)});
@@ -15479,7 +15834,7 @@ Array.prototype.slice.call(document.querySelectorAll(".afYN")).forEach(function(
     af[b.getAttribute("data-k")]=b.getAttribute("data-v");vib(20);render();
   });
 });
-B("bk",function(){if(V==="appo")goNext();V="home";unlockScreen();render()});
+B("bk",function(){if(V==="appo"){apoSkip();goNext()}V="home";unlockScreen();render()});   /* v107: apoSkip */
 B("pv",function(){if(ci>0){ci--;render()}});
 B("nx",function(){if(ci<rows.length-1){ci++;render()}});
 B("sk",function(){skipped[ci]=true;sv("sk-"+U.id,skipped);vib(30);flash("⏭ スキップ");goNext();render()});

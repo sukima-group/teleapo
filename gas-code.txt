@@ -1,5 +1,12 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v108
+// 川嶋メソッド テレアポ管理 — GAS完全版 v109
+// v109: ⑵ 管理者の認証をサーバーへ（15文字以上のパスワード＋初めての端末はメールの確認コード＋30分/12時間で再ログイン）。
+//          管理者PIN（9999）と ADMIN_GUARD を廃止し、管理者専用の要求はログインなしでは常に断る。
+//          経営管理システムの連携キーをコード（公開ファイル）から外し、スクリプトプロパティだけに置く。
+//       ⑶ シフト申請：受け取った申請を成否にかかわらず「シフト受信ログ」に残す。応答に版を入れる。
+//          管理者の先頭に、すべての月の承認待ち・今月と来月の提出状況・保存できなかった申請を出す。
+//          通知先に、管理者ログインのGmailと、管理画面で足した宛先を加える。
+//       ⑴ 通話録音の自動送信（Galaxy の年2桁のファイル名・ドライブで大きさを確かめてから端末から消す・端末ごとの状態）。
 // v108: ① シフト申請の通知を確実に届ける
 //          通知ログ（送信済・再送待ち・失敗）、自動再送、管理画面の警告を追加。
 //          宛先はサーバーの CONFIG だけを使い、端末から送られた宛先は使わない。
@@ -82,8 +89,9 @@ var CONFIG = {
   },
 
   // ── 管理者 ──
-  ADMIN_PIN: "9999",        // 画面の管理者PIN（アポインターのPINと重複不可。画面側の CONFIG と合わせる）
-  ADMIN_GUARD: false,       // true：管理者用の要求に管理パスコード（収支のパスコード）を必須にする
+  // v109: 管理者PIN（9999）は廃止。管理者は画面の「🔐 管理者ログイン」から、サーバーで照合する
+  //       15文字以上のパスワード（初めての端末はメールの確認コードも）で入る。管理者専用の要求は常に保護する
+  ADMIN_PIN: "",
 
   // ── 名簿（PIN は3桁・重複不可。sh＝架電リストのタブ名。ここに無い人も名簿シートから追加できます） ──
   ROSTER: [
@@ -136,9 +144,11 @@ var CONFIG = {
     ["タケノウチ ユウコ", "アポインター報酬", "竹之内優子", "退職"]
   ],
 
-  // ── 経営管理システム連携のキー（本番はスクリプトプロパティ KANRI_KEY / KANRI_ADMIN_KEY の設定を推奨） ──
-  KANRI_KEY: "sukima-kanri-2026",
-  KANRI_ADMIN_KEY: "sukima-kanri-admin-2026",
+  // ── 経営管理システム連携のキー ──
+  //   v109: このファイルは GitHub で公開されるため、鍵は書かない。スクリプトプロパティ KANRI_KEY / KANRI_ADMIN_KEY に
+  //         自動で乱数の鍵を作る（管理画面の「🔐 管理者のセキュリティ」→「連携キー」で表示・作り直し）
+  KANRI_KEY: "",
+  KANRI_ADMIN_KEY: "",
 
   // ── 外部スプレッドシート連携 ──
   EXT_ALLOW_SHARED_TAB: false   // true にすると、同じタブを複数人の連携先にできる（結果が混ざるため非推奨）
@@ -148,11 +158,12 @@ var CONFIG = {
 var SHEET_ID = CONFIG.SHEET_ID;
 var ADMIN_SHEET_ID = CONFIG.ADMIN_SHEET_ID;
 // v95: この GAS がどの版で、どの機能に対応しているか
-var GAS_VERSION = "v108";
+var GAS_VERSION = "v109";
 var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
   "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run",
   "ext_prepare","pl_dashboard","pl_ledger","pl_projects","pl_bank","pl_quality","pl_bank_drive","jp_holidays",   // v105-107: 収支・損益・銀行明細
-  "notify_log","notify_retry","shift_registered","shift_status","shift_admin_days","live_server","ext_list_id","ext_import_preview","roster_check"];   // v108
+  "notify_log","notify_retry","shift_registered","shift_status","shift_admin_days","live_server","ext_list_id","ext_import_preview","roster_check",   // v108
+  "adm_auth","shift_receipt","shift_pending","rec_auto","kanri_key_props"];   // v109
 // 名簿（稼働中）→ PIN・氏名・姓・メール。起動時に「アポインター名簿」シートの内容で置き換わる（rosterApply_）
 var PIN_MAP = {}, FULL_NAME_MAP = {}, STAFF_EMAILS = {};
 (function () {
@@ -369,7 +380,8 @@ function doPost(e) {
     // v108: 「処理済み」の印は、処理が成功してから付ける。処理中は短い印（90秒）だけ付け、
     //       同時に届いた同じ要求（ビーコンと通常送信など）は「処理中」と返す（端末は少し後に再送し、そのときは duplicate になる）。
     //       v107 までは処理前に印を付けていたため、1回目が途中で失敗すると再送が「処理済み」として捨てられていた。
-    var READ_ONLY_TYPES = ["fetch_state", "fetch_live", "status_update", "fetch_all_shifts", "notify_log", "roster_get", "roster_check", "config_check", "shift_status"];
+    var READ_ONLY_TYPES = ["fetch_state", "fetch_live", "status_update", "fetch_all_shifts", "notify_log", "roster_get", "roster_check", "config_check", "shift_status",
+      "shift_pending", "rec_auto_status", "adm_status", "adm_session", "adm_devices", "adm_kanri_keys", "adm_notify_get"];   // v109
     var idemOn = !!(d.clientReqId && READ_ONLY_TYPES.indexOf(d.type) < 0);
     if (idemOn) {
       var idempSeen = idemSeen_(d.clientReqId);
@@ -400,7 +412,7 @@ function doPost(e) {
 // v108: 要求ごとの処理（doPost から分けた。例外は status:"error" の JSON にして返す）
 function doPostRoute_(d) {
   try {
-    // v108: 管理者用の要求の保護（CONFIG.ADMIN_GUARD が true のとき）
+    // v109: 管理者用の要求の保護（ログインなしでは常に断る）・管理者ログインの処理（adm_*）
     var guard = adminGuardCheck_(d);
     if (guard) return guard;
     // v108: 作り直した処理（シフト・通知ログ・リアルタイム集計・名簿の点検）
@@ -3934,8 +3946,7 @@ function kanriAggregate_(att, hist, apo, fromKey){
 // v67: 品質ゲート・鍵管理・レート制限・日次スナップショット・自己テスト
 // ============================================================
 function kanriKey_(){
-  try{ var p=PropertiesService.getScriptProperties().getProperty("KANRI_KEY"); if(p) return String(p); }catch(_e){}
-  return KANRI_KEY; // フォールバック（本番はスクリプトプロパティ KANRI_KEY を設定して鍵をコード外へ）
+  return kanriKeysEnsure_().read;   // v109: スクリプトプロパティの鍵（無ければ乱数で作る）
 }
 function kanriRateOk_(){
   try{
@@ -4035,12 +4046,7 @@ var KANRI_ALERT_EMAIL = CONFIG.NOTIFY.SYSTEM_ALERT_TO; // 障害通知先（空=
 function kanriRole_(key){
   var k=String(key||"");
   if (!k) return "";
-  var admin=KANRI_ADMIN_KEY, read=KANRI_KEY;
-  try{
-    var p=PropertiesService.getScriptProperties();
-    admin=p.getProperty("KANRI_ADMIN_KEY")||admin;
-    read=p.getProperty("KANRI_KEY")||read;
-  }catch(_e){}
+  var kk=kanriKeysEnsure_(), admin=kk.admin, read=kk.read;   // v109: 鍵はスクリプトプロパティだけ（コードの鍵は使わない）
   if (k===admin) return "admin";
   if (k===read) return "read";
   return "";
@@ -4213,26 +4219,39 @@ var REC_MAX_MB = 25;   // 1ファイルの上限（Gmail添付の実用上限）
 function recDigits_(s) { return String(s || "").replace(/[^0-9]/g, ""); }
 
 function recParseStamp_(fileName, fallbackMs) {
-  var t = String(fileName || "");
-  var m = t.match(/(20\d{2})[-_\/.]?(\d{2})[-_\/.]?(\d{2})[ _T-]+(\d{2})[-_:;.]?(\d{2})(?:[-_:;.]?(\d{2}))?/);
-  if (m) {
-    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]),
-      Number(m[4]), Number(m[5]), Number(m[6] || 0)).getTime();
+  // v109: Galaxy の「通話記録 09012345678_261104_103015.m4a」（年が2桁）に対応。
+  //       以前は4桁の年しか読めず、電話番号の中の「20…」を日時と誤読することもあった（月・日・時刻の範囲で確かめる）
+  var t = String(fileName || "").replace(/\.[A-Za-z0-9]{2,5}$/, "");
+  function mk(y, mo, d, h, mi, sec) {
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || sec > 59) return 0;
+    var dt = new Date(y, mo - 1, d, h, mi, sec);
+    return dt.getMonth() === mo - 1 ? dt.getTime() : 0;
   }
+  var m, re, best = 0;
+  re = /(20\d{2})[-_\/.]?(\d{2})[-_\/.]?(\d{2})[ _T\-]+(\d{2})[-_:;.]?(\d{2})(?:[-_:;.]?(\d{2}))?/g;
+  while ((m = re.exec(t))) { var v1 = mk(+m[1], +m[2], +m[3], +m[4], +m[5], +(m[6] || 0)); if (v1) best = v1; re.lastIndex = m.index + 1; }
+  if (best) return best;
+  re = /(?:^|[^\d])(\d{2})(\d{2})(\d{2})[_\- ](\d{2})(\d{2})(\d{2})(?!\d)/g;
+  while ((m = re.exec(t))) { var v2 = mk(2000 + Number(m[1]), +m[2], +m[3], +m[4], +m[5], +m[6]); if (v2) best = v2; re.lastIndex = m.index + 1; }
+  if (best) return best;
   m = t.match(/(20\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
-  if (m) {
-    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]),
-      Number(m[4]), Number(m[5]), Number(m[6])).getTime();
-  }
+  if (m) { var v3 = mk(+m[1], +m[2], +m[3], +m[4], +m[5], +m[6]); if (v3) return v3; }
   return Number(fallbackMs) || 0;
 }
 
 function recPhoneIn_(fileName) {
-  var d = String(fileName || "").replace(/20\d{6}[\d_\-:;.]*/g, " ");  // 日時部分を除外
-  var m = d.match(/\d[\d\-()\s]{7,}\d/g);
+  // v109: 末尾の日時（Galaxy：_YYMMDD_HHMMSS）を先に取り除いてから番号を探す。
+  //       以前は「20」で始まる8桁を日時とみなして消していたため、090-2012-3456 などの番号が読めなかった
+  var d = String(fileName || "").replace(/\.[A-Za-z0-9]{2,5}$/, "");
+  d = d.replace(/[_\- ]\d{6}[_\- ]\d{6}$/, " ");
+  d = d.replace(/(20\d{2})([-_\/.]?)(\d{2})\2(\d{2})[ _T\-]+(\d{2})[-_:;.]?(\d{2})([-_:;.]?\d{2})?/g, function (all, y, sep, mo, dd) {
+    return (+mo >= 1 && +mo <= 12 && +dd >= 1 && +dd <= 31) ? " " : all;
+  });
+  var m = d.match(/\+?\d[\d\-()\s]{7,}\d/g);
   if (!m) return "";
   for (var i = 0; i < m.length; i++) {
     var v = recDigits_(m[i]);
+    if (v.indexOf("81") === 0 && v.length >= 11 && v.length <= 12) v = "0" + v.slice(2);
     if (v.length >= 9 && v.length <= 11) return v;
   }
   return "";
@@ -4956,7 +4975,7 @@ function recHandle_(d) {
       return J({ status: "ok", handled: true, result: systemDiagnose(d.appVersion || "") });
     }
     if (d.type === "roster_get") {
-      return J({ status: "ok", handled: true, result: rosterForClient(d.forAdmin === true) });
+      return J({ status: "ok", handled: true, result: rosterForClient(d.forAdmin === true && ADM_REQ_OK_) });   // v109
     }
     if (d.type === "roster_upsert") {
       var up = rosterUpsert(d.member || {});
@@ -5055,6 +5074,8 @@ function recHandle_(d) {
       });
       return J({ status: "ok", folders: fcOut });
     }
+    if (d.type === "rec_auto_report") { return J({ status: "ok", handled: true, result: recAutoReport_(d) }); }   // v109（アポインターの端末）
+    if (d.type === "rec_auto_status") { return J({ status: "ok", handled: true, result: recAutoStatus_() }); }   // v109（管理者）
     if (d.type === "rec_upload_session") {
       var ses = recCreateUploadSession(d);
       return J(ses.ok ? { status: "ok", result: ses } : { status: "error", message: ses.message });
@@ -6897,7 +6918,11 @@ function recUploadOne(d) {
       d.size || 0, file.getUrl() + (arcUrl ? " / 保管庫:" + arcUrl : ""), key]);
   } catch (e4) {}
 
-  res.ok = true;
+  var vsize = -1;
+  try { vsize = Number(file.getSize()) || 0; } catch (eS) {}
+  res.verified = !d.size || vsize === Number(d.size);   // v109: 保存した大きさを確かめる
+  res.ok = res.verified;
+  if (!res.verified) res.message = "保存した大きさが一致しません（" + vsize + "／" + d.size + "）";
   res.url = file.getUrl();
   res.archiveUrl = arcUrl;
   res.path = plan.path;
@@ -7041,7 +7066,7 @@ function recCreateUploadSession(d) {
   var res;
   try {
     res = UrlFetchApp.fetch(
-      "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true",
+      "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,name,size",
       { method: "post",
         contentType: "application/json; charset=UTF-8",
         payload: JSON.stringify(meta),
@@ -7070,30 +7095,28 @@ function recCreateUploadSession(d) {
 
 // アップロード完了の記録（重複判定にも使う）
 function recCompleteUpload(d) {
+  // v109: ドライブ上のファイルの大きさが端末のファイルと同じかを確かめる（同じときだけ端末から消してよい）
   var pin = String(d.pin || "").trim();
   var name = String(d.fileName || "").trim();
   var size = Number(d.size) || 0;
   var key = recDupKey_(pin, name, size);
-  var url = String(d.fileUrl || "");
-  if (!url && d.fileId) {
-    try { url = DriveApp.getFileById(String(d.fileId)).getUrl(); } catch (e) {}
+  var url = String(d.fileUrl || ""), verified = false, driveSize = -1, f2 = null;
+  if (d.fileId) {
+    try { f2 = DriveApp.getFileById(String(d.fileId)); if (!url) url = f2.getUrl(); driveSize = Number(f2.getSize()) || 0; verified = size > 0 && driveSize === size; } catch (e) {}
   }
   var archiveUrl = "";
   try {
     var log = recLoadIngested_();
-    if (log.seen[key]) return { ok: true, skipped: true };
-    // v85: 全体保管庫にも「アポインター名_日付_時刻」で残す
-    if (d.fileId) {
-      try {
-        var f2 = DriveApp.getFileById(String(d.fileId));
-        var atMs2 = recParseStamp_(name, f2.getDateCreated().getTime());
-        archiveUrl = recArchiveCopy_(f2, pin, atMs2, name);
-      } catch (eA) {}
-    }
-    log.sheet.appendRow([new Date(), "アプリ直送", pin, FULL_NAME_MAP[pin] || "", name, size,
+    if (log.seen[key]) return { ok: true, skipped: true, verified: true };
+    if (!verified) return { ok: false, verified: false, message: "ドライブ上で確認できませんでした（端末 " + size + " バイト／ドライブ " + driveSize + " バイト）" };
+    try {
+      var atMs2 = recParseStamp_(name, Number(d.lastModified) || f2.getDateCreated().getTime());
+      archiveUrl = recArchiveCopy_(f2, pin, atMs2, name);
+    } catch (eA) {}
+    log.sheet.appendRow([new Date(), d.auto ? "自動送信" : "アプリ直送", pin, FULL_NAME_MAP[pin] || "", name, size,
       url + (archiveUrl ? " / 保管庫:" + archiveUrl : ""), key]);
   } catch (e2) { return { ok: false, message: String(e2) }; }
-  return { ok: true, url: url, archiveUrl: archiveUrl };
+  return { ok: true, verified: true, size: driveSize, url: url, archiveUrl: archiveUrl };
 }
 
 // 本日まだ録音を送っていない担当者を洗い出す（管理者の催促に使う）
@@ -9935,6 +9958,13 @@ function plDiagChecks_() {
     out.push(diagItem_("収支", "売上に換算しない案件", ex.length ? "ok" : "warn", ex.length ? ex.join("・") : "登録なし",
       ex.length ? "" : "「📦案件」で対象外の案件を登録してください"));
     out.push(diagItem_("収支", "単価・目標年商", "ok", "1件 " + plNum_(st.unitPrice) + "円／目標 " + plNum_(st.annualTarget) + "円", ""));
+    var apw = admPwGet_();
+    out.push(diagItem_("セキュリティ", "管理者パスワード（サーバーで照合）", apw ? "ok" : "ng",
+      apw ? "設定済み（" + admWhen_(apw.setAt) + "）・登録端末 " + admDevices_().length + "台・保護している要求 " + Object.keys(ADMIN_ONLY_TYPES).length + "種類" : "未設定",
+      apw ? "" : "ログイン画面の「🔐 管理者ログイン」→「初回設定」で15文字以上のパスワードを決めてください"));
+    var kk0 = kanriKeysEnsure_();
+    out.push(diagItem_("セキュリティ", "経営管理システムの連携キー", "ok", "スクリプトプロパティに保存（コードには無し）・作成 " + (kk0.at ? admWhen_(kk0.at) : ""), ""));
+    out.push(diagItem_("シフト", "シフト申請の通知先", shiftNotifyList_().length ? "ok" : "ng", shiftNotifyList_().map(admMask_).join("・") || "なし", shiftNotifyList_().length ? "" : "CONFIG.NOTIFY.SHIFT_TO に管理者のメールを書いてください"));
   } catch (e) { out.push(diagItem_("収支", "収支シート", "ng", String(e), "管理者用スプレッドシートの共有を確認してください")); }
   return out;
 }
@@ -9951,7 +9981,7 @@ function plHandle_(d) {
       else r = { set: !!plAuthState_().hash };
       return J({ status: "ok", handled: true, result: r });
     }
-    if (d.type !== "pl_projects") {
+    if (d.type !== "pl_projects" && !ADM_REQ_OK_) {   // v109: 管理者ログインで保護（パスコードは不要）
       var au = plAuthCheck_(d.plKey);
       if (!au.ok) return J({ status: "ok", handled: true, auth: false, need: au.need, wrong: !!au.wrong });
     }
@@ -10580,22 +10610,7 @@ function respOk_(out) {
   } catch (e) { return false; }
 }
 
-// ── 管理者用の要求の保護（CONFIG.ADMIN_GUARD が true のときだけ有効。既定は従来どおり） ──
-var ADMIN_TYPES_ = ["fetch_all_shifts", "shift_approve", "fetch_call_summary", "announce_post", "announce_delete", "fetch_audit",
-  "fetch_attendance_summary", "fetch_appo_billing", "auth_reset", "system_diag", "create_list_sheets", "ext_config_get", "ext_config_set",
-  "ext_bulk_setup", "ext_run_all", "shift_calendar", "shift_import", "perf_summary", "cleanup_sheets", "ext_sheets", "ext_trigger",
-  "ext_bulk_configure", "ext_config_audit", "ext_spread_setup", "ext_run_everyone", "ext_config_copy", "ext_detect", "ext_import",
-  "ext_sync", "ext_prepare", "fetch_transcripts", "roster_upsert", "roster_retire", "roster_cleanup", "roster_init_new", "roster_check",
-  "roster_reassign", "notify_log", "notify_retry", "notify_test", "nightly_run", "nightly_trigger", "kanri_wb_install", "system_diagnose"];
-function adminGuardCheck_(d) {
-  if (!CONFIG.ADMIN_GUARD) return null;
-  if (ADMIN_TYPES_.indexOf(String(d.type || "")) < 0) return null;
-  var a = plAuthCheck_(d.adminKey);
-  if (a && a.ok) return null;
-  return jsonOut_({ status: "error", handled: true, code: "admin_auth", need: a ? a.need : "key",
-    message: a && a.need === "setup" ? "管理パスコードが未設定です。「💹 収支・損益」でパスコードを決めてください"
-      : (a && a.need === "locked" ? "まちがいが続いたため15分間ロックしています" : "管理者の操作です。管理パスコードを入力してください") });
-}
+// v109: 管理者用の要求の保護は adminGuardCheck_（ファイル末尾・ADMIN_ONLY_TYPES）で常に行う
 
 // ═══════════════════════════════════════════════════════════════════════
 // v108 ①: 通知ログ（送信の記録・自動再送・管理画面の警告）
@@ -10925,7 +10940,7 @@ function shiftSubmit_(d) {
   }
   // 通知（ロックの外で送る。結果は通知ログとシフト申請の「通知状態」に残る）
   var subj = (isModify ? "【シフト修正申請】" : "【シフト申請】") + month.replace("-", "年") + "月 " + name;
-  var nr = notifyDispatch_(isModify ? "シフト修正申請" : "シフト申請", CONFIG.NOTIFY.SHIFT_TO, subj,
+  var nr = notifyDispatch_(isModify ? "シフト修正申請" : "シフト申請", shiftNotifyList_(), subj,   // v109: 管理者ログインのGmailにも
     shiftMailBody_(isModify, name, pin, month, nd.days, sum, reqId), name + " / " + month + " / " + reqId, "SHIFT-" + reqId);
   var nameNote = (d.name && !sameName_(d.name, name)) ? "（端末の表示名: " + d.name + "）" : "";
   try { logAudit(isModify ? "シフト修正申請" : "シフト申請", name, month, "通知: " + nr.status + nameNote); } catch (eA) {}
@@ -11059,7 +11074,7 @@ function shiftApprove_(d) {
   }
   var name = cur.name;
   var key = cur.requestId || (pin + "-" + month + "-" + cur.row);
-  var n1 = notifyDispatch_("シフト" + newStatus, CONFIG.NOTIFY.SHIFT_TO, "[シフト" + newStatus + "] " + name + " " + month,
+  var n1 = notifyDispatch_("シフト" + newStatus, shiftNotifyList_(), "[シフト" + newStatus + "] " + name + " " + month,
     name + " さんの " + month + " シフトを「" + newStatus + "」にしました。" + (d.note ? "\n差戻理由: " + d.note : ""),
     name + " / " + month, "SHIFTAPV-" + key + "-" + newStatus + "-" + (d.clientReqId || Utilities.getUuid()));
   var n2 = null, personal = personalEmailFor(pin);
@@ -11475,9 +11490,12 @@ function v108Handle_(d) {
   switch (d.type) {
     case "shift_apply":
     case "shift_modify":
-      return jsonOut_(shiftSubmit_(d));
+      return jsonOut_(shiftSubmitV109_(d));   // v109: 受信ログ・版つき
+    case "shift_pending":   // v109（管理者）：すべての月の承認待ち・今月と来月の提出状況・保存できなかった申請
+      var sp = shiftPendingV109_(); sp.status = "ok"; sp.handled = true;
+      return jsonOut_(sp);
     case "shift_status":   // 本人の申請状況だけ（リストなどは返さない・軽い）
-      return jsonOut_({ status: "ok", handled: true, history: shiftHistoryFor_(rosterNormPin_(d.pin)) });
+      return jsonOut_({ status: "ok", handled: true, gasVersion: GAS_VERSION, history: shiftHistoryFor_(rosterNormPin_(d.pin)) });
     case "fetch_all_shifts":
       try { notifyRetryPending(3); } catch (e) {}
       return jsonOut_(shiftAdminList_(d.month));
@@ -11502,7 +11520,7 @@ function v108Handle_(d) {
       }
       return jsonOut_({ status: "ok", handled: true, result: notifyRetryPending(30) });
     case "notify_test":
-      var tr = notifyDispatch_("テスト", CONFIG.NOTIFY.SHIFT_TO, "【テスト】通知の確認（" + fmtJst_(new Date()) + "）",
+      var tr = notifyDispatch_("テスト", shiftNotifyList_(), "【テスト】通知の確認（" + fmtJst_(new Date()) + "）",
         "このメールが届いていれば、シフト申請の通知は正常に届きます。\n返信は不要です。\n\n川嶋メソッド テレアポ業務管理システム", "テスト送信", "TEST-" + Utilities.getUuid());
       return jsonOut_({ status: "ok", handled: true, result: tr });
     case "roster_check":
@@ -11539,5 +11557,646 @@ function v108SelfTest() {
   t.forEach(function (x) { Logger.log((x[1] ? "PASS " : "FAIL ") + x[0]); });
   if (v.warnings.length) Logger.log("注意: " + v.warnings.join(" / "));
   Logger.log(all ? "== v108SelfTest: ALL PASS ==" : "== v108SelfTest: FAILED ==");
+  return all;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// v109 ⑵: 管理者の認証（AIエージェントによる侵入を防ぐ）
+//   ・管理者の確認を「画面（端末）」から「サーバー」へ移す。画面の管理者PIN（9999）は廃止
+//   ・パスワードは15文字以上（NIST SP 800-63B-4：単要素なら最小15文字）。文字種の強制はしない
+//   ・初回設定と「初めての端末」は、管理者のGmailに届く8桁コードで本人確認（AIはメールを読めない）
+//   ・パスワードは PBKDF2-HMAC-SHA256 で保存（パスワードそのものは保存しない）
+//   ・失敗が続くと待ち時間が倍々に延びる（IPではなく「登録端末ごと／未登録の端末まとめて」で数える）
+//   ・30分操作がない／12時間たつと再ログイン（NIST AAL2）
+//   ・管理者専用の要求は、有効なログインがないとサーバーが断る（adminGuardCheck_）
+// ═══════════════════════════════════════════════════════════════════════
+var ADM_MIN_LEN = 15, ADM_MAX_LEN = 128;
+var ADM_PBKDF2_ITER = 4000;
+var ADM_IDLE_MS = 30 * 60 * 1000;
+var ADM_ABS_MS = 12 * 3600 * 1000;
+var ADM_OTP_TTL_MS = 10 * 60 * 1000;
+var ADM_OTP_TRIES = 5;
+var ADM_DEVICE_TTL_MS = 90 * 24 * 3600 * 1000;
+var ADM_REQ_OK_ = false;     // この要求が有効な管理者ログインを持つか（adminGuardCheck_ が毎回入れ直す）
+var ADM_NOW_ = null;         // テスト用の時計（null＝いまの時刻）
+var ADMIN_ONLY_TYPES = (function () {
+  var o = {};
+  ("adm_change_pw adm_device_revoke adm_devices adm_kanri_keys adm_kanri_rotate adm_notify_get adm_notify_set " +
+   "announce_delete announce_post auth_reset cleanup_sheets config_check create_list_sheets ext_bulk_configure " +
+   "ext_bulk_setup ext_config_audit ext_config_copy ext_config_get ext_config_set ext_detect ext_import " +
+   "ext_prepare ext_run_all ext_run_everyone ext_sheets ext_spread_setup ext_sync ext_trigger fetch_all_shifts " +
+   "fetch_announcements fetch_appo_billing fetch_attendance_summary fetch_audit fetch_call_summary fetch_live " +
+   "fetch_meetings fetch_transcripts kanri_drive_build kanri_drive_trigger kanri_push_diagnose kanri_push_kpi " +
+   "kanri_push_now kanri_sync_master kanri_wb_install kanri_wb_trigger kpi_alerts kpi_target_set list_status " +
+   "nightly_run nightly_status nightly_trigger nightly_twice notify_log notify_retry notify_test perf_summary " +
+   "pl_appo_fix pl_auth pl_bank_drive_import pl_bank_import pl_bank_rule_delete pl_bank_rule_set pl_bank_tag " +
+   "pl_dashboard pl_ledger_delete pl_ledger_from_appos pl_ledger_pay pl_ledger_set pl_pay_set pl_project_bulk " +
+   "pl_project_delete pl_project_set pl_settings_set pl_snapshot rec_archive_check rec_archive_sweep " +
+   "rec_auto_status rec_collect rec_config_get rec_config_set rec_device_setup rec_folder_check rec_ingest " +
+   "rec_list rec_long_calls rec_macro_check rec_macro_setup rec_missing_today rec_provision rec_provision_v81 " +
+   "rec_pull rec_scan rec_src_autolink rec_src_get rec_src_set rec_status rec_trigger roster_check roster_cleanup " +
+   "roster_init_new roster_reassign roster_retire roster_upsert shift_approve shift_calendar shift_import " +
+   "shift_pending system_diag system_diagnose upload_list ").split(" ").forEach(function (t) { if (t) o[t] = true; });
+  return o;
+})();
+
+function admNow_() { return ADM_NOW_ !== null && ADM_NOW_ !== undefined ? Number(ADM_NOW_) : new Date().getTime(); }
+function admJson_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+function admProps_() { return PropertiesService.getScriptProperties(); }
+function admGet_(k, def) { try { var v = admProps_().getProperty(k); return v ? JSON.parse(v) : def; } catch (e) { return def; } }
+function admPut_(k, obj) { admProps_().setProperty(k, JSON.stringify(obj)); }
+function admDel_(k) { try { admProps_().deleteProperty(k); } catch (e) {} }
+function admLock_(fn) {
+  var l = null;
+  try { l = LockService.getScriptLock(); l.waitLock(10000); } catch (e) { l = null; }
+  try { return fn(); } finally { try { if (l) l.releaseLock(); } catch (e2) {} }
+}
+// ── バイト列・ハッシュ ──
+function admBytes_(s) { return Utilities.newBlob(String(s)).getBytes(); }   // UTF-8
+function admHex_(bytes) { var s = ""; for (var i = 0; i < bytes.length; i++) s += ("0" + (bytes[i] & 255).toString(16)).slice(-2); return s; }
+function admHexToBytes_(hex) { var out = []; for (var i = 0; i + 1 < hex.length; i += 2) { var v = parseInt(hex.substr(i, 2), 16); out.push(v > 127 ? v - 256 : v); } return out; }
+function admSha256Hex_(s) { return admHex_(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(s), Utilities.Charset.UTF_8)); }
+// PBKDF2-HMAC-SHA256（32バイト）
+function admPbkdf2_(pw, saltHex, iter) {
+  var P = admBytes_(pw), S = admHexToBytes_(saltHex).concat([0, 0, 0, 1]);
+  var U = Utilities.computeHmacSha256Signature(S, P), T = U.slice();
+  for (var i = 1; i < iter; i++) {
+    U = Utilities.computeHmacSha256Signature(U, P);
+    for (var j = 0; j < T.length; j++) T[j] = T[j] ^ U[j];
+  }
+  return admHex_(T);
+}
+function admRandHex_(nBytes) {
+  var s = "";
+  while (s.length < nBytes * 2) s += admSha256Hex_(Utilities.getUuid() + ":" + Utilities.getUuid() + ":" + Math.random() + ":" + s.length);
+  return s.slice(0, nBytes * 2);
+}
+function admEq_(a, b) { a = String(a); b = String(b); if (a.length !== b.length) return false; var x = 0; for (var i = 0; i < a.length; i++) x |= a.charCodeAt(i) ^ b.charCodeAt(i); return x === 0; }
+function admNorm_(pw) { var s = String(pw == null ? "" : pw); try { s = s.normalize("NFKC"); } catch (e) {} return s; }
+
+// ── パスワードの決まり（NIST SP 800-63B-4 に沿う：長さ・よくある言葉・流出済みを断る／文字種は強制しない） ──
+var ADM_BLOCK_WORDS = ["password", "passw0rd", "p@ssw0rd", "qwerty", "qwertyuiop", "asdfghjkl", "zxcvbnm", "iloveyou",
+  "admin", "administrator", "letmein", "welcome", "abc123", "111111", "123456", "1234567890", "9999", "0000",
+  "kawashima", "kawasima", "sukima", "sukimagroup", "teleapo", "tereapo", "sukima-group", "hr.ashikaga",
+  "川嶋", "スキマ", "テレアポ", "管理者", "パスワード", "かわしま"];
+function admContextWords_() {
+  var w = [];
+  try { Object.keys(FULL_NAME_MAP).forEach(function (p) { w.push(FULL_NAME_MAP[p]); if (PIN_MAP[p]) w.push(PIN_MAP[p]); }); } catch (e) {}
+  return w;
+}
+function admSeqRatio_(s) {
+  if (s.length < 2) return 0;
+  var n = 0;
+  for (var i = 1; i < s.length; i++) { var d = s.charCodeAt(i) - s.charCodeAt(i - 1); if (d === 1 || d === -1 || d === 0) n++; }
+  return n / (s.length - 1);
+}
+function admPolicy_(pw) {
+  var s = admNorm_(pw);
+  var chars = Array.from ? Array.from(s) : s.split("");
+  var reasons = [];
+  if (chars.length < ADM_MIN_LEN) reasons.push(ADM_MIN_LEN + "文字以上にしてください（いま" + chars.length + "文字）");
+  if (chars.length > ADM_MAX_LEN) reasons.push(ADM_MAX_LEN + "文字以内にしてください");
+  var low = s.toLowerCase().replace(/[\s\-_.・]/g, "");
+  var freq = {}, kinds = 0, maxF = 0;
+  chars.forEach(function (c) { if (!freq[c]) { freq[c] = 0; kinds++; } freq[c]++; if (freq[c] > maxF) maxF = freq[c]; });
+  if (chars.length >= ADM_MIN_LEN && maxF / chars.length >= 0.4) reasons.push("同じ文字が多すぎます");
+  if (chars.length >= ADM_MIN_LEN && kinds < 8) reasons.push("使っている文字の種類が少なすぎます（8種類以上）");
+  if (low.length >= ADM_MIN_LEN && admSeqRatio_(low) >= 0.6) reasons.push("並んだ文字（1234… や abcd…）が中心です");
+  var words = ADM_BLOCK_WORDS.concat(admContextWords_());
+  for (var i = 0; i < words.length; i++) {
+    var w = String(words[i] || "").toLowerCase();
+    if (w.length >= 2 && low.indexOf(w) >= 0 && w.length * 2.5 >= low.length) { reasons.push("推測されやすい言葉（" + words[i] + "）が中心です"); break; }
+  }
+  return { ok: reasons.length === 0, reasons: reasons, length: chars.length, normalized: s };
+}
+// 流出したパスワードか（Have I Been Pwned：先頭5文字のハッシュだけを送る k-匿名方式）。-1 は確認できなかった
+function admPwnedCount_(pw) {
+  try {
+    var sha1 = admHex_(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_1, admNorm_(pw), Utilities.Charset.UTF_8)).toUpperCase();
+    var res = UrlFetchApp.fetch("https://api.pwnedpasswords.com/range/" + sha1.slice(0, 5), { headers: { "Add-Padding": "true" }, muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) return -1;
+    var lines = String(res.getContentText()).split(/\r?\n/), suf = sha1.slice(5);
+    for (var i = 0; i < lines.length; i++) { var p = lines[i].split(":"); if (String(p[0]).trim().toUpperCase() === suf) return Number(p[1]) || 0; }
+    return 0;
+  } catch (e) { return -1; }
+}
+function admCheckNewPassword_(pw) {
+  var pol = admPolicy_(pw);
+  if (!pol.ok) return { ok: false, message: pol.reasons.join("／") };
+  var pwned = admPwnedCount_(pol.normalized);
+  if (pwned > 0) return { ok: false, message: "このパスワードは過去の流出データに " + pwned + " 回含まれています。別のパスワードにしてください" };
+  return { ok: true, normalized: pol.normalized, pwnedChecked: pwned >= 0 };
+}
+
+// ── 管理者のメール（コード・通知の送り先） ──
+function admEmail_() {
+  try { var p = admProps_().getProperty("ADMIN_EMAIL"); if (p && String(p).trim()) return String(p).trim(); } catch (e) {}
+  try { var u = Session.getEffectiveUser().getEmail(); if (u) return u; } catch (e2) {}
+  try { var a = Session.getActiveUser().getEmail(); if (a) return a; } catch (e3) {}
+  return "";
+}
+function admMask_(email) {
+  var m = String(email || "").match(/^([^@])([^@]*)([^@])@(.+)$/);
+  if (!m) return email ? "***" : "";
+  return m[1] + "***" + m[3] + "@" + m[4];
+}
+function admMail_(subject, body, toOverride) {
+  var to = toOverride || admEmail_();
+  if (!to) return { ok: false, why: "送り先のメールアドレスがありません" };
+  var n = String(to).split(",").filter(function (x) { return x.trim(); }).length || 1;
+  try { if (MailApp.getRemainingDailyQuota && MailApp.getRemainingDailyQuota() < n) return { ok: false, why: "メールの1日の送信上限に達しています" }; } catch (e) {}
+  try { MailApp.sendEmail({ to: to, subject: subject, body: body }); return { ok: true, to: to }; }
+  catch (e2) {
+    try { GmailApp.sendEmail(to, subject, body); return { ok: true, to: to }; }
+    catch (e3) { return { ok: false, why: String(e3) }; }
+  }
+}
+function admWhen_(ms) { try { return Utilities.formatDate(new Date(ms), "Asia/Tokyo", "yyyy/MM/dd HH:mm"); } catch (e) { return String(new Date(ms)); } }
+
+// ── パスワードの保存・照合 ──
+function admPwGet_() { return admGet_("ADM_PW", null); }
+function admPwSet_(pwNorm) {
+  var salt = admRandHex_(16);
+  admPut_("ADM_PW", { v: 1, salt: salt, iter: ADM_PBKDF2_ITER, hash: admPbkdf2_(pwNorm, salt, ADM_PBKDF2_ITER), setAt: admNow_() });
+}
+function admPwVerify_(pw) {
+  var r = admPwGet_(); if (!r) return false;
+  return admEq_(admPbkdf2_(admNorm_(pw), r.salt, r.iter || ADM_PBKDF2_ITER), r.hash);
+}
+
+// ── 失敗の数え方（未登録の端末はまとめて1つ・登録端末は端末ごと） ──
+function admBackoffSec_(n) { if (n < 4) return 0; return Math.min(3600, 30 * Math.pow(2, n - 4)); }
+function admFailAll_() { return admGet_("ADM_FAIL", {}); }
+function admFailWait_(bucket) {
+  var b = admFailAll_()[bucket]; if (!b) return 0;
+  var left = b.last + admBackoffSec_(b.n) * 1000 - admNow_();
+  return left > 0 ? Math.ceil(left / 1000) : 0;
+}
+function admFailAdd_(bucket, devName) {
+  var n = 0;
+  admLock_(function () {
+    var a = admFailAll_(); var b = a[bucket] || { n: 0, last: 0 };
+    b.n++; b.last = admNow_(); a[bucket] = b; n = b.n; admPut_("ADM_FAIL", a);
+  });
+  if (n === 5 || n === 10 || n === 20 || n === 50 || n === 100) {
+    admMail_("【川嶋メソッド】管理者ログインの失敗が続いています（" + n + "回）",
+      "管理者ログインのパスワードまちがいが " + n + " 回続いています。\n" +
+      "対象：" + (bucket === "untrusted" ? "未登録の端末" : "登録端末（" + (devName || "") + "）") + "\n時刻：" + admWhen_(admNow_()) + "\n\n" +
+      "心当たりがない場合、だれかが総当たりで入ろうとしています。待ち時間が自動で延びるため、すぐには入れません。\n" +
+      "念のため、管理画面の「🔐 管理者のセキュリティ」でパスワードを変えてください。\n\n川嶋メソッド テレアポ業務管理システム");
+  }
+  try { logAudit("管理者ログイン失敗", bucket === "untrusted" ? "未登録の端末" : "登録端末", String(devName || ""), n + "回目"); } catch (e) {}
+  return n;
+}
+function admFailReset_(bucket) { admLock_(function () { var a = admFailAll_(); if (a[bucket]) { delete a[bucket]; admPut_("ADM_FAIL", a); } }); }
+
+// ── 登録端末 ──
+function admDevices_() { return admGet_("ADM_DEVICES", []); }
+function admDeviceById_(id) {
+  if (!id) return null;
+  var now = admNow_();
+  var list = admDevices_();
+  for (var i = 0; i < list.length; i++) if (list[i].id === id && now - (list[i].lastAt || list[i].createdAt) < ADM_DEVICE_TTL_MS) return list[i];
+  return null;
+}
+function admDeviceFromKey_(key) { return key ? admDeviceById_(admSha256Hex_("d:" + key)) : null; }
+function admDeviceAdd_(name, ua) {
+  var key = admRandHex_(32), id = admSha256Hex_("d:" + key), now = admNow_();
+  admLock_(function () {
+    var a = admDevices_().filter(function (d) { return now - (d.lastAt || d.createdAt) < ADM_DEVICE_TTL_MS; });
+    a.push({ id: id, name: String(name || "端末").slice(0, 60), ua: String(ua || "").slice(0, 160), createdAt: now, lastAt: now });
+    while (a.length > 10) a.shift();
+    admPut_("ADM_DEVICES", a);
+  });
+  return { key: key, id: id };
+}
+function admDeviceTouch_(id) {
+  var now = admNow_();
+  admLock_(function () { var a = admDevices_(); a.forEach(function (d) { if (d.id === id) d.lastAt = now; }); admPut_("ADM_DEVICES", a); });
+}
+
+// ── ログイン状態（セッション） ──
+function admSessions_() { return admGet_("ADM_SESSIONS", {}); }
+function admSessionDrop_(h) { admLock_(function () { var a = admSessions_(); if (a[h]) { delete a[h]; admPut_("ADM_SESSIONS", a); } }); }
+function admSessionCheck_(token, touch) {
+  if (!token) return { ok: false, why: "none" };
+  var h = admSha256Hex_("s:" + token), s = admSessions_()[h], now = admNow_();
+  if (!s) return { ok: false, why: "unknown" };
+  if (now - s.iat > ADM_ABS_MS) { admSessionDrop_(h); return { ok: false, why: "expired" }; }
+  if (now - s.last > ADM_IDLE_MS) { admSessionDrop_(h); return { ok: false, why: "idle" }; }
+  if (s.dev && !admDeviceById_(s.dev)) { admSessionDrop_(h); return { ok: false, why: "device" }; }
+  if (touch !== false && now - s.last > 30000) {
+    admLock_(function () { var a = admSessions_(); if (a[h]) { a[h].last = now; admPut_("ADM_SESSIONS", a); } });
+  }
+  return { ok: true, dev: s.dev, iat: s.iat, absLeftMin: Math.round((ADM_ABS_MS - (now - s.iat)) / 60000) };
+}
+function admSessionNew_(devId) {
+  var tok = admRandHex_(32), h = admSha256Hex_("s:" + tok), now = admNow_();
+  admLock_(function () {
+    var a = admSessions_();
+    Object.keys(a).forEach(function (k) { if (now - a[k].iat > ADM_ABS_MS || now - a[k].last > ADM_IDLE_MS) delete a[k]; });
+    var ks = Object.keys(a).sort(function (x, y) { return a[y].last - a[x].last; });
+    ks.slice(9).forEach(function (k) { delete a[k]; });
+    a[h] = { dev: devId || "", iat: now, last: now };
+    admPut_("ADM_SESSIONS", a);
+  });
+  if (devId) admDeviceTouch_(devId);
+  return { token: tok, idleMin: ADM_IDLE_MS / 60000, absHours: ADM_ABS_MS / 3600000 };
+}
+
+// ── 確認コード（メールで届く8桁） ──
+function admOtpIssue_(purpose, extra) {
+  var now = admNow_(), sends = admGet_("ADM_OTP_SENDS", []).filter(function (t) { return now - t < 3600000; });
+  if (sends.length >= 6) return { ok: false, message: "コードの送信が多すぎます。1時間ほどあけてください" };
+  if (sends.length && now - sends[sends.length - 1] < 60000) {
+    return { ok: false, message: "1分ほどあけてから、もう一度送ってください", wait: Math.ceil((60000 - (now - sends[sends.length - 1])) / 1000) };
+  }
+  var code = ("00000000" + (parseInt(admRandHex_(8).slice(0, 12), 16) % 100000000)).slice(-8);
+  var id = admRandHex_(8);
+  admPut_("ADM_OTP", { id: id, h: admSha256Hex_("o:" + id + ":" + code), exp: now + ADM_OTP_TTL_MS, tries: 0, purpose: purpose, extra: extra || {} });
+  sends.push(now); admPut_("ADM_OTP_SENDS", sends);
+  var dev = (extra && extra.devName) || "";
+  var subj = purpose === "setup" ? "【川嶋メソッド】管理者の初回設定コード" : "【川嶋メソッド】管理者ログインの確認コード";
+  var body = "確認コード：" + code.slice(0, 4) + "-" + code.slice(4) + "\n有効期限：10分（まちがいは5回まで）\n\n" +
+    (purpose === "setup" ? "管理者パスワードの初回設定に使います。" : "初めての端末（" + dev + "）から管理者ログインがありました。本人の操作なら、画面にこのコードを入れてください。") +
+    "\n\n心当たりがない場合は、このコードをだれにも教えないでください。" +
+    (purpose === "setup" ? "" : "\nパスワードが知られている可能性があります。管理画面の「🔐 管理者のセキュリティ」からパスワードを変えてください。") +
+    "\n\n川嶋メソッド テレアポ業務管理システム";
+  var m = admMail_(subj, body);
+  if (!m.ok) { admDel_("ADM_OTP"); return { ok: false, message: "コードを送れませんでした（" + m.why + "）" }; }
+  return { ok: true, otpId: id, to: admMask_(m.to) };
+}
+function admOtpVerify_(otpId, code, purpose) {
+  var o = admGet_("ADM_OTP", null), now = admNow_();
+  if (!o || o.id !== otpId || o.purpose !== purpose) return { ok: false, message: "コードが無効です。もう一度送ってください" };
+  if (now > o.exp) { admDel_("ADM_OTP"); return { ok: false, message: "コードの有効期限（10分）が切れました。もう一度送ってください" }; }
+  if (o.tries >= ADM_OTP_TRIES) { admDel_("ADM_OTP"); return { ok: false, message: "まちがいが続いたため、このコードは使えません。もう一度送ってください" }; }
+  var c = String(code || "").replace(/[^0-9]/g, "");
+  if (admSha256Hex_("o:" + o.id + ":" + c) !== o.h) {
+    o.tries++; admPut_("ADM_OTP", o);
+    return { ok: false, wrong: true, message: "コードが違います（あと" + Math.max(0, ADM_OTP_TRIES - o.tries) + "回）" };
+  }
+  admDel_("ADM_OTP");
+  return { ok: true, extra: o.extra || {} };
+}
+
+// ── 要求の振り分け（adm_*） ──
+function admHandle_(d) {
+  var t = d.type;
+  function R(o) { o.status = "ok"; o.handled = true; return admJson_(o); }
+  if (t === "adm_status") {
+    return R({ setup: !!admPwGet_(), email: admMask_(admEmail_()), minLen: ADM_MIN_LEN, idleMin: ADM_IDLE_MS / 60000, absHours: ADM_ABS_MS / 3600000 });
+  }
+  if (t === "adm_setup_start") {
+    if (admPwGet_()) return R({ ok: false, code: "already", message: "すでに設定済みです。パスワードでログインしてください" });
+    var st = admOtpIssue_("setup", {});
+    return R(st.ok ? { ok: true, otpId: st.otpId, to: st.to } : { ok: false, message: st.message, wait: st.wait || 0 });
+  }
+  if (t === "adm_setup_finish") {
+    if (admPwGet_()) return R({ ok: false, code: "already", message: "すでに設定済みです" });
+    var chk = admCheckNewPassword_(d.password);
+    if (!chk.ok) return R({ ok: false, field: "password", message: chk.message });
+    var ov = admOtpVerify_(d.otpId, d.code, "setup");
+    if (!ov.ok) return R({ ok: false, field: "code", message: ov.message });
+    admPwSet_(chk.normalized);
+    var dv = admDeviceAdd_(d.devName, d.ua);
+    var se = admSessionNew_(dv.id);
+    admMail_("【川嶋メソッド】管理者パスワードを設定しました",
+      "管理者パスワードを設定しました。\n端末：" + String(d.devName || "") + "\n時刻：" + admWhen_(admNow_()) +
+      "\n\n心当たりがない場合は、すぐにApps Scriptのエディタで adminResetPassword を実行してください。\n\n川嶋メソッド テレアポ業務管理システム");
+    try { logAudit("管理者パスワード設定", "管理者", String(d.devName || ""), "初回設定"); } catch (e) {}
+    return R({ ok: true, token: se.token, deviceKey: dv.key, idleMin: se.idleMin, absHours: se.absHours, pwnedChecked: chk.pwnedChecked });
+  }
+  if (t === "adm_login") {
+    if (!admPwGet_()) return R({ ok: false, need: "setup", message: "管理者パスワードがまだ設定されていません" });
+    var dev = admDeviceFromKey_(d.deviceKey);
+    var bucket = dev ? dev.id : "untrusted";
+    var wait = admFailWait_(bucket);
+    if (wait > 0) return R({ ok: false, locked: true, wait: wait, message: "まちがいが続いたため、" + admWaitText_(wait) + "待ってからもう一度お試しください" });
+    if (!admPwVerify_(d.password)) {
+      var n = admFailAdd_(bucket, dev ? dev.name : d.devName);
+      var w2 = admBackoffSec_(n);
+      return R({ ok: false, wrong: true, wait: w2, message: "パスワードが違います" + (w2 ? "（次は" + admWaitText_(w2) + "後から試せます）" : "") });
+    }
+    admFailReset_(bucket);
+    if (dev) {
+      var s1 = admSessionNew_(dev.id);
+      try { logAudit("管理者ログイン", "管理者", dev.name, "登録端末"); } catch (e) {}
+      return R({ ok: true, token: s1.token, idleMin: s1.idleMin, absHours: s1.absHours });
+    }
+    var oi = admOtpIssue_("device", { devName: String(d.devName || "").slice(0, 60), ua: String(d.ua || "").slice(0, 160) });
+    if (!oi.ok) return R({ ok: false, codeWait: true, wait: oi.wait || 0,
+      message: "パスワードは合っています。ただ、確認コードのメールは1分に1回までです。" + (oi.wait ? oi.wait + "秒" : "少し") + "待ってから、もう一度「ログイン」を押してください" });
+    return R({ ok: false, need: "device_code", otpId: oi.otpId, to: oi.to, message: "初めての端末です。メールに届いた8桁のコードを入れてください" });
+  }
+  if (t === "adm_device_verify") {
+    var dv2 = admOtpVerify_(d.otpId, d.code, "device");
+    if (!dv2.ok) return R({ ok: false, message: dv2.message });
+    var nd = admDeviceAdd_(dv2.extra.devName || d.devName, dv2.extra.ua || d.ua);
+    var s2 = admSessionNew_(nd.id);
+    admMail_("【川嶋メソッド】新しい端末で管理者ログインがありました",
+      "新しい端末を登録し、管理者ログインしました。\n端末：" + String(dv2.extra.devName || "") + "\n時刻：" + admWhen_(admNow_()) +
+      "\n\n心当たりがない場合は、管理画面の「🔐 管理者のセキュリティ」でこの端末を削除し、パスワードを変えてください。\n\n川嶋メソッド テレアポ業務管理システム");
+    try { logAudit("管理者の端末登録", "管理者", String(dv2.extra.devName || ""), ""); } catch (e) {}
+    return R({ ok: true, token: s2.token, deviceKey: nd.key, idleMin: s2.idleMin, absHours: s2.absHours });
+  }
+  if (t === "adm_session") {
+    var sc = admSessionCheck_(d.adminToken);
+    return R({ ok: sc.ok, why: sc.why || "", absLeftMin: sc.absLeftMin || 0 });
+  }
+  if (t === "adm_logout") {
+    if (d.adminToken) admSessionDrop_(admSha256Hex_("s:" + d.adminToken));
+    return R({ ok: true });
+  }
+  // ↓ ここから下は ADMIN_ONLY_TYPES（adminGuardCheck_ でログイン済みを確認ずみ）
+  if (t === "adm_change_pw") {
+    if (!admPwVerify_(d.current)) {
+      var cur = admSessionCheck_(d.adminToken, false);
+      admFailAdd_(cur.dev || "untrusted", "パスワード変更");
+      return R({ ok: false, field: "current", message: "今のパスワードが違います" });
+    }
+    var c2 = admCheckNewPassword_(d.next);
+    if (!c2.ok) return R({ ok: false, field: "next", message: c2.message });
+    if (admPwVerify_(c2.normalized)) return R({ ok: false, field: "next", message: "今と同じパスワードです" });
+    admPwSet_(c2.normalized);
+    var keep = admSha256Hex_("s:" + d.adminToken);
+    admLock_(function () { var a = admSessions_(), o = {}; if (a[keep]) o[keep] = a[keep]; admPut_("ADM_SESSIONS", o); });
+    admMail_("【川嶋メソッド】管理者パスワードを変更しました", "管理者パスワードを変更しました。ほかの端末のログインはすべて解除しました。\n時刻：" + admWhen_(admNow_()) + "\n\n川嶋メソッド テレアポ業務管理システム");
+    try { logAudit("管理者パスワード変更", "管理者", "", ""); } catch (e) {}
+    return R({ ok: true });
+  }
+  if (t === "adm_devices") {
+    var me = admSessionCheck_(d.adminToken, false);
+    return R({ ok: true, devices: admDevices_().map(function (x) { return { id: x.id, name: x.name, createdAt: admWhen_(x.createdAt), lastAt: admWhen_(x.lastAt || x.createdAt), current: x.id === me.dev }; }),
+      setAt: admPwGet_() ? admWhen_(admPwGet_().setAt) : "", email: admMask_(admEmail_()) });
+  }
+  if (t === "adm_device_revoke") {
+    var id = String(d.id || "");
+    admLock_(function () {
+      admPut_("ADM_DEVICES", admDevices_().filter(function (x) { return x.id !== id; }));
+      var a = admSessions_(); Object.keys(a).forEach(function (k) { if (a[k].dev === id) delete a[k]; }); admPut_("ADM_SESSIONS", a);
+    });
+    try { logAudit("管理者の端末削除", "管理者", id.slice(0, 8), ""); } catch (e) {}
+    return R({ ok: true });
+  }
+  return null;
+}
+function admWaitText_(sec) { return sec >= 60 ? Math.ceil(sec / 60) + "分" : sec + "秒"; }
+// パスワードを忘れたとき：Apps Script のエディタで実行（GASの持ち主しか実行できない）
+function adminResetPassword() {
+  ["ADM_PW", "ADM_DEVICES", "ADM_SESSIONS", "ADM_FAIL", "ADM_OTP", "ADM_OTP_SENDS"].forEach(admDel_);
+  Logger.log("管理者パスワード・登録端末・ログインをすべて解除しました。管理者ログイン画面から初回設定をやり直してください（コードは " + admEmail_() + " に届きます）。");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// v109 ⑴: 通話録音の自動送信（Galaxy の「Recording/Call」→ 管理者のGoogleドライブ）
+//   ・Galaxyのファイル名「通話記録 09012345678_261104_103015.m4a」（年が2桁）を正しく読む
+//   ・ドライブへの保存を「大きさ」で確かめてから、端末の元ファイルを消す（＝移動）
+//   ・各端末の自動送信の状態を記録し、管理者が一覧で確認できる
+// ═══════════════════════════════════════════════════════════════════════
+var REC_AUTO_SHEET = "録音の自動送信";
+var REC_AUTO_HEADER = ["PIN", "名前", "接続", "許可", "方式", "最終確認", "今日の送信", "未送信", "最後のエラー", "端末", "更新日時"];
+function recAutoReport_(d) {
+  var pin = rosterNormPin_(d.pin), s = d.state || {};
+  if (!FULL_NAME_MAP[pin]) return { ok: false, message: "名簿にない担当者です" };
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sh = ensureSheet(ss, REC_AUTO_SHEET, REC_AUTO_HEADER);
+  var line = ["'" + pin, FULL_NAME_MAP[pin], s.connected ? "つないだ" : "未接続", String(s.perm || ""), s.mode === "copy" ? "コピー" : "移動",
+    s.lastScanAt ? new Date(Number(s.lastScanAt)) : "", Number(s.sentToday) || 0, Number(s.pending) || 0,
+    String(s.lastError || "").slice(0, 200), String(s.device || "").slice(0, 80), new Date()];
+  var lock = null; try { lock = LockService.getScriptLock(); lock.waitLock(10000); } catch (e) { lock = null; }
+  try {
+    var v = sh.getDataRange().getValues(), row = 0;
+    for (var i = 1; i < v.length; i++) if (rosterNormPin_(v[i][0]) === pin) { row = i + 1; break; }
+    if (row) sh.getRange(row, 1, 1, line.length).setValues([line]); else sh.appendRow(line);
+  } finally { try { if (lock) lock.releaseLock(); } catch (e2) {} }
+  return { ok: true };
+}
+function recAutoStatus_() {
+  var sh = SpreadsheetApp.openById(SHEET_ID).getSheetByName(REC_AUTO_SHEET), byPin = {};
+  if (sh && sh.getLastRow() > 1) {
+    sh.getDataRange().getValues().slice(1).forEach(function (r) {
+      var p = rosterNormPin_(r[0]); if (!p) return;
+      var at = r[5] instanceof Date ? r[5].getTime() : 0;
+      byPin[p] = { connected: r[2] === "つないだ", perm: String(r[3] || ""), mode: String(r[4] || ""), lastScanAt: at ? formatDateTimeStr(r[5]) : "",
+        lastScanMs: at, sentToday: Number(r[6]) || 0, pending: Number(r[7]) || 0, lastError: String(r[8] || ""), device: String(r[9] || "") };
+    });
+  }
+  var now = new Date().getTime(), up = {};
+  try { var ms = recMissingToday(); (ms.members || []).forEach(function (m) { up[m.pin] = m; }); } catch (e) {}
+  var list = Object.keys(FULL_NAME_MAP).map(function (p) {
+    var x = byPin[p] || { connected: false, perm: "", mode: "", lastScanAt: "", lastScanMs: 0, sentToday: 0, pending: 0, lastError: "", device: "" };
+    x.pin = p; x.name = FULL_NAME_MAP[p];
+    x.callsToday = up[p] ? up[p].calls : 0; x.uploadedToday = up[p] ? up[p].uploaded : 0;
+    x.state = !x.connected ? "未接続" : (x.perm !== "granted" ? "許可待ち" : (x.lastScanMs && now - x.lastScanMs > 3 * 3600000 ? "止まっている" : "動いている"));
+    return x;
+  });
+  return { members: list, on: list.filter(function (x) { return x.state === "動いている"; }).length };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// v109: 管理者用の要求の保護（すべての要求は doPostRoute_ の最初にここを通る）
+//   ・有効な管理者ログイン（adminToken）がない要求は、管理者専用の種類ならサーバーが断る
+//   ・ログインなしで管理者用の要求が続いたら（AI・ボットの可能性）、管理者へメールで知らせる
+// ═══════════════════════════════════════════════════════════════════════
+function adminGuardCheck_(d) {
+  ADM_REQ_OK_ = false;
+  var t = String((d && d.type) || "");
+  if (d && d.adminToken) { try { ADM_REQ_OK_ = admSessionCheck_(d.adminToken).ok; } catch (e) { ADM_REQ_OK_ = false; } }
+  if (ADMIN_ONLY_TYPES[t] && !ADM_REQ_OK_) {
+    try { admDeniedCount_(t); } catch (e2) {}
+    return jsonOut_({ status: "error", handled: true, code: "admin_auth", auth: false, type: t,
+      message: "管理者のログインが必要です（30分操作がないとき・12時間たったときは、もう一度ログインしてください）" });
+  }
+  if (t.indexOf("adm_") === 0) {
+    var r1 = admHandleV109_(d);
+    if (r1) return r1;
+    var r2 = admHandle_(d);
+    if (r2) return r2;
+  }
+  return null;
+}
+// ログインなしの管理者用要求を1時間ごとに数え、20・100・500回で管理者へ知らせる
+function admDeniedCount_(type) {
+  var c = CacheService.getScriptCache();
+  var k = "admden:" + Utilities.formatDate(new Date(admNow_()), "Asia/Tokyo", "yyyyMMddHH");
+  var n = (Number(c.get(k)) || 0) + 1;
+  c.put(k, String(n), 7200);
+  if (n === 20 || n === 100 || n === 500) {
+    admMail_("【川嶋メソッド】ログインなしで管理者用の操作が " + n + " 回ありました",
+      "この1時間に、管理者ログインをしていない端末から、管理者用の操作（例：" + type + "）が " + n + " 回届きました。\n" +
+      "サーバーはすべて断っています（データは渡していません）。\n\n" +
+      "考えられること：AI・自動プログラムによる探り、または古い版のアプリを開いたままの端末。\n" +
+      "心当たりがない場合も、管理画面の「🔐 管理者のセキュリティ」で登録端末を確認してください。\n\n川嶋メソッド テレアポ業務管理システム");
+    try { logAudit("管理者用操作の拒否", "未ログイン", type, n + "回／1時間"); } catch (e) {}
+  }
+  return n;
+}
+
+// ── 経営管理システム連携の鍵（v109：コードには書かない。スクリプトプロパティだけに置く） ──
+//   v108 までは鍵がコード（＝GitHubの公開ファイル）に書かれており、だれでも読めた。
+//   v109 では、プロパティに鍵が無ければ新しい乱数の鍵を作る（以前の公開されていた鍵は使えなくなる）
+function kanriKeysEnsure_() {
+  var p = admProps_(), r = p.getProperty("KANRI_KEY"), a = p.getProperty("KANRI_ADMIN_KEY");
+  if (!r || !a) {
+    admLock_(function () {
+      r = p.getProperty("KANRI_KEY"); a = p.getProperty("KANRI_ADMIN_KEY");
+      if (!r) { r = "kr-" + admRandHex_(16); p.setProperty("KANRI_KEY", r); }
+      if (!a) { a = "ka-" + admRandHex_(20); p.setProperty("KANRI_ADMIN_KEY", a); }
+      if (!p.getProperty("KANRI_KEY_AT")) p.setProperty("KANRI_KEY_AT", String(admNow_()));
+    });
+  }
+  return { read: r, admin: a, at: Number(p.getProperty("KANRI_KEY_AT")) || 0 };
+}
+function admMaskKey_(k) { k = String(k || ""); return k.length > 8 ? k.slice(0, 5) + "…" + k.slice(-3) : (k ? "***" : ""); }
+
+// ── シフト申請の通知先：CONFIG.NOTIFY.SHIFT_TO ＋ 管理画面で足した宛先 ＋ 管理者ログインのGmail ──
+function shiftNotifyList_() {
+  var list = [];
+  (Array.isArray(CONFIG.NOTIFY.SHIFT_TO) ? CONFIG.NOTIFY.SHIFT_TO : String(CONFIG.NOTIFY.SHIFT_TO || "").split(",")).forEach(function (x) { list.push(x); });
+  try { String(admProps_().getProperty("SHIFT_NOTIFY_EXTRA") || "").split(",").forEach(function (x) { list.push(x); }); } catch (e) {}
+  var me = admEmail_(); if (me) list.push(me);
+  var seen = {}, out = [];
+  list.forEach(function (x) { x = String(x || "").trim(); var k = x.toLowerCase(); if (x && !seen[k]) { seen[k] = true; out.push(x); } });
+  return out;
+}
+function admEmailOk_(s) { return /^[^@\s,;<>"']+@[^@\s,;<>"']+\.[A-Za-z]{2,}$/.test(String(s || "").trim()); }
+
+// ── v109 で足した管理者の操作（ADMIN_ONLY_TYPES に入っている＝ログイン済みのときだけ届く） ──
+function admHandleV109_(d) {
+  var t = d.type;
+  function R(o) { o.status = "ok"; o.handled = true; return admJson_(o); }
+  if (t === "adm_kanri_keys") {
+    var k = kanriKeysEnsure_();
+    return R({ ok: true, read: d.reveal ? k.read : admMaskKey_(k.read), admin: d.reveal ? k.admin : admMaskKey_(k.admin), at: k.at ? admWhen_(k.at) : "" });
+  }
+  if (t === "adm_kanri_rotate") {
+    var p = admProps_();
+    admLock_(function () { p.deleteProperty("KANRI_KEY"); p.deleteProperty("KANRI_ADMIN_KEY"); p.deleteProperty("KANRI_KEY_AT"); });
+    var k2 = kanriKeysEnsure_();
+    try { logAudit("連携キーの作り直し", "管理者", "", ""); } catch (e) {}
+    admMail_("【川嶋メソッド】経営管理システムの連携キーを作り直しました", "連携キーを新しくしました。以前のキーは使えません。\n経営管理システム側の設定も新しいキーに変えてください。\n時刻：" + admWhen_(admNow_()) + "\n\n川嶋メソッド テレアポ業務管理システム");
+    return R({ ok: true, read: k2.read, admin: k2.admin, at: admWhen_(k2.at) });
+  }
+  if (t === "adm_notify_get") {
+    return R({ ok: true, to: shiftNotifyList_().map(admMask_), base: notifyToList_(CONFIG.NOTIFY.SHIFT_TO).map(admMask_),
+      extra: String(admProps_().getProperty("SHIFT_NOTIFY_EXTRA") || ""), admin: admMask_(admEmail_()) });
+  }
+  if (t === "adm_notify_set") {
+    var arr = String(d.extra || "").split(/[,、\s]+/).map(function (x) { return x.trim(); }).filter(function (x) { return x; });
+    if (arr.length > 5) return R({ ok: false, message: "追加できる宛先は5件までです" });
+    for (var i = 0; i < arr.length; i++) if (!admEmailOk_(arr[i])) return R({ ok: false, message: "メールアドレスの形が正しくありません（" + arr[i] + "）" });
+    if (arr.length) admProps_().setProperty("SHIFT_NOTIFY_EXTRA", arr.join(",")); else admDel_("SHIFT_NOTIFY_EXTRA");
+    try { logAudit("シフト通知の宛先変更", "管理者", arr.map(admMask_).join("・"), ""); } catch (e) {}
+    return R({ ok: true, to: shiftNotifyList_().map(admMask_) });
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// v109 ⑶: シフト申請の「受信の記録」と、管理者への「承認待ち」の一覧
+//   v108 で起きうる取りこぼし（実機の再現で確認）：
+//    ・サーバーが JSON 以外（Googleのエラーページなど）を返すと、端末は「送れた」とみなして消していた
+//    ・サーバー（GAS）が古い版のままだと、申請は月が日付に化けて一覧に出ず、端末は「登録済み」と表示していた
+//    ・管理者の画面は「今月」だけを見ていたため、来月分の申請が「未提出」に見えた
+//   対策：受け取った申請は成否にかかわらず「シフト受信ログ」に残す。応答に版を入れる。
+//         管理者の先頭に、すべての月の承認待ちと、今月・来月の提出状況を出す
+// ═══════════════════════════════════════════════════════════════════════
+var SHIFT_RCPT_SHEET = "シフト受信ログ";
+var SHIFT_RCPT_HEADER = ["受信日時", "種別", "PIN", "名前", "対象月", "申請ID", "結果", "理由", "通知", "アプリの版", "端末"];
+function shiftSubmitV109_(d) {
+  var r;
+  try { r = shiftSubmit_(d); }
+  catch (e) { r = { status: "error", handled: true, code: "exception", message: "サーバーで処理できませんでした：" + String(e && e.message || e) }; }
+  r.gasVersion = GAS_VERSION;
+  try { shiftReceipt_(d, r); } catch (e2) {}
+  return r;
+}
+function shiftReceipt_(d, r) {
+  var sh = ensureSheet(SpreadsheetApp.openById(SHEET_ID), SHIFT_RCPT_SHEET, SHIFT_RCPT_HEADER);
+  var pin = rosterNormPin_(d.pin);
+  var res = r.status === "ok" ? (r.duplicate ? "重複（登録済み）" : "保存") : "エラー";
+  sh.appendRow([new Date(), d.type === "shift_modify" ? "修正" : "申請", asText_(pin), FULL_NAME_MAP[pin] || String(d.name || ""),
+    asText_(monthKey_(d.month) || String(d.month || "")), String(d.requestId || d.clientReqId || ""), res,
+    r.status === "ok" ? "" : String(r.message || r.code || "").slice(0, 300),
+    r.notify ? String(r.notify.status || "") : "", String(d.appVersion || "（不明＝v108以前）"), String(d.device || "").slice(0, 80)]);
+  if (sh.getLastRow() > 3000) { try { sh.deleteRows(2, 500); } catch (e) {} }
+}
+// 今月・来月（日本時間）
+function shiftYmJst_(offset) {
+  var j = new Date(admNow_() + 9 * 3600000), y = j.getUTCFullYear(), m = j.getUTCMonth() + 1 + (offset || 0);
+  while (m > 12) { m -= 12; y++; }
+  return y + "-" + ("0" + m).slice(-2);
+}
+function shiftPendingV109_() {
+  var all = shiftLatest_(null, null), pending = [], byMonth = {};
+  var cur = shiftYmJst_(0), nxt = shiftYmJst_(1), order = rosterPins_();
+  [cur, nxt].forEach(function (m) { byMonth[m] = { month: m, submitted: 0, total: order.length, missing: [] }; });
+  var have = {};
+  Object.keys(all).forEach(function (k) {
+    var s = all[k];
+    if (byMonth[s.month]) { have[s.month + "|" + s.pin] = true; }
+    if (s.status === "受付" || s.status === "修正受付") {
+      pending.push({ pin: s.pin, name: s.name, month: s.month, mode: s.mode, status: s.status, appliedAt: s.appliedAt,
+        workCount: s.workCount, totalMins: s.totalMins, notifyStatus: s.notifyStatus || "", requestId: s.requestId || "" });
+    }
+  });
+  Object.keys(byMonth).forEach(function (m) {
+    order.forEach(function (p) { if (have[m + "|" + p]) byMonth[m].submitted++; else byMonth[m].missing.push(FULL_NAME_MAP[p] || p); });
+  });
+  pending.sort(function (a, b) { return a.appliedAt < b.appliedAt ? 1 : (a.appliedAt > b.appliedAt ? -1 : 0); });
+  // 直近7日の受信ログで「エラー」だったもの（保存できなかった申請）
+  var errs = [];
+  try {
+    var rs = SpreadsheetApp.openById(SHEET_ID).getSheetByName(SHIFT_RCPT_SHEET);
+    if (rs && rs.getLastRow() > 1) {
+      var from = Math.max(2, rs.getLastRow() - 400 + 1), v = rs.getRange(from, 1, rs.getLastRow() - from + 1, SHIFT_RCPT_HEADER.length).getValues();
+      var lim = admNow_() - 7 * 86400000, okIds = {};
+      v.forEach(function (x) { if (String(x[6]) !== "エラー") okIds[String(x[2]) + "|" + monthKey_(x[4])] = isDate_(x[0]) ? x[0].getTime() : 0; });
+      v.forEach(function (x) {
+        if (String(x[6]) !== "エラー" || !isDate_(x[0]) || x[0].getTime() < lim) return;
+        var later = okIds[String(x[2]) + "|" + monthKey_(x[4])];
+        if (later && later > x[0].getTime()) return;   // そのあと保存できていれば出さない
+        errs.push({ at: fmtJst_(x[0]), pin: rosterNormPin_(x[2]), name: String(x[3] || ""), month: monthKey_(x[4]), reason: String(x[7] || ""), app: String(x[9] || "") });
+      });
+    }
+  } catch (e) {}
+  return { pending: pending, count: pending.length, months: [byMonth[cur], byMonth[nxt]], errors: errs.slice(-10).reverse(),
+    notifyTo: shiftNotifyList_().map(admMask_), gasVersion: GAS_VERSION };
+}
+
+// ── 導入時の確認：Apps Script のエディタでこの関数を1回実行（必要な権限の許可も、ここで出ます） ──
+function adminSetupCheck() {
+  var to = admEmail_();
+  Logger.log("① 確認コードの送り先（管理者のGmail）: " + (to || "取れません → 「プロジェクトの設定」→「スクリプト プロパティ」に ADMIN_EMAIL を追加してください"));
+  var q = -1; try { q = MailApp.getRemainingDailyQuota(); } catch (e) {}
+  Logger.log("② 今日のメールの残り送信数: " + q + "（0 のときはコードも通知も送れません。翌日に戻ります）");
+  var hp = admPwnedCount_("password");
+  Logger.log("③ 流出パスワードの確認（Have I Been Pwned）: " + (hp > 0 ? "使えます" : "いまは確認できません（パスワードの長さ・言葉の確認は行います）"));
+  Logger.log("④ 管理者パスワード: " + (admPwGet_() ? "設定済み（登録端末 " + admDevices_().length + "台）" : "未設定 → アプリのログイン画面「🔐 管理者ログイン」→「初回設定」"));
+  Logger.log("⑤ 管理者だけが使える要求: " + Object.keys(ADMIN_ONLY_TYPES).length + "種類（ログインなしでは断ります）");
+  Logger.log("⑥ シフト申請の通知先: " + shiftNotifyList_().join(", "));
+  var k = kanriKeysEnsure_();
+  Logger.log("⑦ 経営管理システムの連携キー: プロパティに保存済み（コードには書いていません）。読み取り " + admMaskKey_(k.read) + "／管理 " + admMaskKey_(k.admin));
+  try { notifyEnsureTrigger_(); Logger.log("⑧ 通知の自動再送（10分ごと）: 設定済み"); } catch (e2) { Logger.log("⑧ 通知の自動再送: 設定できません（" + e2 + "）"); }
+  Logger.log("⑨ サーバーの版: " + GAS_VERSION + "（アプリの版と同じであること。違うときは「デプロイを管理」→ 編集 →「新バージョン」）");
+}
+
+// ── エディタから実行する自己点検（シートは変えない） ──
+function v109SelfTest() {
+  var t = [];
+  function ok(name, cond) { t.push([name, !!cond]); }
+  ok("管理者専用の要求が100種類以上", Object.keys(ADMIN_ONLY_TYPES).length >= 100);
+  ok("アポインターの要求は管理者専用に入っていない", ["shift_apply", "shift_modify", "shift_status", "fetch_state", "attendance", "callResult", "appointment", "status_update", "rec_upload_session", "rec_auto_report", "auth_check", "ping"].every(function (x) { return !ADMIN_ONLY_TYPES[x]; }));
+  ok("PBKDF2 の結果が既知の値と一致", admPbkdf2_("password", "73616c74", 2) === "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43");
+  ok("15文字未満のパスワードを断る", !admPolicy_("Short-pass-123").ok);
+  ok("会社名が中心のパスワードを断る", !admPolicy_("sukimagroup2026!").ok);
+  ok("Galaxy のファイル名の日時", recParseStamp_("通話記録 09012345678_261104_103015.m4a", 0) === new Date(2026, 10, 4, 10, 30, 15).getTime());
+  ok("Galaxy のファイル名の番号", recPhoneIn_("通話記録 09020123456_261104_103015.m4a") === "09020123456");
+  ok("CONFIG に管理者PIN・連携キーが無い", !CONFIG.ADMIN_PIN && !CONFIG.KANRI_KEY && !CONFIG.KANRI_ADMIN_KEY);
+  var all = t.every(function (x) { return x[1]; });
+  t.forEach(function (x) { Logger.log((x[1] ? "PASS " : "FAIL ") + x[0]); });
+  Logger.log(all ? "== v109SelfTest: ALL PASS ==" : "== v109SelfTest: FAILED ==");
   return all;
 }

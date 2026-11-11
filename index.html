@@ -85,6 +85,14 @@ kbd{display:inline-block;padding:1px 6px;border:1px solid #cbd5e1;border-bottom-
 /* ==========================================================================
    川嶋メソッド テレアポ管理 PWA  v32 (15分刻みシフト + 再架電保存バグ修正 + 管理者シフトExcel取得)
    ==========================================================================
+   v110 変更（2026-11-11。詳しくは README.md）:
+   - ⑴ アカウントの削除（坂上順子 093・浜田敏幸 095）：名簿・端末の控え・ログイン状態から除く
+   - ⑵⑶⑷ 元スプレッドシート連携：架電済みの印を「元シートの行」で持つ／発信した瞬間の架電先を固定して、その会社に記録する
+         （再架電のお知らせ・再架電リストからの発信も）／日付・退勤・端末が変わっても前回の続きから
+   - ⑸⑹ 時刻はサーバーが日本時間で決める（端末のタイムゾーン・時計に左右されない）／送信待ちの架電結果を捨てない
+   - ⑺ 管理者の画面：連携の点検・取込の確認（前回との差・タブの選び直し・非表示の行）・集計の点検・過去の時刻の修正・録音の保存先の確認
+         アポインターの画面：進み具合・手前の未架電・不在の先をもう一巡・順位
+   - ⑻ 通話の録音は、指定の Google ドライブのフォルダへ自動保存
    v26 変更:
    - アポインターのアカウント追加 (6人目)
    - 通話チェックリストのステップ見出し (S1/S3/S4) 削除 → フラット表示
@@ -179,13 +187,13 @@ var CONFIG={
   MEETING_PARTNERS:[{id:"sv",nm:"伊東由美",role:"SV / 係長"},{id:"kacho",nm:"山口素菜緒",role:"課長"}],   /* 面談の相手 */
   STAFF_DEFAULT:[
     {id:"s091",nm:"柏木幸代",pin:"091",sh:"柏木"},
-    {id:"s093",nm:"坂上順子",pin:"093",sh:"坂上"},
-    {id:"s095",nm:"浜田敏幸",pin:"095",sh:"浜田"},
     {id:"s101",nm:"藤田直美",pin:"101",sh:"藤田"},
     {id:"s110",nm:"田中久美子",pin:"110",sh:"田中"},
     {id:"s112",nm:"中村花林",pin:"112",sh:"中村"},
     {id:"s114",nm:"片山佳代",pin:"114",sh:"片山"}
-  ]
+  ],
+  /* v110: 削除したアカウント。端末に残っている名簿の控え・その人のデータ・ログイン状態を消し、この PIN ではログインできなくする */
+  DELETED_ACCOUNTS:[{pin:"093",nm:"坂上順子"},{pin:"095",nm:"浜田敏幸"}]
 };
 var GAS = CONFIG.GAS_URL;
 var APPO_MAIL_TO = CONFIG.NOTIFY.APPO_MAIL_TO;
@@ -193,7 +201,7 @@ var SHIFT_NOTIFY_TO = CONFIG.NOTIFY.SHIFT_TO;
 var DAILY_REPORT_TO = CONFIG.NOTIFY.DAILY_REPORT_TO;  /* v14: 退勤レポート通知先 */
 
 /* v26: 起動時キャッシュクリア - 旧バージョンのキャッシュを強制削除 */
-var APP_VERSION="v109";
+var APP_VERSION="v110";
 /* v35: 会社ロゴ(スキマ) 埋め込み - オフラインでも表示 */
 var LOGO="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAKAAAACgCAIAAAAErfB6AAA3RElEQVR42u29eZheV3Em/ladc++3996SWlJrs+RFsiXb8iZZxjsYsMnEgAGHQCbDTMhD5gcJGYeQhSQkBJJhCJAAISRkMg8QMGAwGGywjYmNF2xJlhfJ2tdu9b5/2733VP3+uPfrTS0jyZZtnO88/Wjp/vpb7nurTtVbb9Uh+aLBjCXT/0NOZ/yQZj6WCIDWvq+qAFjjbx3z4Pp6ORbXL8Gre9lZ/4+tsG57r3ILnvSy9fWqddF1I37VuGiZ9MxTsJ9goDTpz3XmY+t3Rz3Iqq+XNMiiSYvVuvm9eqNoAqgeXL1aXXTdcF+dFvwLuKr6ejW56Po6jYvo2ATkRH9aB/iXFvUEyln4vog0Ux3gl3MpoDQn7nWAf/nA1GnAJRZKk3/HjBHJaQC4HlW9NL44sSVKACYFoOIUSsQJ5MoxxkJzbdAKqtVl6xb8yk9NWVWdqpJYpjBwBBhDNQzrLvqXzkGTAAQIIKRGIo81bdO5qpeuUqRe0YQlBOPkImLA8HS3Hntw6KlEX3WAXzInLbXdlxQQk+kdLjz80MRzY5FNy7J5unpxQ2chWzBlRBNqHSimjRWYpbKpA/zKN2fSCuudTw594buDhyswhEIKa5b773j90o1nNzdQL/OQqksBKSVKKnZ6qgATHSfkq6/TkRcZIXGM/jL//LBsr0CMgWCgQvt2BDuGD91wWeHSc/2zFrYvblKqjJgw8tRAAI5OzZDNn91UD6NfGhdNtcyIyTTuPpr6xk+H948KMSBERAQdnYh27Clt2VncewgpFJa0taSYCMKqIDk1I7Z62lLs+poDZQWYqyb73BF7qDc0xgg7hUAVDBCNAyN9erBnfMez44evmP/rr29vNYNMozE2p1DrYxBmfNVxPs0+mpRGA297lxuogg2DiVmZYJJgG8bAGdozRl++t/+7j4yXqDUkckSntgvXFR0vdSxNJjUxQbsODIQggZCClSxghU1McAhU1Bk9UpXb7+95ujcMMzlRS3oqYLHOXEi+6lC8GJvu9C/E2HFkMvv6sbOrLKQQUYUo4KyqUTXsiIQEcApneG9v9ODW4kilRdmf8wnrFvzKWqHyhEs/s3O0bwwRsRAg5BQRcUQkta2RwAQC0Tj03if6Dx/1hPNCnPxQPagPmBMCmBXTv+rrxeewEuZZoRA1Q5X0U3vLZQDEqnHgw0KQWgykyRdFIhHT7qPuyZ1jkc1FDOGYzTIKe4LGyZPPV1e7nx5OA6DkT3Hq+fmuIdrfFwrYKADS2OPOrDQpIAQhdUolh827h4aq2YB9x9MfoicGcH29VFATw1F696Hx/tGI4qRJSWVW0kLTb44KpAx9cnfxse2joW1IDJ5C5QDkXkCaVF8vjm/WmGgkIShg/KLDlt3jA0UVBoSNWIYhZVWn6kTVCasYVUAUjlQoJDoyiieerYyVjbEeAMci7NyJgVW34NOd98a2qI65SrmjA7TzQLUMKJ2oSSkwAXpyz8jhXoFmRcUojIC17qJfEYsBA7VQU0V6V1fQMxgFgKooIoVLstNpPAgoLhKaya6gMvHT/dVnDkbVMA31SSn+qgP8ikiH4xBLYQKk9/TpSMUJ4q3XQeWYaCmOtxlKMToEKEl/GQ8+NX5gyHfIC0hOOBWuA/xSYKyAWDM8oU/tKw9FMMQnFO8kZX4lBQke3155ri/rbCYiUToJB1Jfp8t0QSARMh5Mxpps95DbfWSiqgRmgQpByYGcIjrmdwUkSWlCWZUJpqek9z/Z3ef8EKSJTO8XE1t1gE/3Fkwi6kQc/IPdODqglmqsx4y8N74liObqMyEAhBL45ztLO7sDmEZCihggBtUQPA7GdYBPswlDgcAYM1LWZ/eMTURQC4XjWGmliVaSAKiqRkw1wWVtCVQpTpp4f4/8/OmwjAVKfIKkdB3gl4DgcOz53SPejsPlkCBQVaVJ/SzUAFAp+Fg6v8GSEKbiap1GbDFkPNRHn6oe6Pdhs5GyaCKd1+PXEusAn/ZEmAhh6Pb06r7BMDRQwTSfjFgSzaTrz2m/8bpzM5njyqUIKsCzR0Yf3dIzHqYDR7XqH0Hre/DLYLmsxEoERTHgZ/YUh0tQqendZpLQTT6uW9962VmpXIY0EVNOaXRUHSAKEFFPhX+8bWTviDpuTLiuiMgxCSUVizrALy3MULJlSW/fMzYW6OyWBYCJCFjcyOuWmjRGjNFpDNiMJYAjCNG2ruj+LdUy5cAp0cmyUj3IenlSYBsh3TPqukcwQxepUwgzsP7stnOXZHIoe2YOsCjmNYmEWCx1Teh3Hh18ut+Omzw8G4/MEbZK3rGA1gE+vQas6kXatHtf9fBwpJTsmFM/ZgBYmscV5xYaTNmE1fTxNmBKkiWAyaa2HtIv/bBvT6m14jcFxErimIU8otk1/TrAp3c58oquaX8XxkOJONmSp9mowrnzlvkXr6hk3HBKxVfY43nbJCkWgauI+fGjY//3+z27hzNV0y4oIJblqU5F1ESodzacbgMWY3tK3taB6gRAMKyRTOM2SJAlnLeyYWFT1YaVnG3zzbGlfAGIoKpExjllAqXA5dD/3v1j4bC+9Zr553Y2tGQUbsLpkOFqLatWAtUBPs17sLVH+sq7DweRkDHQJKtRgGKd85IFmQvOa0v5w1whNmzMnP0LJKqdbeay8xft2t2370CVYBzzcEjffWx8x5HqhvMaL1/Xce7Sjo6ss1HftJ27bsGnMbzSSDQ0hcN9lZ6BkNkwc+imvKcClrBueXrVQk+CCiyLIaFj+5AIBBXqaNBf3TjP2zTvoZ8efHzb0KHRcCTCKGhzV/Bcd//9T4xuOMv/1U18wUo/byPjhEShWgf4NEJMbIsRHzxaLLmaKekkuCSqhRw2rvY7siWuRmp8tVaIZgFMIFJWuJxKJxVXL8blN2d2X7rokR2lR5+rbj9UHaqEJcHOAdc3OHHkKL/37Y2XrXJ5mSCtA3w6l6gYPz1eLu7rKpXj1mCJA6Ek51GNlixoWH92LusG4CKxXgSKROUYpUet5MApChu0xKmhhjNzq1bkX3t565ado5ufm9i2t7q7x5XUProvWr05uGBFcx5laFh30acXYTiJXFAqhawgsZERUUDBIEPqE61fM6+jTYwbI04JGSdJ00HSyDKj0AQlVVZAFeKH40001tSSXnlp4fq1C/b1mwefK25+dmB00LU2MGsGmgKFqAdZp28xkQuitpS5cUPh6FB5R1/gHBlix0QMT2R5k15ypmZ4TEMhEVJ2kYqbg8YiwIA8S9aLFBWog5IRB5kwXG7P+m0rGs5dmhm+bF61Qs3NYY77SSIQ1QE+jRswCMSUo/IbLmu0ucIPflJ97kDUXXRjTghsoBeu8s9fFlmJVIlUFSKiIsd9OiYwO1AQE9UEZoDEGS0jLGdgWgsWTazkSELURCN1gE8PurFPJTU63myrb7oke8GK9LP78o/sKO3sLlUmogxFl1/Q0lEgEzgiyyCBxI0Oc7IcCiUmAqkSwFQrJCbTgQmAE+dUiMmA42EgdYBPdxStZEUNqimpNjblV15U2HRey+BEc1CSDLn5rdXGaMAiSOZlaTJuZa5xDaIQ31pmEoXRGTO3pr3etOis9ix1gE8LgwUkhXxSIhEQqatk6GAnpzubstRMUAcpaxTGKh1KSEh1kdbYqxlUFiddRgCxiVXVs1+SFYYozr+mkK4D/FKZs4kIgJY1DBQKYmIH0hgsJSuE8YlqJYDMnNqtUDDgYsW0Hl+OOff36wCfNiMmgU5NJ5zkt4hjBGNZpIKEACUWSKks1WCaD5jmDxTwmD1LqnKir18H+HQnwnPRFbWBWRrDn5QBleHgqpFGyeZ57OgUtZY8W6si/CKt3eRJKXWAXyqLVp0WCs3wqAooCbGdKIfV8HmGYhHH3YJ0/I2/7qJfOUjP4kU0aimOF0PRuLg/V5AMIgYfb16WghxourJaUS/4v2JgT1XKPFasuuNESwRYy8wnPWuHjxOLGa2djjXjq9asjrmVmi9Ci7H+p2pTrnWXEmwQyMhIoCDmuT+/Zw0AkZOzyblctFqFVXKzI8Da/qHTwZjrbkvYFZGTQIqmMnSdnK96opeJgWlK8mQoHEFZoUTyyseZIWUxg6NiQGGcFR1zJ3gpKIJJiupUARYDtbOmqk2hOvOZ5Rg7JiT02Quzw9r0XJrlGOQ4AaMBCPGtTQo4QKFGhUUjY38pho/QYMX0joeAHPtmVeEZZAtk/AgaktMTv7rHAEwCqtYo0RnzIlAboBW3zyiBFZgSWxPANO0+oFM+SURJYtqOarFF/C+YBOOZt1VyO5AKBBRyPDOMHDgiyBRZ+0r21Iz+kcrRopOpgzom719SJc93mZwaGyGU4+RFSnMNOLPHj7ZpmstlARMbAgsTyECtixNwIsCRiIoYp1CAI2J3anexsDhYRY7IE4aAHQVAKRc4SgYtE4imai5EZBLSwBGI00x5UaOq0CppBFZFCAFPy/1fDvs8TupTs42AvL7R0lhZBTTLTxHBF817aE6bjMKGelKRsT3+rpaMzgSM+KkyZ8qBJ1FmoiTVqqlGHKmwUT/N1sLaaiYdNkFSrmpjVRG5k/GLBJAQOeYA2aq0jo7nSqGEsCYbNaaHLY/5rkwqRBx/5qnohLyAnRpbqeYHx7LFKAViIhQyaEqX0iYERgyFENDJvaUXjOnklHY6Lr5QArEjDYx/eLhajiTZTnS671QC2tJ2aXvBk1GjcpxEeDIK0V8AsAJECiJHGhlPvLa9o3bL/vFnn+sb6ANTKqraIKBI1PPISwu4any3aFHu3M6mCxa2LW0OEPVajZ7HLypmzdaMhxyomOxgtf3Onw5v236gHPkRW5Nx8zLV687NXHluUx6jyc7MTKpKCuEwgEt7Y2HDT38ePvTUwTHyg8gxsTXhqoWZX920qLOx6lPVJOHBSw3wCTyKwTrusLs7qMSzG2bmyjGlOS/jt+UZGigpgeaOT0/QghWsLMoIkBoMWh7dTnc82N1bLnQs3jR/XcfCjs5suimdyZAxUSil6vhEabC37+j2I70/++HOs1Kjb75y3nkrG1s8ZlQo3qtr5wyTTjJ4s4enxs63qpkfPtb33cf48uveOn/pqgi2IpWnH3rgGz/a0tnStnp+xZoKoMpI5IcMOGe5sPcw3/7A2OJ112zYuK4CJXBPT8/9d93b0lS9dVOGMDTdISpmXKO5j6aanDo37bSbmHskUporDpqUy2l8/9IJbr+izKOlKB7OYpLbcHqESwztaM435zzR6GR9kD3GjKAEIRbSfm29fbPceX/32k23vPvmt6+7cH3b/PkAG2sBVXFE7CBBGIhzQ8NDOzY/edeX/vFTX7/7La9vu2njvKz0pKhCIIE6RkSwDiyAglhlmi8iJVaAKXL5Zw72rzz/qj/4y09mWlqCiKzPT/zkB3/5339n98HR1Yt8pYjIEVTJJA7OIII9OlSO/PRb3vlbm256nWPL6o0Mdn1w38AzBx4pXdGWd1mSStJxXRt8EVN/BFLRBHOaFVRSomFVBimEkrGErHHT5+TDVUERAEvsCKKxdLKW6v0C3pgp4Gz/CI2XEv/MCszQZJEP7Wznxiw0Lhc7nTT+yZvreJHs3BYM9dnktu2mb9zbe/2b3/O7f/Dx1tZWKARKgBNRCZO7jDnl+wp05pZ2Ll520dpLPvGnH/zaPd9saS1ctqZdTMmSiShSVQOWQDUsWw6FVMhB0mQyjtmSCSSMrJ0I2ophfyHf4PlpKCnDweYaF1cpXXJVTqeCsGooz5wiZlVSJYlCTmebC54vPT+88+u7jxwINU1ixke7D+/ddvlKo5KLaB5l1FCkorH2fGp2ETnnHJFaa8CkqqJiSMmJuFAkhILjMI7I2hyMBzKiEFXmONUGE8NjFVIETsbhKlSLfylhk+jY1Da+zyLH5DXvOzjePVgFGYXjad6dAFE0prBiITfnUqZC5GhazqonZcGT3ahEJjUmTT9/tqdzxVm//b73tba3VgOxTPHoeWPM5KjTuN+VRJyISNSyfOFvf+TDf9K3867H9rWvWFuZGCyOOTZKikZOL2zS+blxll51ofMbJqiw54g/VrS+709Uy34+1dLWQf6AUxERkIGCwYF4FSCy5NQqFUY1c6g3NzKmJAyQkGubZzoWZzZclr3jvru//O93hppxDvmUXLm+cNWGVeOVqGswOxFCjRKRYSZiBqV9yeeRzaWFpFgsVSpaDVSJIJq3Or+RGtLimXEJSyIVMoBt7BlpGBgzFbJVcOyTKQnPYYkzKWRN0JjP5VNVEwXGjVl1TKoUWx7NSk5UlZSgVAz8XQfdQFlhJjeuWhMpQVQzaVq8MGWpDDim6ZM7TjqKjpuMSdnrHuZnd4+/5tbrOzqXR2FkyTAR1JWLlb7evlKxotBIJJvPdCxamMtlRARK1Wpl2crzXveWX//c3/zhv3x//9HuI6NDZNkHoOXqOYvw1tctvWhpk6Vif9D87YdG7n5otFSGZ1OVauj76Fw2un84PH+xJ+oAQxADqGhAVDRe2W8eGBn/wcP9P3zswNgoG8cMVzG6cAGu3nRudyk1UCqL8YiM9SysE8ofHrDf3vrMczvLkcBN3vQKBqWsNjehpbVQrVTHxoLiOIpViAWHyHlYNA/LFzSdf3Z+7YqFrZlqVcLDAw1f+sbu3YdCl4YztaiBAMA5uAhZHw0+li/yVq9sO/+c9jOaChT0sZYTLO3skg8RqRLZdF+R9vaGAQB1MwFOcGxr8Be0pCqlbs8JwGB6nvLRL3DRccNqyH7PsDda5lWrzmXb4AJlo2Ro7+5dX/jsp5/autmFFQONnBhjV5xzzv/4nx84//wLFcLWA7Bs9YU9rvnp+7ve9tabfutX3w72iFAdGvzGP/3TV/9jz8JfWzQ/m3p0O77zcPE1N7/r0tdcS+Jbsn09ff/w9599eu/+8zY0BKFLTb5F30SWJry27aX2f7uja9tBd9VbfuuiizZSCOaw6Ebuu/Puz3zzoZIxN9/67uuvvYFNxtjUgX17v/yFv/vIP2+b37nwnR9494oVZ4ioOHFRJCoAjY2NHzp0ZMdzuwzzBa89a157RypbsBlbGhsNxyeOHjjw+M+3/OjrWzed1XLLtR35dv9bjx/cGa245Y/ePX9JhxNh8pIwWAmQciUaHhof6Tu855kn/+9DW7/z2JF3X7Xw6tVLGAcZERFEwpjkm9yYiVhIkfZ7jsiOrtLxsg4Gli/OthWckZJlhjs51sbOQXOoKpm+kapJNbbNWwaQksQb+h3fuf0bX//Xi89desbypgY/zeDRYvijn9w9PDbx/t//UPuCBQZGHZ56csfwaFhl74ab3n7jf7l18sn3HOr68b//72LgpMB9g5HfPP/md773/As2xD+tjEd3/ejhJ3cecCBYjxgmfjcciOH9fdjx9eee7aJ3f/CPf/2d72nKttViEHau6fbvPdTQ3nTjr77j+qtfGz9buVR85JGHH3v6K+dvXPP2W9/b1t5+7IevlMsjo2PE3NjYmE750y9DpVzqOnTo4R//4PbPf77vG3tvffvGg737V5x31n997/9Hfu54V7NcqowP927b8sg/f+EzX/zOY5454+p1jaY07lGUjCMlMGpT0JSIuOpkx56J7mEHjsPzOHDnyQ3QsjnjjPaMqXriiIySo2MN+Pgs4dx5sKgEkWMv5afSMeccb7n5fEMumzt85CCqQzkYw0ZM1vf8e35w99ZndmVz+eY0fFcujY+f1WZ6x4xxEJEoiojYMJjZWGPZGHUZ30v7rKLOOQkdYJjI8/xqVBEV4/m1g+DIBYEL3XfueWrNurM//NcfveHGG9OcC8KigzIhrAR79+2vhmEum81kMiJRGFQN22q5nM1liSibSUdhVcRp5IgZxKoSU57ptL8gMx+AqtREyUl2k05nzjjr7DOWL+tcuvTjf/z+ux46CL99aHBk9+7d7QuXiCgzq+pkXuR7Xi6XS2f8THbp9Qs7zjx39cf/1+99+Yf3zV+44Kwmz4tKJkkVp9grFVHODg/mtu8ZCiIwH8PfExt17Vk+s6PRQzeDON738cIOp1RR1SjlWYkq1aCU8JykULztlre1NeaefHJzqTgO5zxjA+XVi4qty4d27Nm/beuTi5r4uouXbrhsGZH3pTseYzXMDGZiZoqs4ci5KIhYOZ7HScQm7phUrkpQDUoafy6tTSoHM3kCu3L1hX/00Y9ddc3VikBVrEmxqiL88Y/uvuuO25cuyKctnFOQYWOt9Yw11Wqgqs45VWJiYSViENhYxBseyDlHyQLb5GpI5MTF26F5zRvetOXpbd/+0j9cvP6cPc88+T/f+9/aFy9X9iIBVBgMgog0Nja+/e1v37RpExsLskuXr33X+/7gz97/1P1bR5dcmc2pcjx7klWgJLFX5NDLPdOf3rJ7XGMzOobCsMBZLeacJvFdmZlOoXo/F8CkFtXF7TkKRp54+KGLL7vSGqvqFGhubXvLrb/xllt+vVKtCsEY6yQcGRspTRQPHTryxONPPHDP93qHDje3triwFEbVStyJkczsE2KCEhMbgYojmGnUowJSG0DAmgwJY4BSqczV11z7tre9beOVm1RF4atzkYgLo7vu+LfP/e3H1szzFpy7/KFnhw2ZJLYlAog5fnJiZhCpgpnGRkY2b9mazqTXrDknl88p2BgTq5wOHz68beuTy1csX3XGGV7Kh6pzzpr0hRdffvuXv7ygEP3OzWse3zGwo+vprXvGjvb2YWYbwhOPP/G5z3/u0ssuUxFVXXPeupWrL961//5oU1qJICCi+BOpCIiEqaSpzYcq+4dU45RKp4ZQEsCqBjhveb6zKfBRnanWOFWAiWCIPcLZS3NrV7b+4FvfuO61rzv7wsshIhAXCpyDqu/5ZBgMBXdkFtB8s/KMMy/bcMnVl2/41F999Cvfemjd2kWcyznLACzFJBYZY9gwkTEEVuVkAknCBRhmk0DCMfDMDMWSziW33XZbR0dHUK1Yz1OFsbY8Evzbv/7TVz/30bXt+p6bLnn06e2+KxpC7WSLmlVO44SVCETdXUc/+5lP79+3581vufkDv//72WwBgHPOWrt5y6Mf/N3fW7a083d/74M33vQrEiVVucUrlncsXVgp9qxdvXa4Unq2p79QaOhcunTBggWFXL5QKKTTaedcGIblchk1RVyhsXHVynWPPvOTSjnFeSMSEaAwUKNwjl3km5Eib9veU1QT18+mTzdkwEBaUli1POOlximKprR4LyTIgioblchlZfTNVy3Z97Vdf/IHv/++P/yzDRuvSqXTzAQP02R/QjDOOZGImD32L778qtv+PPMnt/32PY/tmIisZVvDL9Z+JuP5mE3MHE0J0BRa4wLifDseWwDVXEMh11jQSGxMERozMjb0xc9+9qv/9Mk3rS/8j+vPKGT7N6NihEWF4UR1chIgACajChcXWglhWAlHu6LSoTu/97WNr7nymmuujadQARgfHxQM7N0/8s//8vmNGze2NM8PQ2cVjY3NDfMWHC4O3P7g7m8/uG/tJTe+6/qbz1+/vrmxOZPJpFKp+J2GYUhEsTMQwHiptnnzghATRSCfIgrFqGNhR0waaRSYzp/vizbvqVTIMlThQARix2BVVrDq/BZzzhJt9EckqlIyY1hf8B4cBSTkuYkzFy3/tTdf8cXbt/+vD3zw6utvuOjCCzuXLGlqabHG+L5HlpnZ87xCQyGTyUJJiV0UnnvBRa+96da//JM/itIi8dQnEeUIxKIQUXFOhDT+80SKxKoqSkyqHBG6Bo5+4q/++D++8623bpr/7msXNNAg1CMyQBUQwAIOIK65gWkWnKQ12Yy/evXKA71je/buvuqaa0RcMjSStbk1s2B+5+hYf2/P0ZaWBZ7ng+Ap+Sa7be/gll3Va9/wrg9/5OOtDW2ThLaolkplIioUChq55OYCQGSscapOSMhQsncIxdJoLzsRFH760IHecXFeiIiOSWzJJ1q9smHJ/LSGg6dc0bZzlZ0sAMeybeuux7aTNXbXszu3PL2jqalhfmvrwvaWbDqVL+QVooRsQ/Oqs89+2ztuXb7iLBEVkG+91esuEr+hVC07F8ZbsCqDjCgDHnE+YhWOIlKp0anEpiYCA81kbzUh+OEIRNzb1//Qgw9CyquWNRb8EOUS2SajqhQmXSCxOKGmAxGCw7T5rgRolDWs4saLYzRt7qs6cULMqFYqE8UiiFQdlIkA8nYdmLhg/cW/8e73tza0hS6COig//eS2u77/7b6jB4nM62/4L1dc89pMITsZDZu0B9YQKsxMBIKwEFQdiZd94pmhx3aXAkpESjMLfwzRvK+rl2WaCy4sVe2pihbsXNIAK6awf7Dhq/fsO2qXd65ed/OaDZxKdR06uO2Rn7Zz8YxzlxnqJXCoprer96s/uy+fz7/nt99vrRdfLC/lccZEE1WpVAEHVsAAttDQVBK7fziTL6T2Dwx72fZ8vnmysBu3WGGqZU6nSouAqBITqV6wavU//t0X/vdHb/vit7elfm395Svb0lFoPMeGarN1k9Ql9g6xrmiS4CUmdaGnMUMRt/NRPCcQoiayvhqEoqKTElclDoXGi1jccebC+YvVKQsZ6x0+evSzf/e3Tz74zTWL0kPj4ac2Pzp/YeeFl17sxDEYAFsmRgQoJ6y0i2vaJjNQSt+7ZXjfeKhExtGkQqlGg6iDm9/Ga1ekEI2KCDGfGsJzuWjnAjbPduOAtH/443+/8aqrozC0vj840Pupj/35z358T9/AaNYKsyHPL08Us6lMa0ur73muRrge7ekulypRJOMTJa11XjiRSy++9DudZ33+jscW+O6ZXvvmd93SuXiJSKINEU30SKJOEI/DFiUKo5DA1noqwiBrvE2brkt99NN/9dE//T9febD85hXXnd9Z1aKIJBQexwGaITYAKB5/AghRHLgRoBIxiGvUbCJQYkoJ+Q520p/HtQLyCT5grOd5nod4ui+ZQ71dB3dve+sb1l+/cUV3f/ET//jA45sfu+DSiwmUzJNVnirTJYewqCpXOfvErvBn28qlCMSxhE2mCGomQ8qkZ64oLF1grasaBsWHcNBJnzo4t6KDDEpRWSjT2NacSqe9VJpJFy5a8ju//6HFK1ZuffTxifGSGhjmjnOa33rllTe+8U2GoKIgFoS9R/YsaskPenz0aJdzYoxhAaCr16794z/+2Pe/++3hgf7ffMd5N7/11/y0Eec06dVJNi+FU43zK2WyfUe7tm7dumHDhrb29igIjLUSRevWXfQXf/WJT33sQ1/6959otb1kFzoTsAgUKoDB9CMYY48webFrhzSqaGLrM6rBOlnN0dopGYKpJ4ifiwDkPJZIR4sTw9Vy33AxqIJ8owmtpLV0YGopAGE2mcFS6psP9+8ZdMbjwMX1UlOrRDpjFI7aPbr87MaWdMULA1YoSS0gfcFEB4gssGReFuGhHdsfv+Ci9VEkBGVjO5etfN8HbitXKqELY6dhrc2nMwoJxcVFtqA6dvDZx9YvznGuY9eTj/b1dC3o6JR4MIXxLt14xYXrLyFDnp8CVJ1jilWC5Gp9VUIqNOUhR0YHP/nJj2+8/PIP/t4HW1palEICDGPtmvP/8q8/+/G/+ND/u/fh1va2iDOJZxeFQkSjKAIQRVH8j3hnd5EDke95nHhmocnSbs3IeKrXViECidgEimoYlpwEICVmFbeko/OiK66/956vb95xdGystGLNRRsvvSTeZabIxORoZ60V37xS1PIfz9BDO6pFsh5TUtydKiwnkcNZi7LndKZs1O+7uIqtJ6bg+IXC99hnueCMRV5nu3zj3768a+c230sRGweOFEKcyeYaGpoa8g2N+UI2nXEiIsowxnDK83720we2PfLA5avy153d0rX9ibvu/B6zR4ZFIhdWnVSNB2PhXFVcNDn7WlSdipDEwolINVINoaoqUXD08JHPfPrTf/PxD/f07GWOQI7ZSESLlq/+8J9/euGZV9z7sz3lwLhIVWSqdY8YIMMpZqvxIF9VJ0IAW1amKBYiqkps1E5JakchqKhGjgJFRbRKrPmc99SOLVu3PS4SSiQu0my+4QN/+Ecf/IvPXvGm3373+//sI3/zt2eeeeakGlxUw3iunRhoLBJwxuT39OX+3z29R0aMqheENb9ck6uyQpzmPdp0wbxV87xUFJHUjpU8peMH53bRGlWbs2O3XLvgH25/6hO3feQP/uIvzjpvLZgdhBO1TZLTMsWzIlgVgbqnn/rZ33/2k+0pufZsazLVRzr0K5/7TOeijquuf306kwMAsfGnBxOYY1LCKFQlbWyKDYh8k/KsByJlJiLfsw1Nqabm7H0/+Op4f/9tf/ony1augxBZq6HrWLLimmte/93v/rASCJjIgEFgsoY9SwCsNcaYGu9B1hIzVALWMOV5RBYcEYGIUsZCHTRUwPMMEZiEWK3vefBWr+oMZewfPv3xxkLq/AsvNTZroYsWtL/jlreVw5t8Ty1sHEtOXkbfkopTCJOqUKTZAWn46v09T+yrKFIk8aYqmB70K8Tpkvl2/TmpRjOaCh3UTZEFdCpB1qyURFXBKn4wfNnKhuKNrf/6rbtve8+RG255y3mXXdq+qGN+63xDlmE8slAR1UiDgaH+7Tt3PvXUlofu/vdM+cB/feMZixr6QP5vvPGMz9+592Mf+o0HfvQrG65608pVZzU1NafTad/zXeTGRkdsym9samayrBju7w1Hx6xq/+EjR7u7FyxcHDinNr3/4L60m7j5mlXGuG/88O7bfrf//bf96ZrVF6f8LDO50kRxYjSd8cZGR7oOHwrKFREQaHCgb3io17AODO3v6zuSz2VBaozp7Ts8UR5YuqAlY8L+rv0T4yOenwqjiBU9Xd3GRK0t2a6+4aPdXWeuLoZhKeXbnr4jw0P7zl4YXbJu5ffu+NlHf+c3L3/tGy+4+KJFS5YWGpttrlmYxVWiyKmjQq6Z2UDJgPoOH/UU2ZSDK1etjvsLv/1w5a7Hx0pTOsvEHmOKVglgTSvWr8ysWarWDRp1UzY7lT6ejF5VPz9L1GFUiCDOuqJBldr3HGm4/Sfdm7uKlOtM5xe2NDfDciGdyxs/rAZBGBTLxbGJkZGx7rDcffmqws1XLVzWMtYgA75w4C84NNF439bBHzzRNRJmm5oW+36L8bK+70VhODo65qdTLS1NmXQ6bU3vwa7h/uea2/Ldg8V8xxnt8xc4JoX2Hdwzr7zvd9505qIV2Yd2D/3b93cGtHTpkrOyuYzPVBoqHjqww89GYyMVz5t3zjnnMLHxvd6e3gOHn+ro9Pt7K/Nbz25t61CfQ9KDu3YWsPsdN1/86JOHHt1WPOusSxsKuSBy4Xi0Z/vmdeu8q6+98Ctf++ngRPuZ55+jXiiqXUf6xg49+643tl17YeuRPdUHHu3funcw4FSquTMyDUhn2PNUojAMRZDL5o0xBKREju557spV47/1xkITDUSNDT8+3PCn/9L91O4ysYqamIPnafpzwyKiK5vlz965+LUXhumJ3hQ8hZIhsAPkFLjoWQDX7g7SiOA8UpOKtKmv5HUPu4Nd40eOVkdGK1WHqAITwgDWQyZjc3lvUWfTsqWZhQ3VFq9qZdQzIQGhZEIuVFNNR0bc0V45fHB4YGCiUnGRU8+nQr5QDYLRkQoMCEgRzj+n7ew1K587OLDlmUOlYqAGDCxs8a86r231/DRSpXGYw0P2/geP9A84P4cwQFqoc3HL2guWjY+Vt27dMzIauAhk4Pm0em3bsjPSh/cHzzzV6yKKPJRE5zdkr1zXcuaSTH9RHn56cNfOEcsAgUNeMj+/8bKOhmY5cHji0a3Dw9WKEiRC2sN5K9ovXp2al5tAmAldume4emSweqS/1DVYrgo5gWfZ8z1rvZGRcedAQGSwanHTtecUFmRGKWN3Vxr/+mv933lkIpI42uKaWIsAGDAxe0Zs6G7ZkP/Qf5s/j3r8YonZAkoWoJCgLwLAWju0VECwrMTiACKbSquaSEzoKFAvqhJXnGH2PWMMsYnYBKxViSZYhdkqi4KgRpg5nREha9NhVSJnnWoYVZjY83znnKgqkTJYI5/BxgTKTkxQjUSiFCNrNWUcwsBJqOzBZsuhc2rVZiJBxhhjRCQwxjgn4vwwCJXYWmO8smCMyQ8DH0jBmECCtNW8DSkqOrJVTQUVZvJBSiI+B551zhVtuqEiOUfkorgiEnocqRQZISubeFSR8SKnEYwznjCDDBMDxjmJtZchm2wq8oOxIHQjqbbP/2jiX+7s75kAg+NDGGohLoHgqbXsGymdkfM+8lvzXnPBeKpUToVJ/z8bBwpPrcPqWEUHTcbiJApyJtbhVRzYxPOHDYMylE6RipJCVSBKTiDxmZokkBp34IxEKEWs5HTcxFeBJe2HiaiQk3bCmGcAkYqmVImQSwMKI0QCiYiIyDAoUhnNsAogOgyTzI6ySuTgkYEhZDQuJ0sUgBxxNRXHWLDEpOIkiPudogyitJ0Sg0OVRFNMLiilKZgSR6tqFCmEGUyhAOqscZEFWWZ1VSfqNM50ydYOPsqKoOqYfEkvePDp0jfvG+4fN8So9XJFU0J80ohdWlye5JoLGs9dprY47sPnSYOdLivHixFFT2O1QETE8fEgklSEyCmpS0gDqBBpLLdMKJwpdlWJRJM4MJ6wSgxVxM1LCV2E6frhSfF4PAyKBQmtgOSIknhcI6soqQrM5G+KTu98U7U2Hgnn4rOnFBrFTKWpyb9ny9sIUFa1BpGiOiVMjoeoc9IVxgxQNNnyBiWjSqo1RfxUykrOSqplW0/2n+/pOjDslDySpPmTKJFWx59ZjBNXXdHm33Bly/z0cCpiG2fQNNlsd4pdN3ZWEzDPCKhBYkEMCNghruACxCzJRdPkd1Rjrhi1s8kJ4MhgMqdKLqgk0E/vYo5Hf5GtFQli9jeu79V0i7FOXhOaiCZP7ZuJ0XQ6ikigDLUgSaJPmlT61jT+xwakCsCBZHqDsoIAS6qQaPKzCIGVp9ofYgOYGtjPiDw1rXvHs1+959CWXZUwYuJIkieeHAudfBpElLFyw5Vta1dqJhgxFFcwJXmX9EIAfv6+iviVZqZfRmqq6EkCKLba+LhyjX+qxNOv56xeX5qtE6PoF3XnTT1LomygKR/6fH3GJ9ngONd3BYhAz/+EpEm/lIKhoibKT6Dth4/13/vzsWLAMcM2k1mK2V0lJU9107rMmza1+dKlUq2dl/UCPsgJumiQzGjm1kmRvj6PtKBWuJGkfw6EY7CYzbfRHK3kv/iTzeqkVZ5GJetxro5iRt/J7G4/zBqAkxx1IpjqUUhGD85s7KNEUq6GVRz7E5m2Hz0++vUf9x+eoIiMSMxauZkdCaQEw3pGG99ybfuK5jGqjhmOT8F6cZqaT2rKzjTGnp6/gXvmheWZnRNJzGDmwHPu9tm5DfoY5LjmH2TmjaZz9BUeb2QczWqRpsQ/Td1A06ZBxuYen26VTIwgkApMkOr40VPR5+46sqNXQqvi5jhrNL4Iqmi20U3rmzesyKWlz6kjxqnFUy8c4GNbw0+oeZ5m4EGn4HXm7t+axEhf/gkNWrujIniR1/6zHfz3Xz2ytduV46lHx/Z8AgqyRgsk151XeNvl7W1UkUoAw9NPxnlRAJbpe+Nx3WC8z1M0w0TUHaeAcfyRGjWPrTN/OrubVGc6atVpugCABHrCLozmcqrHucVmW47O3Ahp9ozQhGVUgEkoCjVdwcIHthU//92+rd1BidmxxCGLTG9dVAUpETSSS1f6731D09ntQ7ZaJXYgqNKLC/Cp3az1Nc2NKEQlonQ51fbAE+E/3TG4tS8KiY0m53jrzIZoYgZgnVvWQG+7ru38hWKr4zDqSOOy8Iv4/uwvQq72YjJX5DJ3E5ROqW3muDF07u31mJOvddpT0exXoilJzgyL4jkqajpXwPJC7tJYwk5CEFiCUxFEnB9B+31Pus99+8i2I1Fgk2BjmgQjbgu3IBCLFelswm/etOh156cK2gcTRKzg2jxZffEB1ufbb6cupTw/Ks/3VHpyV5fmjoSf50XipO6F+Z0TEXlOHd2tpCYIyfnNQ27Jd37e98U7u7cPOLJETkWnjgCvhZYMWCaxEjaTvv361rde29Qe9VFUFSNGNU7d6UUNKeqzKk96CalSlLiUyPdzbfsncl++u+vfH+w9WgSY1TmaGZJojXZWFpagQPrmq+a947XzW9BvokFNeKPj5+GvdIBfxFvy5Q6YY+Iy5Fihm5+Q+Tv281fuPfqtx0cGHCyTQGenQgl7wKyqGjT7evOGRe+7sWm+7UqF48wxIysnlB/WLfg0LyKoOFUvG6Uau4cL9z8c3vHT7sePlEcskVGRyfyaZsbmJAxyrjWFW29ofdfrmpb7vV4wwjBCdFpH/9gTuGV/Ca47po/YO0Ern5GWT0pckxNMjnlgrMZ0II+4UHUdW57D1+7teWDrWE9ZAmYGaVx/0SmKOf5tQxSBnHMLG/nWq9vfcX1DZ3bQVkdYGQpmN4M40jrAc8djdNLvmKcnvjw9fFOYeFgLM8f3i4LVeM7LjYWFPX24f/PQ9x8c2dUfVGCqxnca1k7WoEkhTlI2MvEp4HJmq3nX6xe+9cpCm+3zwxEDgdQSekqOfmd9GSz4FZ+FHrNjnYgyrVYuJKMzb40YIGOVOAxCS1YBqOVMy1BgdnZ59z098aPH+w/0hIPFuGFCVcIZ9hfXHIk8S1EUsXLeyMVr0v/9+pbXrOEmPcRBQOTiXuHpdTB9qV30DC24vhKhJQAM8QFRDkFxB1StiZaOafmZnWdTjWwmkvg4ZYbGDYoCA2Sto5TT1oHxzJN7iw88Pbj1udKOrmgwTI5sFk34gaSoGeupE0m1daqq2pHVGzc23nrdostaxzXoYa6CwEIJAzKN1yZ90QoMrwoLpripzRI1kjVKlSR1cUjaQTUiklgEn1R65jZkBVhgoCyEyIezuQjpKlJDRdfdV96zr/jIzrFH9o11DQfVuELNxDJVlKIak0pJg7ewkCIgyIVLUzdf2X7DhamV+RGEQ0QOJy+LfOEAm5mfWGZ6PX0l++eIzNFR0zVSUD+TSUWNGTSmJefBhzAi4VA0EIlY4mok1w45IZAQlMgQe9CUOq6IllUGQx4s5XpHc9t3lZ7dO7rr4ER3b3XCxXO44y581uSQ9iTuoniuijKRGKgR9aCLm+zl5zf9yqbWC5dzNhhKV8rkhclmTyIv4VEKduaWFYejOms/o1ck0CRgD0fGRj7/zaNd47B5bsnT0nnpZa3ZeQ02nTLZxnS6gGwWDX7ajzt0YwkXlABRKZcr1apOFHVoNBwsUteQ7O4fPzDY090vPf0Yc3BgD4lgiZPjXUlrbhnJjENIXOATsYrOLG9YnX3DpvYr1jbmediEA5YkbofT2MPMLGm+BBb8y5uUsqhbtiyzbr235fuj+/pdSMhosdEW8wa+z6mc19jqFfKm4FXy1traRRUVKFVCN1GqjJXc+Hg4VnZjAUYrMu5AIAMGk1pYkIoGcJg8WS4u+iIeckfEsfJQmNCap8tWFa6/oPGK8wqLmyZy4XOuHMKCPUWkIPPyXCT9wixvIb9EEFeJy8Ybc+3ffqT01ftGn+tyRWXSFKFikppAkgDxtI8ntX+4Go/o4nniBGZK5HNaq1Fq7eQCjUOh2nG+RBoqk2Y9LG806xanNq7JXnpBy4KGsIFKJhryJUwCvnj81Zzj6fRFLO2/6gBWgoMRNWrzI9z+s+dK920efmp31DcYjAQyEoIQz8WK5XokgrjSKsSiHA82InWJLnBaAQuY3YZLWps7qySqCrChlhRWzPPXnV24ak3TxqWp5kLRUlHDCeuCFNzs8lUd4FMKswyRDzER/DJ7gZ8/0FfZe8g9szfYvL94YLA6PIqxMOGlqCYfFIIkU8dUZ54DOfV3PBY92XWVAA+wgAUa8+ho95Yuzl+yMnXJyvzydsr7RRMVBVVSR+xYxSqsm9n1NRNg0pcoiv3lBjihGInVQchTP1WBOGoYD2zveNgzwl19tOfQ+NHBSndfMDQmIxUZj6hCGirE1RKluTL/OJ8l1RShYClnMK/AZy7ILF6UW7yMVi41i5pTzb7mtOJHE9CKcjzmiAkCUiZwNAvgmcSbah3gkyoBEJSFrAOxOmcI7DFnQrKhQ7nS1DNmj4xUjgyWuodluFLpHQnHi1oqRZUKuUg0TqE40RIZg0zWpn3TkLELmrOLmrML21KLWnVRptrUCJMdt1w2VWddyKRGDYtTDZMMhBTx0MFoBngvI8B4FS0C4OKJ8KokJEzG+DApZS8kipREEImUHQeaCqpcKkVO4qbnaSdrEXzfS6f9TMZaDn0bpn0iFzlX0igUiUBqFB7COFNKmD5NAaTklMO4NDidBpzFs1A9TTplApOTSf0AwyA+VidQIRuPGFdVSM4AZMmmNKNMk1J6JIQUE7MBSAWKCqJAAyjgsxGJB3zEkxGn87gEmpz0e8Kn/NYBPpXgmmWqqkOxELOm1E7qTvEhTAJUiRO6cgbfI1Q7JZ0ITiEUn9WDiFHTtM5WDE8nlmWSBp/GG72IqrD/1ADXwgia7rdpVuyaCL7ITZKOdKy3J8LkDGBILPSdAavOocOlJCk7RkWmdYBf8etFrdfSSwPzfwKAtda6Mlc9iZ5HKxy3wh6bQk0mz4TjJiA64zxVIG6QnJ7dmVqsdXp36/oB0S9/2F+34BclHcRJbIFTIZLOgYeehOc4zoMnp+dJHeDTlk+dwsPoVF6BnicSfAnihrqXfHWv/0wWfHLHxusLfAZ+ZUgk6hb8ak/t6pegDnB91QGurzrA9VUHuL7qANdXHeD6qgNcB7i+6gDXVx3g+qoDXF91gOurDnB91QGuA1xfdYDrqw5wfdUBrq86wPVVB7i+6gDXVx3gOsD1VQe4vuoA11cd4PqqA1xfp7D+fyxv4mclirpIAAAAAElFTkSuQmCC";
 (function(){
@@ -341,10 +349,13 @@ function sv(k,v){
   }
 }
 function pad(n){return n<10?"0"+n:""+n}
-function now(){var d=new Date();return pad(d.getHours())+":"+pad(d.getMinutes())+":"+pad(d.getSeconds())}
+/* v110: 時刻・日付は「日本時間」で作る（端末のタイムゾーンが日本でなくても、14時の架電は 14時として記録する）。
+   端末の時計がサーバーと2分を超えてずれているときは、サーバーの時計に合わせる（CLK_OFF はハートビート・同期の返事で決まる） */
+function jstD(ms){return new Date((ms===undefined||ms===null?Date.now()+(typeof CLK_OFF==="number"?CLK_OFF:0):ms)+9*3600000)}
+function now(){var d=jstD();return pad(d.getUTCHours())+":"+pad(d.getUTCMinutes())+":"+pad(d.getUTCSeconds())}
 function htmlEsc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
-function dateStr(){var d=new Date();return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate())}
-function dateJP(d){d=d||new Date();return d.getFullYear()+"年"+(d.getMonth()+1)+"月"+d.getDate()+"日"}
+function dateStr(){var d=jstD();return d.getUTCFullYear()+"-"+pad(d.getUTCMonth()+1)+"-"+pad(d.getUTCDate())}
+function dateJP(x){var d=jstD(x&&x.getTime?x.getTime():undefined);return d.getUTCFullYear()+"年"+(d.getUTCMonth()+1)+"月"+d.getUTCDate()+"日"}
 function timerStr(s){return pad(Math.floor(s/60))+":"+pad(s%60)}
 function dtJP(dt){return (dt.getMonth()+1)+"/"+dt.getDate()+" "+pad(dt.getHours())+":"+pad(dt.getMinutes())}
 
@@ -421,7 +432,47 @@ function gasPost(data,onResult){
   updateBadge();
   return item._id;
 }
-function sqPayload(item){var p={};for(var k in item)if(k!=="_id"&&k.charAt(0)!=="_")p[k]=item[k];if(admTok&&!p.adminToken)p.adminToken=admTok;return p}
+/* v110: 送る瞬間の端末の時計（sentAt）・タイムゾーン（tzo）・アプリの版を付ける。サーバーは sentAt と自分の時計の差から、端末の時計のずれを補正する */
+function sqPayload(item){var p={};for(var k in item)if(k!=="_id"&&k.charAt(0)!=="_")p[k]=item[k];if(admTok&&!p.adminToken)p.adminToken=admTok;p.sentAt=Date.now();p.tzo=-new Date().getTimezoneOffset();if(!p.appVersion)p.appVersion=APP_VERSION;return p}
+/* v110: 送信に失敗した記録の扱い
+   ・v109 までは5回失敗すると「送信失敗（DLQ）」へ移し、手で再送するまで届かなかった（上限50件を超えた分は消えていた）。
+     電波の悪い時間帯の架電結果が届かず、その人のその時間帯だけ集計に出ない原因になる
+   ・v110 は、業務の記録（架電結果・勤怠・アポ・再架電・退勤・シフト申請など）を捨てない。間隔を空けて送り続け、ほかの記録は先に送る
+   ・二度と成功しない要求（削除されたアカウントなど）と、位置の控え・通知のように古くなれば不要なものだけを、キューから外す */
+var SQ_DROPPABLE={pos_save:1,dial_count_notify:1,checkin_notify:1};
+var SQ_PERMANENT={account_deleted:1,unknown_pin:1,admin_auth:1,need_pin:1,deleted_account:1};
+var SQ_WAKE=null;
+function sqRemove(item){for(var i=0;i<SQ.length;i++)if(SQ[i]._id===item._id){SQ.splice(i,1);break}sv("sq",SQ)}
+function sqNextIndex(nowMs){
+  for(var i=0;i<SQ.length;i++){
+    var it=SQ[i];
+    if(it._nextAt&&it._nextAt>nowMs)continue;                 /* 失敗して待っている記録は飛ばし、ほかを先に送る */
+    if(it.type==="callResult_undo"&&SQ.some(function(x){return x.type==="callResult"&&String(x.cid)===String(it.cid)}))continue;   /* 取消は、もとの結果が届いてから */
+    return i;
+  }
+  return -1;
+}
+function sqWakeLater(){
+  if(SQ_WAKE){clearTimeout(SQ_WAKE);SQ_WAKE=null}
+  var t=0;SQ.forEach(function(it){if(it._nextAt&&(!t||it._nextAt<t))t=it._nextAt});
+  if(t)SQ_WAKE=setTimeout(function(){SQ_WAKE=null;flushSQ()},Math.max(1000,Math.min(15*60000,t-Date.now()+200)));
+}
+/* 以前の版で「送信失敗」に回された記録を、キューへ戻して送り直す（起動時・オンライン復帰時） */
+function dlqAutoResend(){
+  try{
+    var dlq=ld("sq_dlq")||[];if(!dlq.length)return 0;
+    var keep=[],n=0;
+    dlq.forEach(function(item){
+      if(!item||item.type==="upload_list_pending"||item._perm||SQ_DROPPABLE[item.type]||!item._id){if(item&&!SQ_DROPPABLE[item.type])keep.push(item);return}
+      if(SQ.some(function(x){return x._id===item._id}))return;
+      delete item._failedAt;delete item._reason;delete item._retries;delete item._nextAt;delete item._fails;delete item._beaconAt;
+      SQ.push(item);n++;
+    });
+    if(n||keep.length!==dlq.length){sv("sq",SQ);sv("sq_dlq",keep);updateBadge()}
+    if(n)setTimeout(flushSQ,800);
+    return n;
+  }catch(e){return 0}
+}
 /* v42: アプリが閉じる/バックグラウンドに入る瞬間に、未送信を sendBeacon で即送信。
    v108: sendBeacon が「受け付けた（true）」ときだけ印を付ける。ブラウザの上限（約64KB）を超えないように送る量を抑える。
          印が付いても、サーバーの受領応答を受け取るまではキューから消さない（flushSQ 参照） */
@@ -454,10 +505,11 @@ window.addEventListener("beforeunload",function(){beaconFlush()});
 function flushSQ(){
   if(SQ_SENDING||!navigator.onLine||!SQ.length||!GAS)return;
   /* v108: ビーコンで送った項目も、サーバーの受領応答（ok / duplicate）を受け取るまでキューから消さない。
-     v107 は「ビーコンで送った」だけで配信済みとみなして消していたため、ビーコンが受け付けられなかった・
-     途中で切れた場合に、シフト申請や架電結果がサーバーに届かないまま消えていた（重複はサーバー側で防ぐ） */
+     v110: 失敗して待っている記録があっても、ほかの記録は先に送る（送れる順に送る。日時は記録そのものが持っている） */
+  var idx=sqNextIndex(Date.now());
+  if(idx<0){sqWakeLater();return}
   SQ_SENDING=true;
-  var item=SQ[0];
+  var item=SQ[idx];
   var payload=sqPayload(item);
   /* v16: AbortController で 30秒タイムアウト */
   var ctrl=("AbortController" in window)?new AbortController():null;
@@ -476,62 +528,71 @@ function flushSQ(){
     return res.text();
   })
   .then(function(text){
-    var ok=false,errMsg="",duplicate=false,processing=false,j=null;
+    var ok=false,errMsg="",errCode="",duplicate=false,processing=false,j=null;
     if(text==="ok"||text==='"ok"')ok=true;
     else{
       try{j=JSON.parse(text);
         if(j.status==="ok")ok=true;
         else if(j.status==="duplicate"){ok=true;duplicate=true}  /* v16: idempotency */
         else if(j.status==="processing")processing=true;      /* v108: 同じ要求（ビーコン）をサーバーが処理中 */
-        else{errMsg=j.message||text;if(j.code==="admin_auth"){try{admLost(j.message)}catch(eA){}}}
+        else{errMsg=j.message||text;errCode=j.code||"";if(j.code==="admin_auth"){try{admLost(j.message)}catch(eA){}}}
       }catch(e){
-        /* v109: JSON でない返事（Googleのエラー・混雑・権限の画面など）は「届いていない」として再送する。
-           v108 までは「error」の文字が無ければ成功扱いにして消していたため、シフト申請が届かないまま「登録済み」と表示されることがあった */
+        /* v109: JSON でない返事（Googleのエラー・混雑・権限の画面など）は「届いていない」として再送する */
         errMsg="サーバーの返事を読めません（"+String(text||"").replace(/<[^>]*>/g," ").replace(/\s+/g," ").trim().slice(0,80)+"）";
       }
     }
+    if(j&&j.now){try{noteServerNow(j.now)}catch(eN){}}
     if(processing){SQ_SENDING=false;setTimeout(flushSQ,5000);return}   /* 失敗には数えず、少し待って確かめる */
     if(ok){
-      SQ.shift();sv("sq",SQ);
+      sqRemove(item);
       delete SQ_RETRIES[item._id];saveRetries();
       SQ_SENDING=false;updateBadge();
       if(duplicate)console.log("[SQ] duplicate detected, treated as success (idempotent)");
       var cbOk=SQ_CB[item._id];if(cbOk){delete SQ_CB[item._id];try{cbOk(j||{status:"ok"},true)}catch(eCb){}}
       if(SQ.length)setTimeout(flushSQ,300);
     }else{
-      handleSQFailure(item,errMsg||"unknown GAS error");
+      handleSQFailure(item,errMsg||"unknown GAS error",errCode);
     }
   })
   .catch(function(err){
     if(tmout)clearTimeout(tmout);
-    handleSQFailure(item,String(err));
+    handleSQFailure(item,String(err),"");
   });
 }
-function handleSQFailure(item,reason){
+function handleSQFailure(item,reason,code){
   SQ_RETRIES[item._id]=(SQ_RETRIES[item._id]||0)+1;
   var n=SQ_RETRIES[item._id];
   saveRetries();  /* v16: 永続化 */
   console.warn("[SQ] retry #"+n+" for "+item.type+": "+reason);
-  if(n>=5){
-    var dlq=ld("sq_dlq")||[];
-    dlq.push({...item,_failedAt:Date.now(),_reason:reason,_retries:n});
-    if(dlq.length>50)dlq=dlq.slice(-50);
-    sv("sq_dlq",dlq);
-    SQ.shift();sv("sq",SQ);
+  var permanent=!!SQ_PERMANENT[code||""],droppable=!!SQ_DROPPABLE[item.type];
+  if(permanent||(droppable&&n>=5)){
+    sqRemove(item);
     delete SQ_RETRIES[item._id];saveRetries();
-    flash("⚠️ 送信失敗 ("+item.type+") - DLQに保存");
-    var cbNg=SQ_CB[item._id];if(cbNg){delete SQ_CB[item._id];try{cbNg({status:"error",message:reason},false)}catch(eCb){}}
-    /* v16: 重要なtype なら大きく警告 */
-    if(item.type==="daily_report"||item.type==="appointment"){
-      vib([200,100,200,100,200]);
+    if(!droppable){
+      var dlq=ld("sq_dlq")||[];
+      dlq.push({...item,_failedAt:Date.now(),_reason:reason,_retries:n,_perm:permanent});
+      if(dlq.length>300)dlq=dlq.slice(-300);
+      sv("sq_dlq",dlq);
+      flash("⚠️ 送信できませんでした（"+item.type+"）："+String(reason).slice(0,40));
+    }
+    var cbNg=SQ_CB[item._id];if(cbNg){delete SQ_CB[item._id];try{cbNg({status:"error",message:reason,code:code||""},false)}catch(eCb){}}
+    if(code==="account_deleted"){try{onAccountDeleted(reason)}catch(eD){}}
+  }else{
+    /* 業務の記録は捨てない：間隔を空けて送り続ける（1→2→4…分、最長15分） */
+    item._fails=n;item._lastErr=String(reason).slice(0,120);
+    item._nextAt=Date.now()+Math.min(15*60000,Math.pow(2,Math.min(n,10))*1000);
+    sv("sq",SQ);
+    if(n===5){
+      flash("⚠️ まだ送信できていない記録があります（"+item.type+"）。自動で送り続けます");
+      var cb5=SQ_CB[item._id];if(cb5){delete SQ_CB[item._id];try{cb5({status:"error",message:reason,code:code||"",retrying:true},false)}catch(eCb5){}}
+      if(item.type==="daily_report"||item.type==="appointment"){vib([200,100,200,100,200])}
     }
   }
   SQ_SENDING=false;updateBadge();
-  var delay=Math.min(60000,Math.pow(2,n)*1000);
-  setTimeout(flushSQ,delay);
+  setTimeout(flushSQ,1500);   /* ほかの記録を先に送る（待っている記録は、時間が来たら送る） */
 }
 function updateBadge(){var b=document.getElementById("syncBadge");if(b){b.textContent=SQ.length?"📤"+SQ.length:"";b.style.display=SQ.length?"inline-block":"none"}}
-window.addEventListener("online",function(){flash("🌐 オンライン復帰 同期します");flushSQ()});
+window.addEventListener("online",function(){flash("🌐 オンライン復帰 同期します");SQ.forEach(function(it){delete it._nextAt});try{dlqAutoResend()}catch(e){}flushSQ();try{if(U&&U!=="admin"&&!syncState.ok)autoListRefresh("online")}catch(e2){}});
 window.addEventListener("offline",function(){flash("📵 オフライン キュー保存中")});
 setInterval(flushSQ,30000);
 
@@ -950,8 +1011,9 @@ function openExtEdit(pin){
 function saveExtConfig(){
   var g=function(id){var e=document.getElementById(id);return e?e.value.trim():""};
   var ck=function(id){var e=document.getElementById(id);return e?e.checked:false};
+  var shTyped=g("exSheet");
   var body={type:"ext_config_set",pin:extEditPin,
-    ssId:g("exSs"),sheetName:g("exSheet")||extForm.sheetName||"",gid:extForm.gid||"",
+    ssId:g("exSs"),sheetName:shTyped||extForm.sheetName||"",gid:(shTyped&&shTyped!==(extForm.sheetName||""))?"":(extForm.gid||""),   /* v110: タブ名を打ち直したら、前のタブの GID は送らない */
     headerRow:parseInt(g("exHdr"))||1,
     colCompany:g("exCo"),colPhone:g("exPh"),colPerson:g("exPe"),colAddress:g("exAd"),
     colName:g("exNm"),colStep:g("exSt"),colDate:g("exDt"),colTime:g("exTm"),
@@ -1042,11 +1104,11 @@ function runExtDetect(){
   var ssId=g("exSs"),shn=g("exSheet"),hdr=parseInt(g("exHdr"))||1;
   if(!ssId||!shn){flash("⚠️ URLとシート名を先に入力してください");return}
   flash("🔎 列を検出しています…");
-  directGasPost({type:"ext_detect",ssId:ssId,sheetName:shn,headerRow:hdr,gid:extForm.gid||""},40000)
+  directGasPost({type:"ext_detect",ssId:ssId,sheetName:shn,headerRow:hdr,gid:(shn!==(extForm.sheetName||""))?"":(extForm.gid||"")},40000)
     .then(function(res){
       if(res&&res.status==="ok"&&res.detect){
         var d2=res.detect;
-        var L=function(n){return n>0?String.fromCharCode(64+n):""};  /* 1→A（26列まで） */
+        var L=function(n){var s="";n=Number(n)||0;while(n>0){var r=(n-1)%26;s=String.fromCharCode(65+r)+s;n=Math.floor((n-1)/26)}return s};  /* 1→A、27→AA（v110: 26列を超えても正しく） */
         var setv=function(id,v){var e=document.getElementById(id);if(e&&v)e.value=v};
         setv("exCo",L(d2.colCompany));setv("exPh",L(d2.colPhone));
         setv("exPe",L(d2.colPerson));setv("exAd",L(d2.colAddress));
@@ -2018,14 +2080,21 @@ function runSystemDiagnose(){
 var rosterInfo=null,rosterEdit=null,rosterBusy2=false;
 function applyRoster(members){
   if(!members||!members.length)return false;
-  STAFF=members.map(function(m){return {id:m.id||("s"+m.pin),nm:m.nm,pin:String(m.pin),sh:m.sh||String(m.nm||"").slice(0,2)}});
+  STAFF=members.map(function(m){return {id:m.id||("s"+m.pin),nm:m.nm,pin:String(m.pin),sh:m.sh||String(m.nm||"").slice(0,2)}})
+    .filter(function(m){return !isDeletedAcct(m)});   /* v110: 削除したアカウントは名簿に入れない */
   try{localStorage.setItem("roster_cache",JSON.stringify({members:STAFF,at:Date.now()}))}catch(e){}
+  try{purgeDeletedLocal()}catch(e2){}
   return true;
 }
 function loadRosterCache(){
   try{
     var c=JSON.parse(localStorage.getItem("roster_cache")||"null");
-    if(c&&c.members&&c.members.length){STAFF=c.members;return true}
+    if(c&&c.members&&c.members.length){
+      STAFF=c.members.filter(function(m){return !isDeletedAcct(m)});   /* v110: 端末に残っている古い名簿の控えからも外す */
+      try{purgeDeletedLocal()}catch(e2){}
+      if(STAFF.length)return true;
+      STAFF=STAFF_DEFAULT.slice();
+    }
   }catch(e){}
   return false;
 }
@@ -2035,8 +2104,11 @@ function fetchRoster(silent){
     .then(function(res){
       if(res&&res.status==="ok"&&res.handled===true&&res.result){
         rosterInfo=res.result;
+        /* v110: サーバーが知らせる「削除したアカウント」を控える（端末に残っているデータ・ログイン状態を消す） */
+        try{if(res.result.deleted)localStorage.setItem("deleted_accts",JSON.stringify(res.result.deleted))}catch(eDl){}
         var changed=JSON.stringify(STAFF.map(function(x){return x.pin}))!==JSON.stringify(res.result.members.map(function(x){return x.pin}));
         applyRoster(res.result.members);
+        if(U&&U!=="admin"&&!asAppointer&&isDeletedAcct(U)){onAccountDeleted();return true}
         if(changed&&!silent){flash("👥 名簿を更新しました（"+STAFF.length+"名）")}
         render();
         return true;
@@ -2414,30 +2486,19 @@ function runExtImport(pin){
     .then(function(res){
       if(res&&res.status==="ok"){
         extReports=res.reports||[];
-        var tot=0;extReports.forEach(function(r){tot+=(r.imported||0)});
+        var tot=0,ngR=[];extReports.forEach(function(r){tot+=(r.imported||0);if(!r.ok)ngR.push(r)});
         vib([40,30,40]);
-        flash("✅ 取り込み完了: 合計 "+tot+"件");
+        /* v110: 取り込めなかった方がいれば、その理由を出す（タブを1つに決められない・タブが無い など） */
+        if(ngR.length)flash("⚠️ 取り込めなかった方が "+ngR.length+"名います（"+String(ngR[0].name||"")+"："+String(ngR[0].message||"").slice(0,50)+"）");
+        else flash("✅ 取り込み完了: 合計 "+tot+"件");
+        if(pin&&ngR.length&&(ngR[0].code==="tab_conflict"||ngR[0].code==="tab_missing")){X110.imp={pin:pin,pv:{ok:false,code:ngR[0].code,message:ngR[0].message,choices:ngR[0].choices||[]}}}
         fetchExtConfig();
       }else flash("⚠️ 失敗: "+((res&&res.message)||"不明"));
       render();
     })
     .catch(function(err){flash("⚠️ 失敗: "+err.message);render()});
 }
-/* v108: 取り込みの下見（書き込まない）→ 確認 → 取り込み */
-function previewExtImport(pin){
-  if(!GAS||!navigator.onLine){flash("⚠️ オンライン接続が必要です");return}
-  flash("🔍 取り込み内容を確認しています…");
-  directGasPost({type:"ext_import",pin:pin,dryRun:true},60000).then(function(res){
-    var pv=res&&res.preview;
-    if(!pv||!pv.ok){flash("⚠️ "+((pv&&pv.message)||"確認できませんでした"));return}
-    var msg="取り込み元： "+pv.source+"\n取り込み先： "+pv.name+" さんの架電リスト（タブ「"+pv.target+"」）\n件数： "+pv.rows+"件"+
-      (pv.sample&&pv.sample.length?"\n例： "+pv.sample.join("、"):"")+"\n\n"+pv.note+
-      (pv.sharedWith&&pv.sharedWith.length?"\n\n⚠ このタブは "+pv.sharedWith.join("・")+" さんの連携先にもなっています。取り込みは止まります。":"")+
-      "\n\n現在の "+pv.name+" さんのリストは置き換わります。";
-    showConfirm={title:"📥 この内容で取り込みますか？",msg:msg,yesLabel:"取り込む",onYes:function(){showConfirm=null;runExtImport(pin);render()},onNo:function(){showConfirm=null;render()}};
-    render();
-  }).catch(function(err){flash("⚠️ 確認できませんでした: "+err.message)});
-}
+/* v110: 取込の下見（previewExtImport）は、下の「v110: 管理者の画面」で定義（前回との差・非表示の行・タブの選び直しを表示） */
 function runExtSync(pin,dry){
   if(!GAS||!navigator.onLine){flash("⚠️ オンライン接続が必要です");return}
   extReports=null;
@@ -2519,6 +2580,18 @@ function loadUser(id){
   hist=ld("h-"+id)||[];appos=ld("a-"+id)||[];att=ld("at-"+id)||{};
   cbs=ld("cb-"+id)||[];
   listStamp=ld("listStamp-"+id)||0;   /* v58 */
+  /* v110: リストの版・進捗・架電済みの印を復元してから、位置を復元する */
+  listCycle=Number(ld("lcyc-"+id))||0;
+  var lidSaved=ld("llid-"+id);
+  listLid=(typeof lidSaved==="string")?lidSaved:((rows[0]&&cm&&cm.lid!==undefined)?String(gf(rows[0],"lid")||""):"");
+  listSince=Number(ld("lsince-"+id))||0;
+  progSrv=ld("prog-"+id)||null;
+  repass=ld("repass-"+id)||null;
+  if(repass&&((repass.lid||"")!==(listLid||"")||(listCycle&&repass.cyc&&Number(repass.cyc)!==Number(listCycle))))repass=null;
+  listDone=false;syncState.ok=true;syncState.err="";syncState.fails=0;syncState.pending=null;
+  skipped=skipLoad(id);
+  callCtx=null;autoDialCtx=null;
+  try{rebuildCalled();if(!asAppointer)callCtx=loadCallCtx()}catch(eRc){}
   restorePos(true);   /* v53: 続きから再開 */
   setTimeout(function(){try{fetchRecSelf();fetchRecUploadStatus();fetchRecPending();fetchKpi(U.pin)}catch(e){}},1800);   /* v65/v82/v87/v98 */
   setTimeout(function(){try{pickupSharedRecordings()}catch(e){}},2400);   /* v82: 共有からの受け取り */
@@ -2576,9 +2649,7 @@ function tdc(){return hist.filter(function(c){return c.d===td()&&c.u===(U&&U!=="
    取り込み日時より後に記録した架電だけを「済み」とみなす。
    NG番号は別途 isNG で常に除外される。 */
 var listStamp=0;
-function called(i){
-  return tdc().some(function(c){return c.i===i&&(!listStamp||(c.id||0)>=listStamp)});
-}
+/* v110: called(i)（架電済みか）は、下の「v110 ⑵⑷」で定義（元シートの行で判定し、日付・端末が変わっても続く） */
 /* v59: 表示・発信の対象判定
    除外するのは次の2つだけ。
      ・NGに登録された番号（取り込み直しても常に除外）
@@ -2615,7 +2686,7 @@ function show(i){
 }
 function todayAtt(){return att[td()]||{}}
 function flash(m){toast=m;render();clearTimeout(ttmr);ttmr=setTimeout(function(){toast="";render()},2400)}
-function goNext(){pastHistOpen=false;for(var i=ci+1;i<rows.length;i++)if(show(i)){ci=i;savePos();return}for(var i=0;i<ci;i++)if(show(i)){ci=i;savePos();return}}
+/* v110: goNext()（次の架電先へ）は、下の「v110 ⑵⑷」で定義（まだ架電していない行へ進み、進めたかどうかを返す） */
 
 /* ═══════ v53: 架電位置の記憶（画面が消えても続きから再開）═══════
    会社名や電話番号など「行そのものの特徴」で覚えるため、リストを取り込み直しても
@@ -2644,7 +2715,7 @@ function savePos(){
   if(!U||U==="admin"||!rows.length)return;
   var cur=rows[ci]||null;
   if(!cur)return;
-  var payload={i:ci,ph:gf(cur,"ph")||"",co:gf(cur,"co")||"",src:gf(cur,"src")||"",at:Date.now(),dev:deviceId()};
+  var payload={i:ci,ph:gf(cur,"ph")||"",co:gf(cur,"co")||"",src:gf(cur,"src")||"",at:Date.now(),dev:deviceId(),lid:listLid||"",ls:listStamp||0,cyc:listCycle||0};   /* v110: どのリスト・どの進捗の位置か */
   /* v55: 位置は最優先。保存に失敗したら領域を整理して必ず書き込む */
   var ok=sv("pos-"+U.id,payload);
   if(!ok){pruneStorage(2);ok=sv("pos-"+U.id,payload)}
@@ -2661,13 +2732,14 @@ function savePos(){
 var posDirty=false,posSentAt=0;
 function queuePosToServer(force){
   if(!U||U==="admin"||!rows.length||!posDirty)return;
+  if(asAppointer)return;   /* v110: 管理者が「○○として操作」しているときは、本人の位置を上書きしない */
   var nowMs=Date.now();
   if(!force&&nowMs-posSentAt<30000)return;
   var cur=rows[ci]||null;
   if(!cur)return;
   posSentAt=nowMs;posDirty=false;
   gasPost({type:"pos_save",pin:U.pin,dev:deviceId(),i:ci,
-    co:gf(cur,"co")||"",ph:gf(cur,"ph")||"",src:gf(cur,"src")||""});
+    co:gf(cur,"co")||"",ph:gf(cur,"ph")||"",src:gf(cur,"src")||"",lid:listLid||"",ls:listStamp||0,at:Date.now()});
 }
 /* ═══════ v56: 入力途中の内容を守る（スリープで消えないように）═══════
    チェック・選択した結果・メモ・通話時間を、画面が消える瞬間に保存する。 */
@@ -2676,7 +2748,7 @@ function saveDraft(){
   if(V!=="call")return;                 /* 通話画面で入力中のときだけ */
   var memoEl=document.getElementById("memoTA");
   var d={i:ci,ck:ck,selRes:selRes,bousou:bousou,endStep:endStep,tsec:tsec,
-    memo:memoEl?memoEl.value:"",tr:trText||"",at:Date.now(),dev:deviceId()};
+    memo:memoEl?memoEl.value:"",tr:trText||"",at:Date.now(),dev:deviceId(),ctx:curCtx()};   /* v110: どの会社の入力か（行の番号だけでは、リストが変わるとズレる） */
   try{sv("draft-"+U.id,d)}catch(e){}
   try{sessionStorage.setItem("draft-"+U.id,JSON.stringify(d))}catch(e){}
 }
@@ -2695,16 +2767,22 @@ function clearDraft(){
 /* 起動時に、入力途中の内容があれば復元する */
 function restoreDraft(){
   var d=loadDraft();
-  if(!d||typeof d.i!=="number"||d.i<0||d.i>=rows.length)return false;
+  if(!d||typeof d.i!=="number"||d.i<0)return false;
   var hasInput=(d.selRes)||(d.memo&&d.memo.length)||(d.ck&&Object.keys(d.ck).length)||(d.tr&&d.tr.length);
   if(!hasInput)return false;
-  ci=d.i;ck=d.ck||{};selRes=d.selRes||null;bousou=d.bousou||[];
+  /* v110: 入力していた会社を、いまのリストから探す（見つからなければ復元しない＝別の会社に付けない） */
+  var di=d.ctx?ctxIndex(d.ctx):(d.i<rows.length?d.i:-1);
+  var offD=!!(d.ctx&&d.ctx.off);
+  if(di<0&&!offD)return false;
+  if(d.ctx){d.ctx.at=Date.now();setCallCtx(d.ctx)}
+  if(di>=0)ci=di;
+  ck=d.ck||{};selRes=d.selRes||null;bousou=d.bousou||[];
   endStep=d.endStep||"";tsec=d.tsec||0;trText=d.tr||"";
   V="call";
   setTimeout(function(){
     var m=document.getElementById("memoTA");
     if(m&&d.memo)m.value=d.memo;
-    flash("📝 入力途中の内容を復元しました（"+(gf(rows[ci],"co")||"")+"）");
+    flash("📝 入力途中の内容を復元しました（"+((d.ctx&&d.ctx.co)||gf(rows[ci],"co")||"")+"）");
   },500);
   return true;
 }
@@ -2712,12 +2790,15 @@ function restoreDraft(){
    ・別の端末で保存された位置は使わない（ご要望どおり同じ端末のときのみ）
    ・端末内に新しい記録があればそちらを優先する */
 function adoptServerPos(serverPos,localPos){
+  /* v110: 同じリスト（リストID）なら、別の端末で保存した位置も使う（翌日・別の端末でも続きから）。
+           連携していないリストは、これまでどおり同じ端末の位置だけ */
   if(!serverPos)return null;
-  if(!serverPos.dev||serverPos.dev!==deviceId())return null;
   if(!serverPos.co&&!serverPos.ph&&!serverPos.src)return null;
-  if(localPos&&(localPos.at||0)>=(serverPos.at||0))return null;
+  if(listLid){if(serverPos.lid&&serverPos.lid!==listLid)return null}
+  else if(!serverPos.dev||serverPos.dev!==deviceId())return null;
+  if(localPos&&(localPos.at||0)>=(serverPos.at||0)&&(!listLid||!localPos.lid||localPos.lid===listLid))return null;
   return {i:serverPos.i,co:serverPos.co,ph:serverPos.ph,src:serverPos.src,
-          at:serverPos.at,dev:serverPos.dev};
+          at:serverPos.at,dev:deviceId(),lid:serverPos.lid||listLid||"",ls:serverPos.ls||0,cyc:listCycle||0,from:serverPos.dev||""};
 }
 /* 位置の読み出し（localStorage → 予備 の順に探す）*/
 function loadPos(){
@@ -2753,36 +2834,41 @@ function sessionStaff(nowMs){
   return null;
 }
 function findRowBy(pos){
+  /* v110: リストを取り込み直すと元行の番号は変わる（元シートに行が足される・並べ替えられる）。
+     位置を保存したときと同じ取込のリストなら元行で、そうでなければ会社（電話番号＋会社名）で探す。
+     v109 までは「元行 → 電話番号 → 会社名 → 行の番号」の順に最初に当たった行を使っていたため、別の会社の行に移ることがあった */
   if(!pos||!rows.length)return -1;
-  var i;
-  if(pos.src!==""&&pos.src!==undefined&&pos.src!==null){
-    for(i=0;i<rows.length;i++)if(String(gf(rows[i],"src"))===String(pos.src))return i;
+  var i,ph=normPh(pos.ph||""),co=normCo(pos.co||"");
+  var sameStamp=!pos.ls||!listStamp||Number(pos.ls)===Number(listStamp);
+  function same(r){var rp=normPh(gf(r,"ph")||""),rc=normCo(gf(r,"co")||"");if(ph&&rp)return rp===ph&&(!co||!rc||rc===co);return !!co&&rc===co}
+  if(sameStamp&&pos.src!==""&&pos.src!==undefined&&pos.src!==null&&cm&&cm.src!==undefined){
+    for(i=0;i<rows.length;i++)if(String(gf(rows[i],"src"))===String(pos.src)){if((!ph&&!co)||same(rows[i]))return i;break}
   }
-  if(pos.ph){for(i=0;i<rows.length;i++)if(gf(rows[i],"ph")===pos.ph)return i}
-  if(pos.co){for(i=0;i<rows.length;i++)if(gf(rows[i],"co")===pos.co)return i}
-  if(typeof pos.i==="number"&&pos.i>=0&&pos.i<rows.length)return pos.i;
+  var best=-1,bd=1e9,hint=(typeof pos.i==="number")?pos.i:0;
+  for(i=0;i<rows.length;i++){if(same(rows[i])){var dd=Math.abs(i-hint);if(dd<bd){bd=dd;best=i}}}
+  if(best>=0)return best;
+  if(ph){for(i=0;i<rows.length;i++)if(normPh(gf(rows[i],"ph")||"")===ph)return i}
+  if(!ph&&!co&&sameStamp&&typeof pos.i==="number"&&pos.i>=0&&pos.i<rows.length)return pos.i;
   return -1;
 }
-/* 保存が無いときの保険: 履歴にまだ無い＝未架電の最初の行から再開 */
+/* 保存が無いときの保険: まだ架電していない最初の行（元シートの順番）から再開
+   v110: v109 までは「履歴にある電話番号の行を飛ばした最初の行」だった（前のリストでかけた番号・同じ番号の別の行まで飛ばしていた） */
 function firstUncalled(){
-  var done={};
-  (hist||[]).forEach(function(e){if(e&&e.u===U.id&&e.ph)done[e.ph]=true});
-  for(var i=0;i<rows.length;i++){
-    if(skipped[i])continue;
-    var ph=gf(rows[i],"ph");
-    if(ph&&done[ph])continue;
-    return i;
-  }
-  return -1;
+  return nextUncalled(0,rows.length);
 }
 /* 起動時・同期後に呼ぶ。戻り値: 復元できた行番号 (-1=先頭から) */
 function restorePos(announce){
   if(!rows.length){ci=0;return -1}
   var pos=loadPos();
+  /* v110: 別のリストの位置・「最初からかけ直す」より前の位置は使わない */
+  if(pos&&listLid&&pos.lid&&pos.lid!==listLid)pos=null;
+  if(pos&&listCycle&&pos.cyc&&Number(pos.cyc)!==Number(listCycle))pos=null;
   var idx=findRowBy(pos);
   var how=idx>=0?"saved":"";
+  /* 保存した位置の行が、もう架電済み（別の端末でかけた等）なら、その先の未架電へ */
+  if(idx>=0&&called(idx)&&!callCtx){var nx0=nextUncalled(idx+1,rows.length);if(nx0>=0){idx=nx0;how="next"}}
   if(idx<0){idx=firstUncalled();if(idx>=0)how="uncalled"}
-  if(idx<0)idx=0;
+  if(idx<0){idx=Math.max(0,rows.length-1);listDone=true}     /* すべて架電済み */
   ci=idx;
   if(announce&&idx>0){
     var cur=rows[idx];
@@ -2904,75 +2990,437 @@ function listHash(list){
   }
   return (list||[]).length+":"+hsh.toString(16);
 }
+/* ══════════════════════════════════════════════════════════════════════
+   v110 ⑵⑷: 元スプレッドシートの順番どおりに、前回の続きから架電する
+   v109 までに起きていたこと（実際のコードで再現）：
+     ・「架電済み」の印は「きょうの端末内の履歴」と「行の番号」だけで決めていた
+         → 同期すると印が消える／翌日はすべて「未」に戻る／別の端末では分からない
+     ・位置は「この端末で保存したもの」だけ。翌日・別の端末・保存が消えたときは、
+       「履歴にある電話番号を飛ばした最初の行」から始めていた（同じ番号の行を飛ばす・間が空く）
+     ・アポインターが「再同期」を押す／管理者が取込を押すと、リストが同じでも1件目に戻していた
+     ・発信してから結果を保存するまでの間に、同期や復帰の処理が行（位置）を動かすことがあり、
+       かけた会社とは別の会社に結果が記録されていた（元シートとズレる・間が空く）
+     ・「次へ」の処理が結果を返さず、オートコールは1件で止まり、リストの最後では黙って先頭へ戻っていた
+   v110：
+     ・架電済みの印は「元シートの行（元行）」で持ち、サーバーの進捗（リスト進捗）と端末の履歴から作る。
+       日付・退勤・端末が変わっても続く。管理者が「最初からかけ直す」を選ぶか、別のリストを取り込むまで変わらない
+     ・発信した瞬間の架電先（会社・電話・元行・リスト）を固定し、保存はそれを使う。通話中はリストを入れ替えない
+     ・「次へ」は、いまの行より後ろの「まだ架電していない行」。無ければ手前の未架電へ戻り、すべて済んだら知らせる
+     ・位置はサーバーにも残し、同じリストなら別の端末でも続きから
+   ══════════════════════════════════════════════════════════════════════ */
+var listCycle=0;        /* 進捗の開始（サーバーが決める）。これが変わったときだけ1件目から */
+var listLid="";         /* いまのリストID（元シートID#タブID）。連携していないリストは "" */
+var listSince=0;        /* 連携していないリスト：この端末でリストが入れ替わった時刻 */
+var progSrv=null;       /* サーバーの進捗 {lid,cycle,stamp,done,lastSrc,…} */
+var calledSrc={};       /* 元行 → {r:結果ID,at:時刻}（このリスト・この進捗で架電済み） */
+var calledIdx={};       /* 連携していないリスト用：行番号 → {r,at} */
+var callCtx=null;       /* 発信した瞬間の架電先（結果を保存するまで固定） */
+var afterCallRet=null;  /* 再架電のお知らせ（🔔）から発信した通話：記録のあとに戻る行（発信の前に表示していた行） */
+var autoDialCtx=null;   /* オートコール：カウントダウンを始めた架電先 */
+var repass=null;        /* 「不在だった先をもう一度」の開始 {at,lid,cyc} */
+var listDone=false;     /* リストの最後まで架電した */
+var syncState={ok:true,at:0,err:"",fails:0,timer:null,pending:null,busy:false,lastAuto:0};
+var CLK_OFF=0;          /* サーバーの時計 − 端末の時計（2分を超えてずれているときだけ使う） */
+
+function rowSrc(r){return (cm&&cm.src!==undefined&&cm.src>=0)?String(gf(r,"src")||""):""}
+function entryAt(e){
+  if(!e)return 0;
+  if(e.at)return e.at;
+  if(e.d&&e.tm){var t=Date.parse(e.d+"T"+String(e.tm).slice(0,5)+":00+09:00");if(!isNaN(t))return t}
+  return (typeof e.id==="number"&&e.id>1e12)?e.id:0;
+}
+/* "2-150,152" → 各行番号で fn を呼ぶ */
+function rangesEach(str,fn){
+  String(str==null?"":str).split(",").forEach(function(part){
+    var m=part.trim().match(/^(\d+)(?:-(\d+))?$/);if(!m)return;
+    var s=+m[1],e=m[2]?+m[2]:s;if(e<s||e-s>200000)return;
+    for(var n=s;n<=e;n++)fn(n);
+  });
+}
+/* 架電済みの印を作り直す（同期のあと・結果を保存したあと・取消のあとに呼ぶ） */
+function rebuildCalled(){
+  calledSrc={};calledIdx={};
+  if(!U||U==="admin")return;
+  var uid=U.id,k,e,t;
+  if(listLid){
+    if(progSrv&&progSrv.lid===listLid)rangesEach(progSrv.done,function(n){calledSrc[n]={r:"",at:0}});
+    /* 取込をはさんだ記録は、元行の番号が変わっていることがある（元シートに行が足された等）→ 会社（電話番号＋会社名）で、いまの行を探す */
+    var idMap=null,s;
+    var byIdentity=function(en){
+      if(!idMap){idMap={};for(var q=0;q<rows.length;q++){var kk=skipKey(rows[q]);if(idMap[kk]===undefined)idMap[kk]=rowSrc(rows[q])}}
+      return idMap[normPh(en.ph||"")+"|"+normCo(en.co||"")]||"";
+    };
+    for(k=hist.length-1;k>=0;k--){     /* 古い順に見て、新しい結果で上書き */
+      e=hist[k];
+      if(!e||e.u!==uid||e.lid!==listLid||!e.src)continue;
+      t=entryAt(e);
+      if(listCycle&&t&&t<listCycle-120000)continue;      /* かけ直しを始める前の結果 */
+      s=e.src;
+      if(e.ls&&listStamp&&Number(e.ls)!==Number(listStamp)){s=byIdentity(e);if(!s)continue}
+      calledSrc[s]={r:e.r||"",at:t};
+    }
+  }else{
+    for(k=hist.length-1;k>=0;k--){
+      e=hist[k];
+      if(!e||e.u!==uid||typeof e.i!=="number"||!rows[e.i])continue;
+      t=entryAt(e);
+      if(listSince&&t&&t<listSince)continue;
+      if(!listSince&&e.d!==td())continue;                 /* 入れ替えた時刻が分からない古いデータは、これまでどおり「きょう」だけ */
+      if(normPh(gf(rows[e.i],"ph")||"")!==normPh(e.ph||""))continue;
+      calledIdx[e.i]={r:e.r||"",at:t};
+    }
+  }
+}
+function calledInfo(i){
+  var r=rows[i];if(!r)return null;
+  if(listLid){var s=rowSrc(r);return (s&&calledSrc[s])||null}
+  return calledIdx[i]||null;
+}
+/* その行の結果（"appo" など）。架電済みだが結果が分からないときは "" 、未架電は null */
+function calledRes(i){var c=calledInfo(i);return c?c.r:null}
+function called(i){
+  var c=calledInfo(i);
+  if(!c)return false;
+  if(repass&&repass.lid===listLid&&c.r==="absent"&&c.at<repass.at)return false;   /* もう一巡：不在だった先は、まだかけていない扱い */
+  return true;
+}
+function calledCount(){var n=0;for(var i=0;i<rows.length;i++)if(calledInfo(i))n++;return n}
+function absentLeft(){var n=0;for(var i=0;i<rows.length;i++){var c=calledInfo(i);if(c&&c.r==="absent"&&show(i)&&(!repass||c.at<repass.at))n++}return n}
+function nextUncalled(from,to){for(var i=Math.max(0,from);i<to&&i<rows.length;i++)if(show(i)&&!called(i))return i;return -1}
+/* 手前（いまの行より前）に残っている未架電の件数 */
+function gapsBefore(){var n=0;for(var i=0;i<ci&&i<rows.length;i++)if(show(i)&&!called(i))n++;return n}
+/* 次の架電先へ進む。戻り値：進めたら true、もう架電先が無ければ false */
+function goNext(){
+  pastHistOpen=false;
+  if(!rows.length)return false;
+  var i=nextUncalled(ci+1,rows.length),back=false;
+  if(i<0){i=nextUncalled(0,ci);back=i>=0}
+  if(i<0){
+    listDone=true;savePos();
+    setTimeout(function(){flash("✅ このリストは最後まで架電しました")},350);
+    return false;
+  }
+  listDone=false;ci=i;savePos();
+  if(back){var co=gf(rows[i],"co")||"";setTimeout(function(){flash("↩ リストの最後まで進みました。まだ架電していない「"+co+"」（"+(i+1)+"件目）に戻ります")},350)}
+  return true;
+}
+/* 「不在だった先をもう一度かける」を始める */
+function startRepass(){
+  if(!U||U==="admin")return;
+  var n=absentLeft();
+  if(!n){flash("不在だった先はありません");return}
+  repass={at:Date.now()+CLK_OFF,lid:listLid,cyc:listCycle};sv("repass-"+U.id,repass);
+  listDone=false;
+  var i=nextUncalled(0,rows.length);
+  if(i>=0){ci=i;savePos()}
+  vib([40,30,40]);flash("🔁 不在だった "+n+"件に、元シートの順番でもう一度かけます");render();
+}
+/* スキップの印：端末には「会社（電話番号＋会社名）」で保存する（リストに行が足されても、別の行に付かない） */
+function skipKey(r){return normPh(gf(r,"ph")||"")+"|"+normCo(gf(r,"co")||"")}
+function skipSave(){
+  if(!U||U==="admin")return;
+  var keys={};
+  Object.keys(skipped).forEach(function(k){if(skipped[k]&&rows[+k])keys[skipKey(rows[+k])]=1});
+  sv("sk2-"+U.id,{lid:listLid,cyc:listCycle,keys:keys});
+  sv("sk-"+U.id,skipped);
+}
+function skipLoad(id){
+  var s2=ld("sk2-"+id),out={};
+  if(s2&&s2.keys){
+    if((s2.lid||"")!==(listLid||"")||(listCycle&&s2.cyc&&Number(s2.cyc)!==Number(listCycle)))return {};
+    for(var i=0;i<rows.length;i++)if(s2.keys[skipKey(rows[i])])out[i]=true;
+    return out;
+  }
+  return ld("sk-"+id)||{};
+}
+/* 発信した瞬間の架電先を固定する */
+function ctxOf(i){
+  var r=rows[i]||null;if(!r)return null;
+  return {i:i,co:gf(r,"co")||"",pe:gf(r,"pe")||"",ph:gf(r,"ph")||"",ad:gf(r,"ad")||"",src:rowSrc(r),lid:(cm&&cm.lid!==undefined)?String(gf(r,"lid")||""):"",ls:listStamp||0,cyc:listCycle||0,at:Date.now()};
+}
+function setCallCtx(c){
+  callCtx=c||ctxOf(ci);
+  afterCallRet=null;
+  try{if(U&&U!=="admin"&&callCtx)sessionStorage.setItem("cctx-"+U.id,JSON.stringify(callCtx))}catch(e){}
+  return callCtx;
+}
+function clearCallCtx(){
+  callCtx=null;autoDialCtx=null;
+  try{if(U&&U!=="admin")sessionStorage.removeItem("cctx-"+U.id)}catch(e){}
+}
+function loadCallCtx(){
+  try{var raw=sessionStorage.getItem("cctx-"+U.id);if(!raw)return null;var c=JSON.parse(raw);if(c&&Date.now()-(c.at||0)<3*3600000)return c}catch(e){}
+  return null;
+}
+/* 保存に使う架電先：発信した瞬間に固定したもの。無ければ、いま表示している行 */
+function curCtx(){return (callCtx&&Date.now()-(callCtx.at||0)<3*3600000)?callCtx:ctxOf(ci)}
+/* 固定した架電先が、いまのリストの何件目か（見つからなければ -1） */
+function ctxIndex(c){
+  if(!c)return -1;
+  return findRowBy({src:c.src,ph:c.ph,co:c.co,i:c.i,ls:c.ls});
+}
+/* 再架電のお知らせ（🔔 今すぐ発信）からかけるときの架電先。
+   v109 は架電先を固定しておらず、通話のあとの結果が「そのとき表示していたリストの行」に付いていた
+   （＝別の会社に結果が付き、元シートのその行に書かれ、その行は架電していないのに飛ばされた）。
+     ・相手がいまのリストにある → その行（結果はその行＝元シートのその行に付く）
+     ・リストに無い             → リスト外の架電先（会社名・電話番号で記録。リストの行には付けない）
+   どちらも、発信の前に表示していた行を ret に覚え、記録のあと（やめたときも）そこへ戻る */
+function ctxForCb(c){
+  if(!c)return ctxOf(ci);
+  var here=rows[ci]?{i:ci,src:rowSrc(rows[ci]),ph:gf(rows[ci],"ph")||"",co:gf(rows[ci],"co")||"",ls:listStamp||0}:null;
+  var idx=(c.ph||c.co)?findRowBy({src:"",ph:c.ph||"",co:c.co||"",i:(typeof c.rowIdx==="number"?c.rowIdx:ci),ls:0}):-1;
+  var x;
+  if(idx>=0){x=ctxOf(idx);if(idx!==ci&&here)x.ret=here}
+  else{
+    x={i:-1,off:true,co:c.co||"",pe:c.pe||"",ph:c.ph||"",ad:"",src:"",lid:"",ls:listStamp||0,cyc:listCycle||0,at:Date.now()};
+    if(here)x.ret=here;
+  }
+  x.cb=c.id||0;
+  return x;
+}
+/* 再架電の相手へ発信する（お知らせの「今すぐ発信」・再架電リストの電話番号）。発信そのものはリンク（tel:）が行う */
+function cbDialStart(c){
+  try{cancelAutoDial()}catch(eCa){}       /* オートコールのカウントダウン中なら止める（再架電の通話中に、次の番号へ発信しない） */
+  CALL_INIT_AT=Date.now();
+  CALL_PENDING=!pcDialMode;
+  bumpCallCount();
+  setCallCtx(ctxForCb(c));
+  if(c)setLastCalled(c.co||"");
+  ck={};selRes=null;bousou=[];endStep="";tsec=0;clearInterval(tref);trReset();
+  vib(40);
+  if(pcDialMode)setTimeout(function(){pcBeginCall()},60);   /* PC は画面が切り替わらないので、その場で結果の入力へ（手動の発信と同じ） */
+}
+/* 通話の記録が済んだあとの移動。ふつうは次の未架電へ。
+   再架電のお知らせからの通話だったときは、発信の前に表示していた行（まだ架電していない）へ戻る */
+function advanceAfterCall(){
+  var ret=afterCallRet;afterCallRet=null;
+  if(ret&&rows.length){
+    var j=findRowBy(ret);
+    if(j>=0){ci=j;if(show(j)&&!called(j)){listDone=false;savePos();return true}}
+  }
+  return goNext();
+}
+/* 通話を記録せずにやめるとき：固定を外す。再架電のお知らせからの発信だったら、発信の前に表示していた行へ戻す */
+function dropCallCtx(){
+  var c=callCtx;
+  clearCallCtx();
+  afterCallRet=null;
+  if(c&&c.ret&&rows.length){var j=findRowBy(c.ret);if(j>=0)ci=j}
+}
+function callBusy(){return V==="call"||V==="appo"||V==="apoRec"||!!CALL_PENDING||(typeof pcCalling!=="undefined"&&!!pcCalling)}
+/* 通話が終わった（保存・取消）あとに、待たせていた同期を反映する */
+function afterCallSync(){
+  if(syncState.pending&&!callBusy()){
+    var p=syncState.pending;syncState.pending=null;
+    try{applyServerState(p.staff,p.d,p.opts||{},function(){render()})}catch(e){}
+  }
+}
+/* 連携していないリストを端末で入れ替えた・消したとき */
+function listLocalReset(uid){
+  ["lsig-","llid-","lcyc-","lsigSrv-","ladj-","prog-","sk2-","repass-","pos-"].forEach(function(k){try{localStorage.removeItem(k+uid)}catch(e){}});
+  sv("lsince-"+uid,Date.now()+CLK_OFF);
+  if(U&&U!=="admin"&&U.id===uid){listLid="";listCycle=0;progSrv=null;repass=null;listDone=false;listSince=Date.now()+CLK_OFF;calledSrc={};calledIdx={}}
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   v110 ⑴: 削除したアカウント（坂上順子 093・浜田敏幸 095）
+   端末に残っている名簿の控え・その人のデータ・ログイン状態を消す。サーバーが「削除済み」と返したら、その場でログアウトする
+   ══════════════════════════════════════════════════════════════════════ */
+function deletedAccts(){
+  var a=(CONFIG.DELETED_ACCOUNTS||[]).slice();
+  try{(JSON.parse(localStorage.getItem("deleted_accts")||"[]")||[]).forEach(function(x){if(x&&x.pin&&x.nm)a.push({pin:String(x.pin),nm:String(x.nm)})})}catch(e){}
+  return a;
+}
+function nmKey(s){return String(s==null?"":s).replace(/[\s　]/g,"")}
+function isDeletedAcct(m){
+  if(!m)return false;
+  var list=deletedAccts();
+  for(var i=0;i<list.length;i++)if(String(list[i].pin)===String(m.pin)&&nmKey(list[i].nm)===nmKey(m.nm))return true;
+  return false;
+}
+function purgeDeletedLocal(){
+  try{
+    var sess=ld("session");
+    deletedAccts().forEach(function(a){
+      var id="s"+a.pin,mark="purged-"+a.pin+"-"+nmKey(a.nm);
+      if(localStorage.getItem(mark))return;      /* 1回だけ（あとで同じ PIN を別の方が使っても、その方のデータは消さない） */
+      var drop=[];
+      for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&(k.slice(-(id.length+1))==="-"+id||k.indexOf("-"+id+"-")>=0||k==="authHash-"+a.pin))drop.push(k)}
+      drop.forEach(function(k){try{localStorage.removeItem(k)}catch(e){}});
+      if(sess&&sess.id===id)clearSession();
+      try{localStorage.setItem(mark,"1")}catch(e2){}
+    });
+  }catch(e){}
+}
+function onAccountDeleted(msg){
+  try{clearSession()}catch(e){}
+  try{stopHeartbeat()}catch(e2){}
+  if(U&&U!=="admin"){
+    try{var mine={pin:U.pin,nm:U.nm},cur=[];try{cur=JSON.parse(localStorage.getItem("deleted_accts")||"[]")||[]}catch(e3){}
+      if(!cur.some(function(x){return String(x.pin)===String(mine.pin)&&nmKey(x.nm)===nmKey(mine.nm)})){cur.push(mine);localStorage.setItem("deleted_accts",JSON.stringify(cur))}}catch(e4){}
+    U=null;V="login";pin="";asAppointer=null;
+    try{STAFF=STAFF.filter(function(s){return !isDeletedAcct(s)})}catch(e5){}
+    try{purgeDeletedLocal()}catch(e6){}
+    pinErr=msg||"このアカウントは削除されています。管理者にお問い合わせください";
+    try{render()}catch(e7){}
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   v110 ⑸⑹: サーバーの返事から、時計のずれ・リストの版を受け取る
+   ══════════════════════════════════════════════════════════════════════ */
+function noteServerNow(ms){
+  ms=Number(ms)||0;if(!ms)return;
+  var off=ms-Date.now();
+  CLK_OFF=Math.abs(off)>120000?off:0;
+}
+function sqOldestSec(){
+  var o=0;for(var i=0;i<SQ.length;i++){var t=parseInt(String(SQ[i]._id||"").split("_")[0],10);if(t&&(!o||t<o))o=t}
+  return o?Math.max(0,Math.round((Date.now()-o)/1000)):0;
+}
+function onHeartbeatReply(j){
+  if(!j||j.status!=="ok")return;
+  if(j.code==="account_deleted"){onAccountDeleted(j.message);return}
+  noteServerNow(j.now);
+  if(j.gasVersion&&SRV){SRV.ver=String(j.gasVersion);SRV.checkedAt=Date.now()}
+  if(!j.list||!U||U==="admin")return;
+  var mine=ld("lsigSrv-"+U.id)||"";
+  var changed=(String(j.list.sig||"")!==String(mine))||(listLid&&Number(j.list.cycle||0)!==Number(listCycle||0))||(listLid&&Number(j.list.stamp||0)!==Number(listStamp||0))
+    ||(listLid&&j.list.adj!==undefined&&Number(j.list.adj||0)!==Number(ld("ladj-"+U.id)||0));    /* 管理者が進捗（架電済みの印）を直した */
+  if(changed)autoListRefresh("hb");
+}
+/* サーバーのリストが変わっていたら取り直す（通話中は、終わってから反映する） */
+function autoListRefresh(why){
+  if(!U||U==="admin"||!GAS||!navigator.onLine||syncState.busy)return;
+  if(Date.now()-syncState.lastAuto<25000)return;
+  syncState.lastAuto=Date.now();
+  loadFromGAS(U,function(ok){render()},{auto:true,why:why});
+}
+function syncRetryLater(){
+  if(syncState.timer||!U||U==="admin")return;
+  var wait=Math.min(300000,20000*Math.pow(2,Math.min(4,Math.max(0,syncState.fails-1))));
+  syncState.timer=setTimeout(function(){
+    syncState.timer=null;
+    if(!U||U==="admin"||syncState.ok)return;
+    if(!navigator.onLine){syncRetryLater();return}
+    loadFromGAS(U,function(){render()},{auto:true,why:"retry"});
+  },wait);
+}
+function syncBanner(){
+  if(!U||U==="admin"||syncState.ok||!syncState.err)return "";
+  var h='<div role="alert" style="background:#fffbeb;border:2px solid #f59e0b;border-radius:12px;padding:10px 12px;margin:0 0 10px;font-size:12px;color:#92400e;line-height:1.7">';
+  h+='<b>⚠️ サーバーと同期できていません</b>（'+htmlEsc(syncState.err).slice(0,60)+'）。<br>このリストは最新でない可能性があります。架電結果は端末に保存され、つながりしだい自動で送ります。';
+  h+='<div style="margin-top:6px"><button id="syncRetry" style="padding:8px 14px;border:none;border-radius:9px;background:#f59e0b;color:#fff;font-weight:800;font-size:12px;font-family:inherit">🔄 いますぐ同期する</button></div></div>';
+  return h;
+}
+/* 進捗の帯（ホームの架電カードの上）：何件まで架電したか・手前に未架電が残っていないか・最後まで終わったか */
+function progressBanner(){
+  if(!U||U==="admin"||!rows.length)return "";
+  var done=calledCount(),gaps=gapsBefore(),h="";
+  var src=(listLid&&progSrv&&progSrv.lid===listLid)?"元シートの順番":"リストの順番";
+  h+='<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:12px;padding:9px 12px;margin:0 0 10px;font-size:11.5px;color:#0c4a6e;line-height:1.7">';
+  h+='<b>📍 '+src+'で架電中</b>　架電済み <b>'+done+'</b> / '+rows.length+'件'+(repass&&repass.lid===listLid?'　<span style="color:#7c3aed;font-weight:800">🔁 不在の先をもう一巡中（残り '+absentLeft()+'件）</span>':'');
+  if(gaps>0)h+='<div style="margin-top:4px;color:#b45309;font-weight:700">⚠ 手前に、まだ架電していない行が '+gaps+'件あります <button id="gapBack" style="margin-left:6px;padding:4px 10px;border:1px solid #f59e0b;border-radius:8px;background:#fff;color:#b45309;font-weight:800;font-size:11px;font-family:inherit">↩ そこへ戻る</button></div>';
+  if(listDone||(done>=rows.length&&nextUncalled(0,rows.length)<0)){
+    var ab=absentLeft();
+    h+='<div style="margin-top:4px;color:#166534;font-weight:800">🎉 このリストは最後まで架電しました。</div>';
+    if(ab>0)h+='<button id="repassBtn" style="margin-top:6px;width:100%;padding:11px;border:none;border-radius:10px;background:#7c3aed;color:#fff;font-weight:800;font-size:13px;font-family:inherit">🔁 不在だった '+ab+'件に、もう一度かける</button>';
+    h+='<div style="margin-top:4px;color:#64748b">新しいリスト・最初からのかけ直しは、管理者が設定します。</div>';
+  }
+  h+='</div>';
+  return h;
+}
 function loadFromGAS(staff,cb,opts){
   opts=opts||{};
   if(!GAS||!navigator.onLine){if(cb)cb(false,"オフライン");return}
-  flash("🔄 サーバーからデータ同期中...");
-  /* AbortController で 30秒タイムアウト */
+  if(syncState.busy&&opts.auto){if(cb)cb(false,"同期中");return}
+  syncState.busy=true;
+  if(!opts.auto)flash("🔄 サーバーからデータ同期中...");
+  /* v110: サーバーは架電結果を末尾から必要な分だけ読むようになった（v109 までは全件）。念のため待ち時間は45秒 */
   var ctrl=("AbortController" in window)?new AbortController():null;
-  var tmout=ctrl?setTimeout(function(){ctrl.abort()},30000):null;
+  var tmout=ctrl?setTimeout(function(){ctrl.abort()},45000):null;
   fetch(GAS,{
     method:"POST",
     headers:{"Content-Type":"text/plain;charset=utf-8"},
-    body:JSON.stringify({type:"fetch_state",pin:staff.pin}),
+    body:JSON.stringify({type:"fetch_state",pin:staff.pin,appVersion:APP_VERSION,dev:deviceId(),sentAt:Date.now()}),
     redirect:"follow",
     signal:ctrl?ctrl.signal:undefined
   })
   .then(function(r){if(tmout)clearTimeout(tmout);if(!r.ok)throw new Error("HTTP "+r.status);return r.text()})
   .then(function(t){
     var d;
-    try{d=JSON.parse(t)}catch(e){throw new Error("Invalid JSON: "+t.slice(0,100))}
+    try{d=JSON.parse(t)}catch(e){throw new Error("サーバーの返事を読めません")}
+    syncState.busy=false;
+    if(d.code==="account_deleted"){onAccountDeleted(d.message);if(cb)cb(false,d.message||"削除されたアカウントです");return}
     if(d.status!=="ok")throw new Error(d.message||"GAS error");
-    
+    syncState.ok=true;syncState.err="";syncState.fails=0;syncState.at=Date.now();
+    if(syncState.timer){clearTimeout(syncState.timer);syncState.timer=null}
+    try{noteServerNow(d.serverNow)}catch(eN){}
+    /* v110: 通話中・結果の入力中は、リストを入れ替えない（かけた会社とは別の会社に結果が付くのを防ぐ）。終わってから反映する */
+    if(U&&U!=="admin"&&U.id===staff.id&&callBusy()){
+      syncState.pending={staff:staff,d:d,opts:opts};
+      if(cb)cb(true,{list:(d.list||[]).length,hist:(d.hist||[]).length,appos:(d.appos||[]).length,cb:(d.cb||[]).length,attDays:Object.keys(d.att||{}).length,deferred:true});
+      return;
+    }
+    applyServerState(staff,d,opts,cb);
+  })
+  .catch(function(err){
+    if(tmout)clearTimeout(tmout);
+    syncState.busy=false;syncState.ok=false;syncState.fails++;
+    var em=String(err&&err.message||err);
+    syncState.err=(err&&err.name==="AbortError")?"サーバーの返事が45秒以内にありません":em;
+    try{syncRetryLater()}catch(eR){}
+    console.warn("[loadFromGAS] failed:",em);
+    if(cb)cb(false,syncState.err);
+  });
+}
+/* サーバーから受け取った状態を、端末に反映する */
+function applyServerState(staff,d,opts,cb){
+    opts=opts||{};
+    var posPlan="";
     /* 1. 架電リスト (v22: サーバーが正 - 空ならローカルもクリア) */
-    /* 重要: 管理者がリストを削除した場合、GASは空になる。 */
-    /*       その時はローカルも空にしないと、古いリストが残ってしまう。 */
     if(d.list!==undefined){
       if(d.list.length>0){
         rows=d.list;
         /* v53: 5列目に「元行」がある場合は列マップに含める */
         cm=(d.list[0]&&d.list[0].length>=6)?{co:0,ph:1,pe:2,ad:3,src:4,lid:5}:((d.list[0]&&d.list[0].length>=5)?{co:0,ph:1,pe:2,ad:3,src:4}:{co:0,ph:1,pe:2,ad:3});   /* v108: 6列目＝リストID */
         sv("l-"+staff.id,rows);sv("c-"+staff.id,cm);
-        /* v59: リストが入れ替わったら（＝取り込み直した）スキップを解除して再架電できるようにする。
-           NG番号とアポ登録済みは show() 側で常に除外されるため、ここでは触らない。 */
+        /* v110: 1件目から始めるのは「別のリストになった」「管理者が最初からかけ直すを選んだ」ときだけ。
+           v109 までは、リストの中身が少しでも変わる・管理者が取込を押す・アポインターが再同期を押す、のどれでも1件目に戻していた */
         var newSig=listHash(d.list);              /* v63: 中身全体で判定 */
         var oldSig=ld("lsig-"+staff.id)||"";
-        var listChanged=(newSig!==oldSig)||opts.forceTop===true;
-        if(listChanged){
-          /* v61: リストを取り込み直した＝新しいリスト。
-             スキップを解除し、保存していた位置も消して「シートの1件目」から始める。 */
-          skipped={};sv("sk-"+staff.id,{});sv("lsig-"+staff.id,newSig);
+        var newLid=(d.list[0]&&d.list[0].length>=6)?String(d.list[0][5]||""):"";
+        var oldLidRaw=ld("llid-"+staff.id);
+        var oldLid=(typeof oldLidRaw==="string")?oldLidRaw:(listLid||"");
+        var srvStamp=Number(d.listStamp)||0;
+        var srvCycle=newLid?(Number(d.listCycle)||srvStamp||0):0;
+        var oldCycle=Number(ld("lcyc-"+staff.id))||0;
+        var sigChanged=newSig!==oldSig,fresh=false;
+        if(newLid)fresh=(!!oldSig&&oldLid!==newLid)||(!!oldCycle&&!!srvCycle&&srvCycle!==oldCycle);
+        else{
+          fresh=sigChanged&&!!oldSig;
+          if(sigChanged){listSince=Date.now()+CLK_OFF;sv("lsince-"+staff.id,listSince)}
+        }
+        listLid=newLid;listStamp=srvStamp;listCycle=srvCycle;
+        sv("lsig-"+staff.id,newSig);sv("llid-"+staff.id,newLid);sv("lcyc-"+staff.id,srvCycle);sv("listStamp-"+staff.id,srvStamp);
+        if(d.listMeta&&d.listMeta.sig)sv("lsigSrv-"+staff.id,d.listMeta.sig);
+        if(d.listMeta)sv("ladj-"+staff.id,Number(d.listMeta.adj)||0);   /* 管理者が進捗を直した時刻（ハートビートの返事と比べる） */
+        progSrv=d.prog||null;sv("prog-"+staff.id,progSrv);
+        if(fresh){
+          skipped={};repass=null;listDone=false;
+          try{localStorage.removeItem("repass-"+staff.id)}catch(e){}
           try{localStorage.removeItem("pos-"+staff.id)}catch(e){}
           try{sessionStorage.removeItem("pos-"+staff.id)}catch(e){}
-          flash(opts.forceTop===true
-            ?("📋 リストを読み込み直しました（"+d.list.length+"件・1件目から開始します）")
-            :("📋 新しいリストを読み込みました（"+d.list.length+"件・1件目から開始します）"));
+          posPlan="top";
+          flash((oldLid!==newLid||!newLid)
+            ?("📋 新しいリストを読み込みました（"+d.list.length+"件・1件目から開始します）")
+            :("🔄 管理者がリストを「最初からかけ直す」に設定しました（"+d.list.length+"件・1件目から開始します）"));
         }else{
-          skipped=ld("sk-"+staff.id)||{};
+          skipped=skipLoad(staff.id);   /* スキップの印は、会社で付け直す（行が足されても別の行に付かない） */
+          if(repass&&((repass.lid||"")!==(listLid||"")))repass=null;
+          posPlan="restore";
+          if(sigChanged&&oldSig)flash("📋 リストが更新されました（"+d.list.length+"件）。架電済みの印と位置を引き継いで、続きから再開します");
         }
-        /* v58: リストが新しく取り込まれていたら、架電済み・スキップを解除して
-           もう一度かけられるようにする（NG番号だけは引き続き除外）*/
-        try{
-          var srvStamp=Number(d.listStamp)||0;
-          if(srvStamp&&srvStamp>listStamp){
-            listStamp=srvStamp;sv("listStamp-"+staff.id,listStamp);
-            skipped={};sv("sk-"+staff.id,{});
-            try{localStorage.removeItem("pos-"+staff.id)}catch(e){}
-            try{sessionStorage.removeItem("pos-"+staff.id)}catch(e){}
-            setTimeout(function(){flash("🔄 リストを取り込み直しました。最初からもう一度かけられます（NG番号は除外）")},900);
-          }
-        }catch(e){}
-        /* v57: 端末内の記録が消えていても、サーバーの控えから復元する
-           （同じ端末で保存されたものだけを採用）*/
-        try{
-          var srvPos=listChanged?null:adoptServerPos(d.pos,loadPos());   /* v61: 新リストでは復元しない */
-          if(srvPos){
-            sv("pos-"+staff.id,srvPos);
-            try{sessionStorage.setItem("pos-"+staff.id,JSON.stringify(srvPos))}catch(e){}
-            flash("🔄 前回の続き（"+(srvPos.co||"")+"）を復元しました");
-          }
-        }catch(e){}
-        if(listChanged){ci=0;savePos();}else{restorePos(true);}
       }else{
         /* GAS側が空 = 管理者がまだ未設定または削除した状態 */
         /* ローカルもクリアして同期 */
@@ -2982,9 +3430,12 @@ function loadFromGAS(staff,cb,opts){
         sv("l-"+staff.id,[]);
         sv("c-"+staff.id,null);
         sv("sk-"+staff.id,{});
+        listLid="";listCycle=0;listStamp=0;progSrv=null;repass=null;listDone=false;calledSrc={};calledIdx={};
+        ["lsig-","llid-","lcyc-","prog-","sk2-","repass-","listStamp-"].forEach(function(k){try{localStorage.removeItem(k+staff.id)}catch(e){}});
+        if(d.listMeta&&d.listMeta.sig)sv("lsigSrv-"+staff.id,d.listMeta.sig);
       }
     }
-    
+
     /* 2. 出退勤 (att) - GAS上のデータをマージ (新しい方を優先) */
     if(d.att){
       var localAtt=ld("at-"+staff.id)||{};
@@ -3008,11 +3459,19 @@ function loadFromGAS(staff,cb,opts){
       var localHist=ld("h-"+staff.id)||[];
       var seenKeys={};
       var merged=[];
+      /* v110: サーバーの履歴には「リストの何件目か」が無く、同期すると架電済みの印が消えていた。
+               元行から何件目かを決め、端末だけが持っている項目（行の番号・通話秒など）は端末の記録から引き継ぐ */
+      var localByKey={},srcIdx=null;
+      localHist.forEach(function(h){localByKey[histKey(h)]=h});
+      if(listLid&&cm&&cm.src!==undefined){srcIdx={};for(var ri=0;ri<rows.length;ri++){var sr=String(gf(rows[ri],"src")||"");if(sr)srcIdx[sr]=ri}}
       /* GASのデータを先に追加。v108: 記録ID（CID）で同じ架電を判定（時刻の書式・電話の先頭0の違いで二重になっていた） */
       d.hist.forEach(function(h){
         h.u=staff.id;
         var key=histKey(h);
         if(!h.id)h.id=(h.cid&&/^\d+$/.test(String(h.cid)))?Number(h.cid):Date.now()+Math.random();
+        var lo=localByKey[key];
+        if(lo)["i","s","bsArr","tr","kw","spd","steps","auto","src","lid","ls"].forEach(function(f){if((h[f]===undefined||h[f]===""||h[f]===null)&&lo[f]!==undefined)h[f]=lo[f]});
+        if(srcIdx&&h.lid===listLid&&h.src&&srcIdx[String(h.src)]!==undefined)h.i=srcIdx[String(h.src)];
         if(!seenKeys[key]){seenKeys[key]=true;merged.push(h)}
       });
       /* localのみのデータがあれば追加 (同期されていない最新の操作) */
@@ -3030,7 +3489,27 @@ function loadFromGAS(staff,cb,opts){
       setTimeout(function(){try{reconcileCallCount()}catch(e){}},0);
       sv("h-"+staff.id,hist);
     }
-    
+    /* v110: 架電済みの印を作り直してから、位置を決める（位置は「まだ架電していない行」を基準にするため、履歴の反映より後） */
+    if(U&&U!=="admin"&&U.id===staff.id&&d.list!==undefined){
+      try{rebuildCalled()}catch(eRb){}
+      if(rows.length&&posPlan==="top"){
+        var f0=firstUncalled();ci=f0>=0?f0:0;
+        try{skipSave()}catch(eSk){}
+        savePos();
+      }else if(rows.length&&posPlan==="restore"){
+        /* v57→v110: 端末内の記録が無い・古いときは、サーバーの控え（別の端末で保存した位置を含む）から復元する */
+        try{
+          var srvPos=adoptServerPos(d.pos,loadPos());
+          if(srvPos){
+            sv("pos-"+staff.id,srvPos);
+            try{sessionStorage.setItem("pos-"+staff.id,JSON.stringify(srvPos))}catch(e){}
+            if(srvPos.from&&srvPos.from!==deviceId())setTimeout(function(){flash("🔄 別の端末での続き（"+(srvPos.co||"")+"）から再開します")},700);
+          }
+        }catch(e){}
+        restorePos(!opts.auto);
+      }
+    }
+
     /* 4. アポ (appos) */
     if(d.appos&&d.appos.length>0){
       appos=d.appos;
@@ -3093,12 +3572,6 @@ function loadFromGAS(staff,cb,opts){
       cb:(d.cb||[]).length,
       attDays:Object.keys(d.att||{}).length
     });
-  })
-  .catch(function(err){
-    if(tmout)clearTimeout(tmout);
-    console.warn("[loadFromGAS] failed:",err.message);
-    if(cb)cb(false,String(err.message||err));
-  });
 }
 
 /* v27: 管理者用 - 1人のアポインターの状態をlocalStorageのみに保存 (グローバル状態は変更しない) */
@@ -3121,7 +3594,8 @@ function fetchAppointerStateToLocal(staff,cb){
     /* リスト */
     if(d.list!==undefined){
       sv("l-"+staff.id,d.list.length>0?d.list:[]);
-      if(d.list.length>0)sv("c-"+staff.id,{co:0,ph:1,pe:2,ad:3});
+      if(d.list.length>0)sv("c-"+staff.id,(d.list[0]&&d.list[0].length>=6)?{co:0,ph:1,pe:2,ad:3,src:4,lid:5}:((d.list[0]&&d.list[0].length>=5)?{co:0,ph:1,pe:2,ad:3,src:4}:{co:0,ph:1,pe:2,ad:3}));   /* v110: 元行・リストIDの列を落とさない（「○○として操作」で保存した結果が元シートに反映されなかった） */
+      if(d.listMeta){sv("llid-"+staff.id,(d.list[0]&&d.list[0].length>=6)?String(d.list[0][5]||""):"");sv("lcyc-"+staff.id,Number(d.listCycle)||Number(d.listStamp)||0);sv("listStamp-"+staff.id,Number(d.listStamp)||0);sv("lsig-"+staff.id,listHash(d.list));sv("prog-"+staff.id,d.prog||null)}
     }
     /* 出退勤マージ */
     if(d.att){
@@ -3280,12 +3754,13 @@ function paceStats(){
   var a=att[todStr]||{};
   var elapsedMin=0;
   if(a.ci){
-    var ciDate=new Date(todStr+"T"+a.ci);
-    var endMs=a.co?new Date(todStr+"T"+a.co).getTime():Date.now();
+    var jstMs=function(dk,hms){var p=String(hms||"").split(":");var v=Date.parse(dk+"T"+pad(+p[0]||0)+":"+pad(+p[1]||0)+":"+pad(+p[2]||0)+"+09:00");return isNaN(v)?0:v};   /* v110: 日本時間として読む */
+    var ciDate=new Date(jstMs(todStr,a.ci));
+    var endMs=a.co?jstMs(todStr,a.co):(Date.now()+CLK_OFF);
     elapsedMin=Math.max(1,Math.round((endMs-ciDate.getTime())/60000));
     /* 休憩控除 */
     if(a.bs&&a.be){
-      var bsMs=new Date(todStr+"T"+a.bs).getTime(),beMs=new Date(todStr+"T"+a.be).getTime();
+      var bsMs=jstMs(todStr,a.bs),beMs=jstMs(todStr,a.be);
       if(beMs>bsMs)elapsedMin-=Math.round((beMs-bsMs)/60000);
     }
     if(elapsedMin<1)elapsedMin=1;
@@ -3294,8 +3769,8 @@ function paceStats(){
   /* 着地予測: 残り時間を18:00までとして予測 */
   var proj=calls;
   if(a.ci&&!a.co){
-    var endDay=new Date(todStr+"T18:00");
-    var remainMin=Math.max(0,Math.round((endDay.getTime()-Date.now())/60000));
+    var endDay=new Date(Date.parse(todStr+"T18:00:00+09:00"));
+    var remainMin=Math.max(0,Math.round((endDay.getTime()-(Date.now()+CLK_OFF))/60000));
     proj=calls+Math.round(cph*remainMin/60);
   }
   return {calls:calls,elapsedMin:elapsedMin,cph:cph,proj:proj};
@@ -3339,9 +3814,6 @@ function sendHeartbeat(force){
     hbLastTs=nowMs;
     var todStr=td();
     var tc=hist.filter(function(c){return c.d===todStr});
-    /* リスト消化数 (ユニークindex) */
-    var calledIdx={};
-    tc.forEach(function(c){if(typeof c.i==="number"&&c.i>=0)calledIdx[c.i]=true});
     var cur=rows[ci]||null;
     var hb=hourlyBreakdown();
     var payload={
@@ -3350,7 +3822,7 @@ function sendHeartbeat(force){
       date:dateJP(),dateKey:todStr,
       status:currentStatus(),
       listTotal:rows.length,
-      listDone:Object.keys(calledIdx).length,
+      listDone:calledCount(),       /* v110: このリストで架電済みの件数（きょうだけでなく、続きの分も含む） */
       curIdx:rows.length?ci+1:0,
       curCo:cur?gf(cur,"co"):"",
       lastCo:lastCalledCo||"",
@@ -3359,16 +3831,26 @@ function sendHeartbeat(force){
       apoCount:tc.filter(function(c){return c.r==="appo"}).length,
       h9:hb.h9,h10:hb.h10,h11:hb.h11,h12:hb.h12,h13:hb.h13,
       h14:hb.h14,h15:hb.h15,h16:hb.h16,h17:hb.h17,h18:hb.h18,
-      ts:new Date().toISOString()
+      ts:new Date().toISOString(),
+      /* v110: 端末の状態（集計が合わないときの原因を、管理者の画面で確かめられる） */
+      sq:SQ.length,dlq:(ld("sq_dlq")||[]).length,sqOldestSec:sqOldestSec(),
+      appVersion:APP_VERSION,tzo:-new Date().getTimezoneOffset(),device:admDevName(),
+      listSig:ld("lsigSrv-"+U.id)||"",listStamp:listStamp||0,sentAt:nowMs
     };
-    /* fire-and-forget (キューに積まない - 古い現況の再送は無意味) */
+    /* キューには積まない（古い現況の再送は無意味）。v110: 返事を読む（サーバーの時刻・リストの版・削除されたアカウント） */
     fetch(GAS,{
       method:"POST",
       headers:{"Content-Type":"text/plain;charset=utf-8"},
       body:JSON.stringify(payload),
       redirect:"follow",
       keepalive:true
+    }).then(function(r){return r.ok?r.text():""}).then(function(t){
+      if(!t)return;
+      var j=null;try{j=JSON.parse(t)}catch(e){return}
+      if(j&&j.code==="account_deleted"){onAccountDeleted(j.message);return}
+      onHeartbeatReply(j);
     }).catch(function(){});
+    if(SQ.length)flushSQ();
   }catch(e){}
 }
 function startHeartbeat(){
@@ -3445,27 +3927,21 @@ function pastCalls(phone){
 /* v30: アポインター用 - 今日の自分の順位を取得 (リーダーボード) */
 function fetchMyRank(){
   if(rankLoading)return;
+  if(!GAS||!navigator.onLine){flash("⚠️ オンライン接続が必要です");return}
   rankLoading=true;render();
-  fetchLive(function(ok){
+  /* v110: v109 で「全員の現況」が管理者専用になり、この順位表示は常に失敗していた。順位だけを返す要求（fetch_rank）を使う */
+  directGasPost({type:"fetch_rank",pin:U.pin},25000).then(function(res){
     rankLoading=false;
-    if(!ok||!adminLive){flash("⚠️ 順位を取得できませんでした");render();return}
-    /* 結果数(結果入力ベース)でランキング */
-    var ranked=adminLive.slice().filter(function(l){return l.status!=="未出勤"})
-      .sort(function(a,b){
-        if((b.resultCount||0)!==(a.resultCount||0))return (b.resultCount||0)-(a.resultCount||0);
-        return (b.apoCount||0)-(a.apoCount||0);
-      });
-    var myIdx=-1;
-    for(var i=0;i<ranked.length;i++){if(String(ranked[i].pin)===String(U.pin)){myIdx=i;break}}
-    showRank={
-      rank:myIdx>=0?myIdx+1:0,
-      total:ranked.length,
-      me:myIdx>=0?ranked[myIdx]:null,
-      top:ranked.slice(0,3)
-    };
+    var r=res&&res.result;
+    if(!r){flash("⚠️ 順位を取得できませんでした");render();return}
+    showRank={rank:r.rank||0,total:r.total||0,me:r.me||null,top:r.top||[]};
     vib(40);
     render();
-  },true);
+  }).catch(function(err){
+    rankLoading=false;
+    flash("⚠️ 順位を取得できませんでした"+(err&&err.message?"（"+String(err.message).slice(0,30)+"）":""));
+    render();
+  });
 }
 
 /* ---------- ログイン (v12: 保存済みリストを上書きしない) ---------- */
@@ -3553,13 +4029,8 @@ function doAppointerLogin(f){
   U=f;V="home";pin="";pinErr="";passBuf="";passBuf2="";passErr="";authStage="pin";
   loadUser(f.id);
   saveSession();   /* v54: 次回は入り直さずに再開できるようにする */
-  var dlq=ld("sq_dlq")||[];
-  if(dlq.length>0){
-    setTimeout(function(){
-      showConfirm={title:"⚠️ 未送信データがあります",msg:"前回までに送信できなかったデータが "+dlq.length+"件 あります。\n\n集計画面の「DLQ再送」から手動で再送できます。\n\n今すぐ再送しますか？",onYes:function(){resendDLQ();showConfirm=null;render()},onNo:function(){showConfirm=null;render()}};
-      render();
-    },800);
-  }
+  /* v110: 前回までに送信できなかった記録は、確認なしで自動的に送り直す（押し忘れると、その分が集計・元シートに出ないままになる） */
+  try{var nDlq=dlqAutoResend();if(nDlq)setTimeout(function(){flash("📤 前回までに送信できなかった記録 "+nDlq+"件を、自動で送り直しています")},1500)}catch(eDq){}
   loading=true;render();
   loadFromGAS(f,function(ok,info){
     loading=false;
@@ -3585,6 +4056,9 @@ function tryLogin(){
     var f=null,fn=0;for(var i=0;i<STAFF.length;i++)if(STAFF[i].pin===pin){f=STAFF[i];fn++}
     /* v108: 名簿に同じPINが2人以上いたら、取り違えを防ぐためログインさせない */
     if(fn>1){pinErr="このPINは名簿で重複しています。管理者に連絡してください";pin="";vib([60,30,60]);render();return}
+    /* v110: 削除したアカウントの PIN ではログインできない */
+    if(!f){var delHit=null;deletedAccts().forEach(function(a){if(String(a.pin)===pin)delHit=a});
+      if(delHit){pinErr="このアカウント（"+delHit.nm+"）は削除されています。管理者にお問い合わせください";pin="";vib([60,30,60]);render();return}}
     if(f){
       /* v42: 暗証番号認証へ (なりすまし防止) */
       beginAuth(f);
@@ -3632,8 +4106,13 @@ function onPhoneTap(){
   CALL_INIT_AT=Date.now();
   CALL_PENDING=!pcDialMode;   /* v79: PCは復帰イベントが来ないので待たない */
   bumpCallCount();  /* v26: 発信回数を記録 */
+  /* v110: この瞬間の架電先を固定（保存はこれを使う。あとで行が動いても、別の会社に結果を付けない）。
+           結果の入力画面からのかけ直し（同じ相手）は、すでに固定してある架電先をそのまま使う（再架電の相手・リストに無い会社でも変えない） */
+  var keepCx=(V==="call"&&callCtx)?callCtx:null;
+  if(keepCx){var keepRet=keepCx.ret||null;keepCx.at=Date.now();setCallCtx(keepCx);if(keepRet)callCtx.ret=keepRet}
+  else setCallCtx(ctxOf(ci));
   var cur=rows[ci]||null;
-  if(cur)setLastCalled(gf(cur,"co"));  /* v27: 最終架電会社 */
+  if(callCtx&&callCtx.co)setLastCalled(callCtx.co);else if(cur)setLastCalled(gf(cur,"co"));  /* v27: 最終架電会社 */
   vib(40);
   /* 自動でチェックリストを準備しておく */
   ck={};selRes=null;bousou=[];endStep="";tsec=0;clearInterval(tref);trReset();
@@ -3642,7 +4121,7 @@ function onPhoneTap(){
     /* v79: Windows以外（Mac等）は tel: が端末に届かないため、番号をコピーして手元で発信できるようにする */
     if(!isWindowsEnv()){
       try{
-        var pn=cur?normPh(gf(cur,"ph")):"";
+        var pn=(callCtx&&callCtx.ph)?normPh(callCtx.ph):(cur?normPh(gf(cur,"ph")):"");
         if(pn&&navigator.clipboard&&navigator.clipboard.writeText){
           navigator.clipboard.writeText(pn).then(function(){flash("📋 "+pn+" をコピーしました")}).catch(function(){});
         }
@@ -3671,10 +4150,16 @@ document.addEventListener("visibilitychange",function(){
   /* v53: 復帰したら画面スリープ防止を取り直す（OSが解放するため）*/
   if(U&&U!=="admin"&&keepAwake)acquireWake();
   /* v55: 何らかの理由で先頭に戻っていたら、保存済みの位置へ戻す（最後の保険）*/
-  if(U&&U!=="admin"&&rows.length&&ci===0){
+  /* v110: 発信してから結果を保存するまでの間は、位置を動かさない（v109 は1件目に発信して戻ったとき、保存済みの別の行へ移ることがあり、
+           かけた会社とは別の会社の画面で結果を入力させていた） */
+  if(U&&U!=="admin"&&rows.length&&ci===0&&!callBusy()){
     var rp=findRowBy(loadPos());
-    if(rp>0){ci=rp;flash("▶ "+(gf(rows[ci],"co")||"")+"（"+(ci+1)+"件目）に戻しました");render()}
+    if(rp>0&&!called(rp)){ci=rp;flash("▶ "+(gf(rows[ci],"co")||"")+"（"+(ci+1)+"件目）に戻しました");render()}
   }
+  /* v110: しばらく同期していなければ（10分）、画面に戻ったときにリストの版を確かめる（出勤前でハートビートが出ていないときの保険） */
+  if(U&&U!=="admin"&&!callBusy()&&GAS&&navigator.onLine&&Date.now()-(syncState.at||0)>10*60000){try{autoListRefresh("visible")}catch(eAv){}}
+  /* v110: 固定した架電先が、いま表示している行と違っていたら、架電先の行に合わせる */
+  if(U&&U!=="admin"&&callCtx&&(CALL_PENDING||V==="call")){var cxi=ctxIndex(callCtx);if(cxi>=0&&cxi!==ci)ci=cxi}
   /* v41: 診断から復帰 → 結果を表示 */
   if(diagResult==="ok"){diagResult="";flash("✅ この端末は自動でダイヤラーが開きます (自動発信OK)");render()}
   /* v40: 復帰時 - WakeLock再取得 & バックグラウンドで期限が来ていたら即発信画面へ */
@@ -3688,6 +4173,7 @@ document.addEventListener("visibilitychange",function(){
     /* v52: 4秒未満で戻った = 発信画面を閉じただけ → 記録も前進もしない (空記録の防止) */
     if(!isRealDial(dur)){
       CALL_INIT_AT=null;
+      dropCallCtx();try{afterCallSync()}catch(eAs){}   /* v110 */
       reconcileCallCount();
       flash("発信されませんでした（記録していません）");
       render();
@@ -3708,36 +4194,43 @@ document.addEventListener("visibilitychange",function(){
     }else{
       flash("⚠️ 発信されなかったようです");
       CALL_INIT_AT=null;
+      dropCallCtx();try{afterCallSync()}catch(eAs2){}   /* v110 */
     }
   }
 });
 
 /* v26: オートコール - 不在として記録し次の番号へ自動前進 */
 function autoRecordAbsentAndNext(dur){
-  var cur=rows[ci]||null;
-  var entry={id:Date.now(),u:U.id,
-    co:cur?gf(cur,"co"):"",pe:cur?gf(cur,"pe"):"",ph:cur?gf(cur,"ph"):"",
+  /* v110: 発信した瞬間に固定した架電先に記録する（いま表示している行ではなく） */
+  var cx=curCtx()||{i:ci,co:"",pe:"",ph:"",src:"",lid:"",ls:0};
+  var cxI=ctxIndex(cx);if(cxI<0)cxI=cx.i;
+  var entry={id:Date.now(),at:Date.now()+CLK_OFF,u:U.id,
+    co:cx.co,pe:cx.pe,ph:cx.ph,
     r:"absent",dur:timerStr(dur||0),ck:"0/"+CHECKS.length,bs:"なし",bsArr:[],
     endStep:"",out:"",memo:"(オートコール: 応答なし)",
-    d:td(),tm:now().slice(0,5),i:ci,auto:true};
+    d:td(),tm:now().slice(0,5),i:cxI,src:cx.src||"",lid:cx.lid||"",ls:cx.ls||0,auto:true};
   /* v52: 直前に同じ番号の記録があれば二重記録しない */
   if(dupWithin(hist,entry.ph,entry.co,entry.id,15)){
     flash("（記録済みのためスキップしました）");
-    goNext();render();return;
+    clearCallCtx();afterCallRet=cx.ret||null;
+    advanceAfterCall();render();return;
   }
   hist.unshift(entry);
   if(hist.length>HIST_LOCAL_MAX)hist=hist.slice(0,HIST_LOCAL_MAX);
   sv("h-"+U.id,hist);
   reconcileCallCount();
+  try{rebuildCalled()}catch(eRb){}
   /* スプレッドシートにも記録 */
   gasPost({type:"callResult",name:U.nm,pin:U.pin,sheet:U.sh,
     date:dateJP(),time:now().slice(0,5),
     company:entry.co,phone:entry.ph,person:entry.pe,
     result:"不在",duration:entry.dur,checkedCount:"0/"+CHECKS.length,
     bousou:"なし",bousouArr:[],endStep:"",outText:"",memo:entry.memo,
-    cid:entry.id,srcRow:(cur?gf(cur,"src"):""),listId:(cur?gf(cur,"lid"):"")});   /* v108: 記録ID・元行・リストIDも送る（集計の重複防止・リスト単位の反映） */
+    cid:entry.id,srcRow:cx.src||"",listId:cx.lid||"",listStamp:cx.ls||0});   /* v108: 記録ID・元行・リストID／v110: 取込印（どの取込のリストでかけたか） */
+  if(cxI>=0&&cxI<rows.length)ci=cxI;
+  clearCallCtx();afterCallRet=cx.ret||null;
   /* 次へ */
-  var moved=goNext();
+  var moved=advanceAfterCall();
   V="home";
   if(moved){
     vib(40);
@@ -3745,10 +4238,11 @@ function autoRecordAbsentAndNext(dur){
     sendHeartbeat(false);  /* v29 */
     startAutoDialCountdown();  /* v27: 10秒後に自動発信 */
   }else{
-    AUTO_MODE=false;
+    AUTO_MODE=false;sv("autoMode-"+U.id,false);
     vib([60,40,60]);
     flash("✅ リスト完了 - オートコール終了");
   }
+  try{afterCallSync()}catch(eAs){}   /* v110: 通話中に待たせていた同期を反映 */
   render();
 }
 
@@ -3804,7 +4298,7 @@ function startAutoDialCountdown(){
   /* v28: NG番号は自動でスキップして次へ */
   var ngGuard=0;
   while(isNG(phone)&&ngGuard<rows.length){
-    skipped[ci]=true;sv("sk-"+U.id,skipped);
+    skipped[ci]=true;skipSave();
     var moved=goNext();
     if(!moved)break;
     cur=rows[ci]||null;
@@ -3814,6 +4308,7 @@ function startAutoDialCountdown(){
   if(!cur||!phone||isNG(phone)){flash("⚠️ 発信できる番号がありません");return}
   autoDialPhone=telPhone(phone);
   autoDialCo=gf(cur,"co")||"(会社名なし)";
+  autoDialCtx=ctxOf(ci);   /* v110: この番号を発信する。発信が始まったら、この架電先を固定する */
   autoDialReady=false;autoTryAt=0;autoDialPausedRemain=0;
   autoDialEndAt=Date.now()+AUTO_DIAL_DELAY*1000;
   acquireWake();
@@ -3861,13 +4356,14 @@ function chainDialNext(){
   var phone=cur?gf(cur,"ph"):"";
   var ngGuard=0;
   while(cur&&phone&&isNG(phone)&&ngGuard<rows.length){
-    skipped[ci]=true;sv("sk-"+U.id,skipped);
+    skipped[ci]=true;skipSave();
     if(!goNext())break;
     cur=rows[ci]||null;phone=cur?gf(cur,"ph"):"";ngGuard++;
   }
   if(!cur||!phone||isNG(phone)){flash("✅ リスト完了");AUTO_MODE=false;sv("autoMode-"+U.id,false);releaseWake();return false}
   autoDialPhone=telPhone(phone);
   autoDialCo=gf(cur,"co")||"(会社名なし)";
+  autoDialCtx=ctxOf(ci);   /* v110 */
   markDialStarted();  /* 発信状態を初期化 (このタップ自体が発信ジェスチャ) */
   flash("📞 発信: "+autoDialCo);
   try{window.location.href="tel:"+autoDialPhone}catch(e){}
@@ -3928,8 +4424,12 @@ function markDialStarted(){
   CALL_INIT_AT=Date.now();
   CALL_PENDING=!pcDialMode;   /* v79 */
   bumpCallCount();
+  /* v110: 発信した架電先を固定（カウントダウンを始めたときの架電先。無ければ、いま表示している行） */
+  var actx=(autoDialCtx&&telPhone(autoDialCtx.ph)===autoDialPhone)?autoDialCtx:ctxOf(ci);
+  if(actx){actx.at=Date.now();setCallCtx(actx)}
+  autoDialCtx=null;
   var cur=rows[ci]||null;
-  if(cur)setLastCalled(gf(cur,"co"));
+  if(actx&&actx.co)setLastCalled(actx.co);else if(cur)setLastCalled(gf(cur,"co"));
   ck={};selRes=null;bousou=[];endStep="";tsec=0;clearInterval(tref);trReset();
   vib(40);
 }
@@ -3948,7 +4448,7 @@ function skipAutoDial(){
   if(autoDialTimer){clearInterval(autoDialTimer);autoDialTimer=null}
   stopRepeatBeep();
   autoDialEndAt=0;autoDialPausedRemain=0;autoDialReady=false;autoTryAt=0;
-  skipped[ci]=true;sv("sk-"+U.id,skipped);
+  skipped[ci]=true;skipSave();
   var moved=goNext();
   if(moved){flash("⏭ スキップ→次の番号へ");startAutoDialCountdown()}
   else{flash("✅ リスト完了");AUTO_MODE=false;sv("autoMode-"+U.id,false);releaseWake();render()}
@@ -3975,7 +4475,11 @@ function saveCall(skipCbDialog){
   var outEl=document.getElementById("outTA");var outText=outEl?outEl.value:"";
   var memoEl=document.getElementById("memoTA");var memo=memoEl?memoEl.value:"";
   if(pcDialMode&&pcCalling){ var pcSec=pcEndCall(); if(pcSec>0){ tsec=pcSec; } }   /* v79 */
-  var cur=rows[ci]||null;
+  /* v110: 発信した瞬間に固定した架電先（会社・電話・元行・リスト）に記録する。
+           v109 は「保存した瞬間に表示していた行」に記録していたため、通話中に同期や復帰の処理が位置を動かすと、別の会社に結果が付いた */
+  var cx=curCtx()||{i:ci,co:"",pe:"",ph:"",ad:"",src:"",lid:"",ls:0};
+  var cxI=ctxIndex(cx);if(cxI<0)cxI=cx.i;
+  if(cxI>=0&&cxI<rows.length)ci=cxI;
   var checked=CHECKS.filter(function(c){return ck[c.id]}).length;
   var resLabel="";for(var i=0;i<RESULTS.length;i++)if(RESULTS[i].id===selRes)resLabel=RESULTS[i].l;
   /* v19: bousou は配列 - "なし" or "ステップ1,ステップ3" 形式の文字列に変換 */
@@ -3984,7 +4488,8 @@ function saveCall(skipCbDialog){
   }).join(",");
   var endStepLabel=endStep||"";
 
-  var entry={id:Date.now(),u:U.id,co:cur?gf(cur,"co"):"",pe:cur?gf(cur,"pe"):"",ph:cur?gf(cur,"ph"):"",
+  var entry={id:Date.now(),at:Date.now()+CLK_OFF,u:U.id,co:cx.co,pe:cx.pe,ph:cx.ph,
+    src:cx.src||"",lid:cx.lid||"",ls:cx.ls||0,   /* v110: 元行・リストID・取込印（架電済みの印を、元シートの行で持つ） */
     r:selRes,dur:timerStr(tsec),s:tsec,  /* v43: 秒数(集計用) */
     ck:checked+"/"+CHECKS.length,bs:bLabel,
     bsArr:bousou.slice(),  /* v19: 配列も保存(集計用) */
@@ -3992,7 +4497,7 @@ function saveCall(skipCbDialog){
     out:outText,memo:memo,
     tr:capTranscript(trText,300),  /* v55: 端末には要点のみ保存（全文はサーバーの「文字起こし」シート）*/
     kw:kwScan(trText,kwList),spd:talkSpeed(trText,tsec),steps:stepCheck(trText),  /* v44: 分析 */
-    d:td(),tm:now().slice(0,5),i:ci};
+    d:td(),tm:now().slice(0,5),i:cxI};
   /* v52: 同じ通話が二重に記録されるのを防ぐ (オートコールの自動不在記録との重複など) */
   if(dupWithin(hist,entry.ph,entry.co,entry.id,15)){
     var dupIdx=-1;
@@ -4006,18 +4511,23 @@ function saveCall(skipCbDialog){
   if(hist.length>HIST_LOCAL_MAX)hist=hist.slice(0,HIST_LOCAL_MAX);
   sv("h-"+U.id,hist);
   reconcileCallCount();
+  try{rebuildCalled()}catch(eRb){}   /* v110: 架電済みの印を更新 */
   clearDraft();   /* v56: 保存できたので入力途中の内容は破棄 */
 
   /* スプレッドシートへ送信 (キュー経由) */
   gasPost({type:"callResult",name:U.nm,pin:U.pin,sheet:U.sh,
     date:dateJP(),time:now().slice(0,5),
-    company:cur?gf(cur,"co"):"",phone:cur?gf(cur,"ph"):"",person:cur?gf(cur,"pe"):"",
+    company:cx.co,phone:cx.ph,person:cx.pe,
     result:resLabel,duration:timerStr(tsec),checkedCount:checked+"/"+CHECKS.length,
     bousou:bLabel,bousouArr:bousou.slice(),endStep:endStepLabel,
     outText:outText,memo:memo,cid:entry.id,
     talkSec:tsec,transcript:capTranscript(trText,15000),
-    srcRow:(cur?gf(cur,"src"):""),   /* v49: 元スプレッドシートの行番号 */
-    listId:(cur?gf(cur,"lid"):"")});  /* v108: どのリストからかけた電話か（元シートへの反映をリスト単位にする） */
+    srcRow:cx.src||"",   /* v49: 元スプレッドシートの行番号 */
+    listId:cx.lid||"",   /* v108: どのリストからかけた電話か（元シートへの反映をリスト単位にする） */
+    listStamp:cx.ls||0});  /* v110: どの取込のリストでかけたか（取込をはさんだ結果は、サーバーが会社で行を探す） */
+  var retAfter=cx.ret||null;
+  clearCallCtx();
+  afterCallRet=retAfter;   /* 再架電のお知らせからの通話：このあと、発信の前に表示していた行へ戻る */
   trReset();  /* v43: 保存後に文字起こしをクリア */
 
   clearInterval(tref);unlockScreen();
@@ -4025,15 +4535,17 @@ function saveCall(skipCbDialog){
   ck={};selRes=null;bousou=[];endStep="";
 
   if(entry.r==="appo"){
-    af={project:"",meetingDate:"",meetingTime:"",company:cur?gf(cur,"co"):"",person:cur?gf(cur,"pe"):"",gender:"男",phone:cur?gf(cur,"ph"):"",role:"",address:cur?gf(cur,"ad"):"",datetime:"",email:"",personality:"",
+    af={project:"",meetingDate:"",meetingTime:"",company:cx.co,person:cx.pe,gender:"男",phone:cx.ph,role:"",address:cx.ad||"",datetime:"",email:"",personality:"",
       isTokutei:false,gaikokujin:"",tokutei:"",gijinkoku:"",decider:""};
     V="appo";vib([50,40,50,40,80]);render()
   }else{
     /* v36: 誤タップ取消を有効化 (アポ以外) */
-    lastSaved={cid:entry.id,co:entry.co,ph:entry.ph,r:entry.r,at:Date.now()};
+    lastSaved={cid:entry.id,co:entry.co,ph:entry.ph,r:entry.r,at:Date.now(),i:cxI};
     clearTimeout(window._undoTmr);
     window._undoTmr=setTimeout(function(){lastSaved=null;render()},UNDO_MS);
-    goNext();V="home";vib(60);
+    var movedNx=advanceAfterCall();V="home";vib(60);
+    try{afterCallSync()}catch(eAs){}   /* v110: 通話中に待たせていた同期を反映 */
+    if(AUTO_MODE&&!movedNx){AUTO_MODE=false;sv("autoMode-"+U.id,false);cancelAutoDial();releaseWake();flash("✅ 保存しました。リストの最後まで架電しました（オートコール終了）");sendHeartbeat(false);render();return}
     /* v26: オートコールモードなら次の発信を促す */
     if(AUTO_MODE){
       if(chainEligible(AUTO_MODE,AUTO_DIAL_DELAY,entry.r,dialBridge,pcDialMode)){
@@ -4221,10 +4733,19 @@ function undoLastCall(){
   hist=hist.filter(function(e){return e.id!==cid});
   sv("h-"+U.id,hist);reconcileCallCount();   /* v52: 取消したら架電数も減らす */
   sv("h-"+U.id,hist);
-  /* サーバーの架電結果も削除 */
-  if(GAS&&navigator.onLine){
-    directGasPost({type:"callResult_undo",cid:cid,name:U.nm},20000).catch(function(err){console.warn("[undo]",err.message)});
+  try{rebuildCalled()}catch(eRb){}
+  /* サーバーの架電結果も削除。
+     v110: v109 はオンラインのときだけ直接送っていたため、オフライン・送信待ちのときは、取り消した結果があとからサーバーに届いて残っていた。
+           まだ送っていなければ送信をやめ、送ったあとなら「取消」をキューに積む（もとの結果より後に届く） */
+  var undoQ=-1;
+  for(var uq=0;uq<SQ.length;uq++)if(SQ[uq].type==="callResult"&&String(SQ[uq].cid)===String(cid)){undoQ=uq;break}
+  if(undoQ>=0&&!SQ[undoQ]._beaconAt&&!(SQ_SENDING&&sqNextIndex(Date.now())===undoQ)){
+    delete SQ_RETRIES[SQ[undoQ]._id];SQ.splice(undoQ,1);sv("sq",SQ);saveRetries();updateBadge();
+  }else if(GAS){
+    gasPost({type:"callResult_undo",cid:cid,name:U.nm,pin:U.pin});
   }
+  /* 取り消した行へ戻る（その会社にかけ直せるように） */
+  if(typeof lastSaved.i==="number"&&lastSaved.i>=0&&lastSaved.i<rows.length&&!AUTO_MODE){ci=lastSaved.i;listDone=false;savePos()}
   lastSaved=null;
   clearTimeout(window._undoTmr);
   vib([60,40,60]);
@@ -4252,10 +4773,10 @@ function confirmCB(preset){
     if(!cbCustomDt){flash("⚠️ 日時を入力");return}
     d=new Date(cbCustomDt);if(isNaN(d.getTime())){flash("⚠️ 不正な日時");return}
   }
-  var cur=rows[ci]||null;
+  var cxb=curCtx();   /* v110: 通話した会社（固定した架電先）で登録する */
   var entry={id:Date.now(),at:d.toISOString(),noTime:noTime,
-    co:cur?gf(cur,"co"):"",pe:cur?gf(cur,"pe"):"",ph:cur?gf(cur,"ph"):"",
-    memo:cbMemo,createdAt:new Date().toISOString(),done:false,rowIdx:ci};
+    co:cxb?cxb.co:"",pe:cxb?cxb.pe:"",ph:cxb?cxb.ph:"",
+    memo:cbMemo,createdAt:new Date().toISOString(),done:false,rowIdx:(cxb&&typeof cxb.i==="number"&&cxb.i>=0)?cxb.i:ci};
   cbs.unshift(entry);sv("cb-"+U.id,cbs);
   gasPost({type:"callback",name:U.nm,pin:U.pin,sheet:U.sh,scheduledAt:noTime?(dtJP(d).slice(0,10)+" 時間未定"):dtJP(d),company:entry.co,person:entry.pe,phone:entry.ph,memo:entry.memo});
   showCB=false;
@@ -4304,6 +4825,8 @@ function punch(type){
 }
 function doPunch(type){
   showConfirm=null;
+  if(type==="ci"){try{raOnClockIn()}catch(eRa){}}                     /* v110: 出勤のタップで、録音フォルダの許可を取り直す */
+  if(type==="co"){try{if(RA.handle&&RA.perm==="granted")raScan("clockout")}catch(eRa2){}}   /* v110: 退勤のときに、残っている録音を送る */
   var t=now(),d=td();if(!att[d])att[d]={};att[d][type]=t;sv("at-"+U.id,att);
   var lb={ci:"出勤",co:"退勤",bs:"休憩開始",be:"休憩終了"};
   vib(type==="ci"?[80,50,80]:50);
@@ -4611,7 +5134,7 @@ function sendAppo(){
   var apoCo=a.company||"";
   setTimeout(function(){
     af={project:"",meetingDate:"",meetingTime:"",company:"",person:"",gender:"男",phone:"",role:"",address:"",datetime:"",email:"",personality:"",isTokutei:false,gaikokujin:"",tokutei:"",gijinkoku:"",decider:""};
-    goNext();
+    advanceAfterCall();   /* v110 */
     /* v84: アポ登録の直後に、その通話の録音を送ってもらう */
     apoRecTarget={company:apoCo,at:Date.now()};
     V="apoRec";
@@ -4687,6 +5210,7 @@ function processImportRows(all){
   var uid=U==="admin"?(document.getElementById("tgtSel")?document.getElementById("tgtSel").value:""):U.id;
   if(!uid){impErr="ユーザー未選択";render();return false}
   sv("l-"+uid,data);sv("c-"+uid,newCm);sv("sk-"+uid,{});sv("init-"+uid,true);
+  try{listLocalReset(uid)}catch(eLr){}   /* v110: リストの版・進捗・スキップの印を、新しいリスト用にリセット */
   if(U!=="admin"&&U.id===uid){rows=data;cm=newCm;ci=0;skipped={}}
   showImp=false;impErr="";
   var sn="";STAFF.forEach(function(s){if(s.id===uid)sn=s.nm});
@@ -4811,9 +5335,9 @@ function clearList(uid){
     onYes:function(){
       /* v22: ローカル削除 */
       if(isAll){
-        STAFF.forEach(function(s){sv("l-"+s.id,[]);sv("c-"+s.id,null);sv("sk-"+s.id,{})});
+        STAFF.forEach(function(s){sv("l-"+s.id,[]);sv("c-"+s.id,null);sv("sk-"+s.id,{});try{listLocalReset(s.id)}catch(eLr){}});
       }else{
-        sv("l-"+uid,[]);sv("c-"+uid,null);sv("sk-"+uid,{});
+        sv("l-"+uid,[]);sv("c-"+uid,null);sv("sk-"+uid,{});try{listLocalReset(uid)}catch(eLr2){}
       }
       if(U!=="admin"&&(isAll||U.id===uid)){rows=[];cm=null;ci=0;skipped={}}
       /* v22: GAS側も削除 (空のチャンクアップロード = サーバーシートをクリア) */
@@ -4904,16 +5428,16 @@ function statsByDay(days){
 /* 時間別集計 (v12: 9〜17時の各バケット) */
 function statsByHour(dateKey){
   var calls=hist.filter(function(c){return c.d===dateKey&&c.tm});
-  var bucket={};for(var h=9;h<=17;h++)bucket[h]={count:0,sec:0,apo:0};
+  var bucket={};for(var h=9;h<=18;h++)bucket[h]={count:0,sec:0,apo:0};   /* v110: 18時の欄を追加 */
   calls.forEach(function(c){
     var hr=parseInt(String(c.tm).slice(0,2));
     if(isNaN(hr))return;
-    if(hr<9)hr=9;if(hr>17)hr=17;
+    if(hr<9)hr=9;if(hr>18)hr=18;
     bucket[hr].count++;
     bucket[hr].sec+=durSec(c.dur);
     if(c.r==="appo")bucket[hr].apo++;
   });
-  var result=[];for(var h=9;h<=17;h++)result.push({hour:h,label:h+"時",count:bucket[h].count,sec:bucket[h].sec,apo:bucket[h].apo});
+  var result=[];for(var h=9;h<=18;h++)result.push({hour:h,label:h+"時",count:bucket[h].count,sec:bucket[h].sec,apo:bucket[h].apo});
   return result;
 }
 
@@ -5038,7 +5562,7 @@ function exportListCSV(){
   var rs=rows.map(function(r,i){
     var st="未架電";
     if(skipped[i])st="スキップ";
-    else if(called(i)){var m=tc.filter(function(c){return c.i===i});if(m.length){var rid=m[0].r;for(var j=0;j<RESULTS.length;j++)if(RESULTS[j].id===rid)st=RESULTS[j].l}else st="架電済"}
+    else if(calledInfo(i)){var rid=calledRes(i);st="架電済";for(var j=0;j<RESULTS.length;j++)if(RESULTS[j].id===rid)st=RESULTS[j].l}
     return[i+1,gf(r,"co"),gf(r,"ph"),gf(r,"pe"),gf(r,"ad"),st];
   });
   csvDownload("架電リスト_"+(U&&U.nm?U.nm:"")+"_"+td()+".csv",hd,rs);
@@ -5904,9 +6428,9 @@ function setupKbd(){
     if(V==="home"){
       if(ev.key==="n"||ev.key==="N"||ev.key==="ArrowRight"){if(ci<rows.length-1){ci++;render()}}
       else if(ev.key==="p"||ev.key==="P"||ev.key==="ArrowLeft"){if(ci>0){ci--;render()}}
-      else if(ev.key==="s"||ev.key==="S"){if(rows[ci]){skipped[ci]=true;sv("sk-"+U.id,skipped);flash("⏭ スキップ");goNext();render()}}
+      else if(ev.key==="s"||ev.key==="S"){if(rows[ci]){skipped[ci]=true;skipSave();flash("⏭ スキップ");goNext();render()}}
       else if(ev.key===" "||ev.key==="Enter"){ev.preventDefault();var ph=rows[ci]&&gf(rows[ci],"ph");if(ph){onPhoneTap();window.location.href="tel:"+telPhone(ph)}}
-      else if(ev.key==="c"||ev.key==="C"){V="call";ck={};tsec=0;selRes=null;bousou=[];endStep="";clearInterval(tref);trReset();tref=setInterval(function(){tsec++;var el=document.getElementById("tmr");if(el)el.textContent=timerStr(tsec)},1000);lockScreen();render()}
+      else if(ev.key==="c"||ev.key==="C"){if(!callCtx||ctxIndex(callCtx)!==ci)setCallCtx(ctxOf(ci));V="call";ck={};tsec=0;selRes=null;bousou=[];endStep="";clearInterval(tref);trReset();tref=setInterval(function(){tsec++;var el=document.getElementById("tmr");if(el)el.textContent=timerStr(tsec)},1000);lockScreen();render()}
       else if(ev.key==="l"||ev.key==="L"){V="list";render()}
       else if(ev.key==="/"){ev.preventDefault();V="list";listSearch="";render();setTimeout(function(){var el=document.getElementById("listSearch");if(el)el.focus()},100)}
       else if(ev.key==="u"||ev.key==="U"){if(U==="admin"){showImp=true;render()}else{flash("⚠️ リスト読込は管理者のみ可能です")}}
@@ -7246,6 +7770,7 @@ function admLoadTop(){
     render();
   }).catch(function(e){admTop.err=e.message;render()});
   directGasPost({type:"rec_auto_status"},30000).then(function(r){admTop.rec=(r&&r.result)||null;render()}).catch(function(){});
+  try{x110Load()}catch(eX){}   /* v110: 削除したアカウントの状態 */
   if(!admTop.timer)admTop.timer=setInterval(function(){if(U==="admin"&&admTok&&document.visibilityState==="visible")admLoadTop()},300000);
 }
 function admYm(ym){var p=String(ym||"").split("-");return p.length===2?p[0]+"年"+(+p[1])+"月":ym}
@@ -7288,6 +7813,7 @@ function admTopCards(){
       h+='<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-top:1px solid #f1f5f9;font-size:11.5px;flex-wrap:wrap"><b style="min-width:70px">'+htmlEsc(m.name)+'</b><span style="background:'+c[0]+';color:'+c[1]+';border-radius:10px;padding:1px 7px;font-weight:800;font-size:10.5px">'+m.state+'</span><span style="color:#64748b">今日 送信'+m.sentToday+'件／架電'+m.callsToday+'件'+(m.pending?'・待ち'+m.pending+'件':'')+(m.lastScanAt?'・最終 '+htmlEsc(String(m.lastScanAt).slice(5)):'')+'</span>'+(m.lastError?'<span style="color:#b91c1c;width:100%">⚠️ '+htmlEsc(m.lastError)+'</span>':'')+'</div>'});
     h+='<div style="font-size:10px;color:#94a3b8;margin-top:4px">「未接続」の人は、本人のスマホのホーム画面で「📂 録音フォルダをつなぐ」を1回押してもらってください。</div></div>';
   }
+  h+=x110AdminCards();   /* v110: 録音の保存先・連携の点検・集計の点検・削除したアカウント */
   /* セキュリティ */
   h+='<div id="admSecCard" style="'+card+'#e2e8f0"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><div style="font-size:13px;font-weight:800;color:#0f172a;flex:1">🔐 管理者のセキュリティ</div>';
   h+='<button data-admx="secPw" style="'+ADM_SUB+'">パスワード変更</button><button data-admx="secDev" style="'+ADM_SUB+'">登録端末</button><button data-admx="secNotify" style="'+ADM_SUB+'">通知の宛先</button><button data-admx="secKeys" style="'+ADM_SUB+'">連携キー</button><button data-admx="secOut" style="'+ADM_SUB+';color:#b91c1c;border-color:#fecaca">ログアウト</button></div>';
@@ -7394,6 +7920,7 @@ function raBoot(){
   if(!U||U==="admin"||asAppointer)return;
   if(RA.pin!==U.pin){RA.pin=U.pin;RA.handle=null;RA.perm="none";RA.loaded=false;RA.last=null;RA.err="";RA.pending=0}
   RA.mode=ld(raKey()+"-mode")||"move";
+  RA.dest=ld(raKey()+"-dest")||"";
   if(RA.loaded){if(RA.perm==="granted")raScan("start");return}
   RA.loaded=true;
   raIdbGet(raKey()).then(function(h){
@@ -7412,6 +7939,8 @@ function raPerm(ask){
 }
 function raConnect(){
   if(!RA.supported){flash("⚠️ このブラウザはフォルダを読めません。Chrome を最新にしてください");return}
+  /* v110: アプリを開いてすぐ（起動の処理より前）に押しても、つないだフォルダが外れないようにする */
+  if(U&&U!=="admin"&&RA.pin!==U.pin){RA.pin=U.pin;RA.loaded=true;RA.mode=ld(raKey()+"-mode")||"move";RA.dest=ld(raKey()+"-dest")||""}
   window.showDirectoryPicker({id:"kawashima-callrec",mode:"readwrite"}).then(function(h){
     RA.handle=h;RA.folderName=h.name||"";RA.perm="granted";RA.err="";RA.note="";
     raIdbPut(raKey(),h).catch(function(){RA.note="この端末ではフォルダを記憶できないため、アプリを開き直したら「つなぐ」をもう一度押してください"});
@@ -7419,6 +7948,14 @@ function raConnect(){
     else{vib([40,30,40]);flash("✅ 録音フォルダ「"+h.name+"」をつなぎました")}
     render();raScan("connect");
   }).catch(function(e){if(e&&e.name==="AbortError")return;flash("⚠️ フォルダを開けませんでした："+(e&&e.message||e))});
+}
+/* v110: 出勤を押した操作を使って、フォルダの許可を取り直す（アプリを開き直すと許可が外れるため。押し忘れを防ぐ） */
+function raOnClockIn(){
+  if(asAppointer||!RA.supported||!U||U==="admin")return;
+  if(RA.handle&&RA.perm!=="granted"){
+    raPerm(true).then(function(p){render();if(p==="granted"){flash("✅ 通話録音の自動保存を再開しました");raScan("clockin")}else flash("⚠️ 通話録音の自動保存が止まっています。ホームの「🔓 1回タップして再開」を押してください")});
+  }else if(RA.handle){raScan("clockin")}
+  else setTimeout(function(){flash("🎙 通話録音の自動保存が未設定です。ホームの「📂 録音フォルダをつなぐ」を押してください")},2600);
 }
 function raResume(){raPerm(true).then(function(p){render();if(p==="granted"){flash("✅ 自動送信を再開しました");raScan("resume")}else flash("⚠️ 許可されませんでした。もう一度押してください")})}
 function raListFiles(){
@@ -7432,11 +7969,20 @@ function raListFiles(){
   return step();
 }
 /* 1件を送って、ドライブ上で確かめる（確かめられたら {verified:true}） */
+function raNoteDest(r){
+  /* v110: 保存先（指定フォルダ）を表示用に覚える。指定フォルダに保存できず担当者フォルダへ回った件数も数える（管理者の画面に出す） */
+  try{
+    if(r&&r.path&&r.autosave!==false){RA.dest=String(r.path).split("/")[0];sv(raKey()+"-dest",RA.dest)}
+    if(r&&r.autosave===false){var fb=ld(raKey()+"-fb")||{};var dk=dateStr();if(fb.d!==dk)fb={d:dk,n:0};fb.n++;sv(raKey()+"-fb",fb)}
+  }catch(e){}
+}
+function raFallbackToday(){var fb=ld(raKey()+"-fb")||{};return fb.d===dateStr()?(fb.n||0):0}
 function raUploadVerified(f){
   var base={pin:U.pin,fileName:f.name,size:f.size,mimeType:f.type||"audio/mp4",lastModified:f.lastModified||0,auto:true};
   return directGasPost(Object.assign({type:"rec_upload_session"},base),60000).then(function(res){
     var r=res&&res.result;if(!r)throw new Error("一時URLを取得できません");
     if(r.skip)return {verified:true,already:true};
+    raNoteDest(r);
     return fetch(r.uploadUrl,{method:"PUT",headers:{"Content-Type":r.mimeType||"audio/mp4"},body:f})
       .then(function(x){if(!x.ok)throw new Error("アップロード失敗（"+x.status+"）");return x.json().catch(function(){return {}})})
       .then(function(j){
@@ -7447,7 +7993,7 @@ function raUploadVerified(f){
     /* 直接送れない環境の予備：小さいファイルは GAS 経由で送る（サーバーで大きさを確認） */
     if(f.size>25*1024*1024)throw e1;
     return recFileToBase64(f).then(function(b64){return directGasPost(Object.assign({type:"rec_upload",data:b64},base),300000)}).then(function(res){
-      var r=(res&&res.result)||{};if(r.ok&&r.verified!==false)return {verified:true,already:!!r.skipped};throw new Error(r.message||String(e1&&e1.message||e1));
+      var r=(res&&res.result)||{};if(r.ok&&r.verified!==false){if(!r.skipped)raNoteDest(r);return {verified:true,already:!!r.skipped}}throw new Error(r.message||String(e1&&e1.message||e1));
     });
   });
 }
@@ -7471,7 +8017,7 @@ function raScan(reason){
       function next(){
         if(i>=cand.length||Date.now()-started>150000){
           RA.busy=false;RA.pending=Math.max(0,cand.length-i);RA.last={at:Date.now(),ok:okN,ng:ngN,reason:reason};
-          if(okN)flash("🎙 録音を "+okN+"件 管理者のドライブへ送りました");
+          if(okN)flash("🎙 録音 "+okN+"件を「"+(RA.dest||"A アポインター毎日の架電音声")+"」へ保存しました");
           raReport(true);render();return {ok:okN,ng:ngN};
         }
         var f=cand[i++],k=f.name+"|"+f.size,rec=raLedger()[k];
@@ -7492,34 +8038,37 @@ function raReport(force){
   if(!U||U==="admin"||asAppointer||!GAS||!navigator.onLine)return;
   if(!force&&Date.now()-RA.reportAt<120000)return;RA.reportAt=Date.now();
   directGasPost({type:"rec_auto_report",pin:U.pin,state:{connected:!!RA.handle,perm:RA.perm,mode:RA.mode,lastScanAt:(RA.last&&RA.last.at)||0,
-    sentToday:raCountToday(),pending:RA.pending,lastError:RA.err,device:admDevName()}},20000).catch(function(){});
+    sentToday:raCountToday(),pending:RA.pending,lastError:RA.err,device:admDevName(),fallback:raFallbackToday()}},20000).catch(function(){});
 }
 function raCard(){
   if(asAppointer)return "";   /* 管理者が「○○として操作」しているときは出さない（その人のスマホで設定する） */
   var h='<div style="background:#fff;border-radius:14px;padding:12px;margin-bottom:10px;border:1.5px solid '+(RA.handle&&RA.perm==="granted"?"#86efac":"#c7d2fe")+'">';
-  h+='<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px"><div style="font-size:13px;font-weight:800;color:#1a237e;flex:1">🎙 通話録音の自動送信</div><button data-ra="help" style="background:none;border:none;color:#3730a3;font-size:11px;text-decoration:underline">'+(RA.help?"閉じる":"使い方")+'</button></div>';
+  h+='<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px"><div style="font-size:13px;font-weight:800;color:#1a237e;flex:1">🎙 通話録音の自動保存</div><button data-ra="help" style="background:none;border:none;color:#3730a3;font-size:11px;text-decoration:underline">'+(RA.help?"閉じる":"使い方")+'</button></div>';
   if(!RA.supported){
     h+='<div style="font-size:11.5px;color:#92400e;line-height:1.7">⚠️ このブラウザではフォルダを読めないため、自動送信が使えません。<br>Chrome（バージョン132以降）でこのアプリを開いてください。それまでは「録音をアップロード」から送れます。</div>';
   }else if(!RA.handle){
-    h+='<div style="font-size:11.5px;color:#334155;line-height:1.7;margin-bottom:8px">スマホの通話録音を、管理者のGoogleドライブへ<b>自動で移動</b>します。<b>最初の1回だけ</b>、録音のフォルダをつないでください。</div>';
+    h+='<div style="font-size:11.5px;color:#334155;line-height:1.7;margin-bottom:8px">スマホ（Galaxy A25）の通話録音を、Googleドライブの<b>「A アポインター毎日の架電音声」</b>へ<b>自動で保存</b>します。<b>最初の1回だけ</b>、録音のフォルダをつないでください。</div>';
     h+='<button data-ra="connect" style="width:100%;padding:13px;border:none;border-radius:11px;background:#1a237e;color:#fff;font-weight:800;font-size:14px;font-family:inherit">📂 録音フォルダをつなぐ（最初の1回だけ）</button>';
     if(RA.note)h+='<div style="font-size:10.5px;color:#92400e;margin-top:6px">'+htmlEsc(RA.note)+'</div>';
   }else if(RA.perm!=="granted"){
-    h+='<div style="font-size:11.5px;color:#92400e;line-height:1.7;margin-bottom:8px">⏸ 自動送信が止まっています（スマホやアプリを開き直したため、許可が外れました）。</div>';
-    h+='<button data-ra="resume" style="width:100%;padding:13px;border:none;border-radius:11px;background:#f59e0b;color:#fff;font-weight:800;font-size:14px;font-family:inherit">🔓 1回タップして自動送信を再開</button>';
+    h+='<div style="font-size:11.5px;color:#92400e;line-height:1.7;margin-bottom:8px">⏸ 自動保存が止まっています（スマホやアプリを開き直したため、許可が外れました）。<b>「出勤」を押したときにも、許可の確認が出ます</b>（「アクセスするたびに許可」のような選択肢が出たら、それを選ぶと次から確認が減ります）。</div>';
+    h+='<button data-ra="resume" style="width:100%;padding:13px;border:none;border-radius:11px;background:#f59e0b;color:#fff;font-weight:800;font-size:14px;font-family:inherit">🔓 1回タップして自動保存を再開</button>';
   }else{
     var L=RA.last;
-    h+='<div style="font-size:12px;color:#166534;font-weight:800">'+(RA.busy?"⏳ 送信中…":"✅ 自動送信 ON")+'<span style="font-weight:600;color:#475569">（フォルダ「'+htmlEsc(RA.folderName||"Call")+'」・'+(RA.mode==="move"?"送ったらスマホから消す":"スマホにも残す")+'）</span></div>';
-    h+='<div style="font-size:11px;color:#64748b;margin:3px 0 8px">今日 '+raCountToday()+'件 送信'+(RA.pending?'・待ち '+RA.pending+'件':'')+(L?'・最終確認 '+pad(new Date(L.at).getHours())+':'+pad(new Date(L.at).getMinutes()):'')+'</div>';
+    h+='<div style="font-size:12px;color:#166534;font-weight:800">'+(RA.busy?"⏳ 保存中…":"✅ 自動保存 ON")+'<span style="font-weight:600;color:#475569">（スマホの「'+htmlEsc(RA.folderName||"Call")+'」→ ドライブの「'+htmlEsc(RA.dest||"A アポインター毎日の架電音声")+'」・'+(RA.mode==="move"?"保存できたらスマホから消す":"スマホにも残す")+'）</span></div>';
+    h+='<div style="font-size:11px;color:#64748b;margin:3px 0 8px">今日 '+raCountToday()+'件 保存'+(RA.pending?'・待ち '+RA.pending+'件':'')+(L?'・最終確認 '+pad(new Date(L.at).getHours())+':'+pad(new Date(L.at).getMinutes()):'')+'</div>';
     h+='<div style="display:flex;gap:6px"><button data-ra="now" style="flex:1;padding:10px;border:1px solid #86efac;border-radius:9px;background:#f0fdf4;color:#166534;font-weight:800;font-size:12px;font-family:inherit">▶ 今すぐ送る</button><button data-ra="mode" style="padding:10px;border:1px solid #cbd5e1;border-radius:9px;background:#fff;color:#475569;font-weight:700;font-size:11px;font-family:inherit">'+(RA.mode==="move"?"⇄ 残す方式に":"⇄ 移動方式に")+'</button><button data-ra="connect" style="padding:10px;border:1px solid #cbd5e1;border-radius:9px;background:#fff;color:#475569;font-weight:700;font-size:11px;font-family:inherit">📂</button></div>';
   }
   if(RA.err)h+='<div style="font-size:10.5px;color:#b91c1c;margin-top:6px;line-height:1.5">⚠️ '+htmlEsc(RA.err)+'</div>';
   if(RA.help){
     h+='<div style="margin-top:8px;padding:9px;background:#f8fafc;border-radius:9px;font-size:11px;color:#334155;line-height:1.8">';
-    h+='<b>① Galaxy で自動録音をONにする</b>：電話アプリ → 右上の︙ → 設定 → 通話を録音 → 「通話の自動録音」をON（「すべての通話」）。<br>';
-    h+='<b>② フォルダをつなぐ</b>：「📂 録音フォルダをつなぐ」→「内部ストレージ」→「Recording」（または Recordings）→「Call」を開く →下の「このフォルダを使用」→「許可」。<br>';
-    h+='<b>③ あとは自動</b>：このアプリを開いている間、電話から戻るたびと3分ごとに新しい録音を送ります。ドライブで確認できたものだけスマホから消します（確認できないものは消しません）。<br>';
-    h+='<b>止まったとき</b>：スマホを再起動すると許可が外れることがあります。「🔓 1回タップして再開」を押してください。</div>';
+    h+='<b>① Galaxy A25 で通話の自動録音をONにする</b>（取扱説明書「通話を録音」）：ホーム画面の「電話」→ 右上の「︙」→「設定」→「通話を録音」→「通話の自動録音」をON（「すべての通話」）。<br>';
+    h+='　・「保存先」が表示されるとき（SDカードを入れているとき）は「内部ストレージ」を選んでください。<br>';
+    h+='　・「1カ月以上前の録音ファイルを削除」は、ONのままで構いません（保存できた録音は、このアプリがスマホから消します）。<br>';
+    h+='<b>② フォルダをつなぐ（最初の1回）</b>：「📂 録音フォルダをつなぐ」→「内部ストレージ」→「Recordings」→「Call」を開く → 下の「このフォルダを使用」→「許可」。<br>';
+    h+='<b>③ あとは自動</b>：このアプリを開いている間、電話から戻るたび・3分ごと・出勤と退勤のときに、新しい録音をドライブの「A アポインター毎日の架電音声」（年-月 → 日 のフォルダ）へ保存します。ファイル名は「氏名_日付_時刻_電話番号」です。ドライブで確認できたものだけスマホから消します（確認できないものは消しません）。<br>';
+    h+='<b>止まったとき</b>：アプリやスマホを開き直すと、フォルダの許可が外れることがあります。「出勤」を押すと許可の確認が出るので「許可」を選んでください（「アクセスするたびに許可」のような選択肢が出たら、そちら）。出ないときは「🔓 1回タップして再開」を押してください。<br>';
+    h+='<b>ご注意</b>：このアプリを閉じている間は保存されません（次に開いたときに、まとめて保存します）。</div>';
   }
   h+='</div>';
   return h;
@@ -7543,9 +8092,293 @@ document.addEventListener("visibilitychange",function(){
 window.addEventListener("online",function(){if(RA.handle)setTimeout(function(){raScan("online")},1500)});
 setInterval(function(){if(RA.handle&&RA.perm==="granted"&&document.visibilityState==="visible")raScan("timer")},RA_SCAN_MS);
 
+/* ══════════════════════════════════════════════════════════════════════
+   v110: 管理者の画面
+     ・取込の確認（何が入るか・前回との差・非表示の行・タブを1つに決められないときの選び直し）
+     ・連携の点検（だれが・どの元シートのどのタブを・どこまで架電したか／ズレ・飛ばした行）
+     ・集計の点検（特定の人の特定の時間帯が出ないとき、記録そのものから原因を確かめる）
+     ・録音の保存先（指定フォルダに保存できているか）／削除したアカウント
+   ══════════════════════════════════════════════════════════════════════ */
+var X110={imp:null,impBusy:false,health:null,healthBusy:false,diag:null,diagBusy:false,diagPin:"",diagDate:"",fix:null,fixBusy:false,rec:null,recBusy:false,acct:null,open:{}};
+var X110_BTN='padding:7px 11px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#334155;font-weight:700;font-size:11px;font-family:inherit';
+var X110_PRI='padding:11px;border:none;border-radius:10px;background:#1d4ed8;color:#fff;font-weight:800;font-size:13px;font-family:inherit;width:100%';
+function x110Name(pin){var n="";(STAFF||[]).forEach(function(s){if(String(s.pin)===String(pin))n=s.nm});return n||String(pin)}
+
+/* ── 取込：下見 → 確認 → 取込 ── */
+function previewExtImport(pin,opts){
+  if(!GAS||!navigator.onLine){flash("⚠️ オンライン接続が必要です");return}
+  opts=opts||{};
+  X110.impBusy=true;X110.imp=X110.imp&&X110.imp.pin===pin?X110.imp:{pin:pin,pv:null};X110.imp.hidden=opts.hidden||X110.imp.hidden||"";
+  flash("🔍 取り込み内容を確認しています…");render();
+  directGasPost({type:"ext_import",pin:pin,dryRun:true,hidden:X110.imp.hidden||undefined},90000).then(function(res){
+    X110.impBusy=false;
+    X110.imp={pin:pin,pv:(res&&res.preview)||{ok:false,message:"確認できませんでした"},hidden:X110.imp?X110.imp.hidden:"",filled:X110.imp?(X110.imp.filled||""):""};
+    render();
+  }).catch(function(err){X110.impBusy=false;X110.imp={pin:pin,pv:{ok:false,message:"確認できませんでした："+err.message}};render()});
+}
+function x110ImportRun(pin,mode){
+  if(X110.impBusy)return;
+  X110.impBusy=true;render();
+  flash("📥 元シートから取り込んでいます…");
+  var hid=(X110.imp&&X110.imp.hidden)||"",fil=(X110.imp&&X110.imp.filled)||"";
+  directGasPost({type:"ext_import",pin:pin,mode:mode||"auto",hidden:hid||undefined,filled:(fil==="done"||fil==="ignore")?fil:undefined},180000).then(function(res){
+    X110.impBusy=false;
+    var rp=(res&&res.reports&&res.reports[0])||null;
+    extReports=(res&&res.reports)||[];
+    if(rp&&!rp.ok&&(rp.code==="tab_conflict"||rp.code==="tab_missing")){X110.imp={pin:pin,pv:{ok:false,code:rp.code,message:rp.message,choices:rp.choices||[]}};render();return}
+    X110.imp=null;
+    if(rp&&rp.ok){vib([40,30,40]);flash(rp.unchanged?"✅ 元シートに変更はありません（リストと架電の続きは、そのままです）":("✅ 取り込みました："+rp.imported+"件"+(rp.newCycle?(rp.filledApplied?"（結果が入っていた "+rp.filledApplied+"行は架電済み・結果が空の行から）":"（1件目から）"):"（続きから・架電済み "+((rp.carried||0)+(rp.filledApplied||0))+"件）")))}
+    else flash("⚠️ "+((rp&&rp.message)||(res&&res.message)||"取り込めませんでした"));
+    try{fetchExtConfig()}catch(e){}
+    if(X110.health)x110Health(false);
+    render();
+  }).catch(function(err){X110.impBusy=false;flash("⚠️ 失敗: "+err.message);render()});
+}
+function x110PickTab(pin,gid){
+  X110.impBusy=true;render();
+  directGasPost({type:"ext_tab_pick",pin:pin,gid:gid},90000).then(function(){
+    X110.impBusy=false;flash("✅ タブを選び直しました。内容を確認してください");
+    try{fetchExtConfig()}catch(e){}
+    previewExtImport(pin);
+  }).catch(function(err){X110.impBusy=false;flash("⚠️ "+err.message);render()});
+}
+function x110Reset(pin){
+  showConfirm={title:"🔁 "+x110Name(pin)+" さんのリストを、最初からかけ直しますか？",
+    msg:"リストの中身はそのままで、「架電済み」の印と架電位置を消します。\n"+x110Name(pin)+" さんの画面は、次の同期（2分以内）で1件目に戻ります。\n\n※ これまでの架電結果（記録・集計・元シートに書いた内容）は消えません。",
+    yesLabel:"最初からかけ直す",onYes:function(){
+      showConfirm=null;render();
+      directGasPost({type:"ext_progress_reset",pin:pin},60000).then(function(res){
+        vib([40,30,40]);flash("✅ "+((res.result&&res.result.message)||"1件目からかけ直せるようにしました"));
+        X110.imp=null;if(X110.health)x110Health(false);try{fetchExtConfig()}catch(e){}render();
+      }).catch(function(err){flash("⚠️ "+err.message)});
+    },onNo:function(){showConfirm=null;render()}};
+  render();
+}
+/* 元シートの「結果」の列に値が入っている行を、架電済みにする（v109 のときに架電した行・元シートへ直接入力した行） */
+function x110Align(pin,n){
+  showConfirm={title:"🧩 "+x110Name(pin)+" さんの進捗を、元シートに合わせますか？",
+    msg:"元シートの「結果」の列に値が入っているのに、アプリでは未架電になっている "+(n||"")+"行を、「架電済み」にします。\n"+x110Name(pin)+" さんの画面は、2分以内に反映されます（その行には架電しなくなります）。\n\n※ 元シートの内容・これまでの架電結果は変えません。もう一度かけたいときは「最初から」を使ってください。",
+    yesLabel:"元シートに合わせる",onYes:function(){
+      showConfirm=null;render();
+      directGasPost({type:"ext_progress_from_sheet",pin:pin,apply:true},120000).then(function(res){
+        vib([40,30,40]);flash("✅ "+((res.result&&res.result.message)||"元シートに合わせました"));
+        if(X110.imp&&X110.imp.pin===pin)previewExtImport(pin);
+        if(X110.health)x110Health(true);
+        render();
+      }).catch(function(err){flash("⚠️ "+err.message)});
+    },onNo:function(){showConfirm=null;render()}};
+  render();
+}
+function x110Modal(){
+  var m=X110.imp;if(!m)return "";
+  var pv=m.pv,h='<div style="position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:290;display:flex;align-items:center;justify-content:center;padding:14px"><div id="x110Imp" style="background:#fff;border-radius:18px;padding:18px;max-width:440px;width:100%;max-height:92vh;overflow-y:auto">';
+  h+='<div style="font-size:16px;font-weight:800;color:#1a237e;margin-bottom:8px">📥 '+htmlEsc(x110Name(m.pin))+' さんのリストの取込</div>';
+  if(!pv||X110.impBusy){h+='<div style="padding:18px;text-align:center;color:#64748b;font-size:13px">⏳ 確認しています…</div>'}
+  else if(!pv.ok){
+    h+='<div style="background:#fffbeb;border:1.5px solid #f59e0b;border-radius:10px;padding:10px;font-size:12px;color:#92400e;line-height:1.7;margin-bottom:10px">'+htmlEsc(pv.message||"取り込めません")+'</div>';
+    if(pv.choices&&pv.choices.length){
+      h+='<div style="font-size:11px;color:#334155;font-weight:800;margin-bottom:6px">取り込むタブを選んでください</div>';
+      pv.choices.forEach(function(c){
+        h+='<button data-x110="pick" data-pin="'+htmlEsc(m.pin)+'" data-v="'+htmlEsc(c.gid)+'" style="display:block;width:100%;text-align:left;margin-bottom:6px;padding:10px;border:1.5px solid #bfdbfe;border-radius:10px;background:#eff6ff;font-family:inherit">';
+        h+='<div style="font-size:13px;font-weight:800;color:#1d4ed8">タブ「'+htmlEsc(c.name)+'」<span style="font-weight:600;color:#475569">（'+c.rows+'行）</span></div>';
+        h+='<div style="font-size:10.5px;color:#64748b;margin-top:2px">'+(c.sample&&c.sample.length?"先頭： "+htmlEsc(c.sample.join("、")):"（データなし）")+'</div></button>';
+      });
+    }
+    h+='<button data-x110="impClose" style="'+X110_BTN+';width:100%;padding:11px;margin-top:4px">閉じる</button>';
+  }else{
+    var row=function(k,v){return '<div style="display:flex;gap:8px;padding:4px 0;border-top:1px solid #f1f5f9;font-size:12px"><div style="min-width:86px;color:#64748b;font-weight:700">'+k+'</div><div style="flex:1;color:#0f172a;word-break:break-all">'+v+'</div></div>'};
+    h+=row("取り込み元",htmlEsc(pv.source||""));
+    h+=row("取り込み先",htmlEsc(pv.name)+" さんの架電リスト（ほかの方のリストは変えません）");
+    h+=row("件数","<b>"+pv.rows+"件</b>"+(pv.blank?"（会社名が空の行 "+pv.blank+"件は除外）":""));
+    h+=row("並び順","元シートの順番のまま　先頭： "+htmlEsc((pv.sample||[]).join("、"))+(pv.lastSample?"　…　末尾： "+htmlEsc(pv.lastSample):""));
+    var hidUnk=!!pv.hiddenUnknown;                           /* 「見えている行だけ」なのに、非表示の行を最後まで確かめられなかった */
+    var needHid=!!(pv.hidden&&!pv.hiddenSaved&&!m.hidden)||hidUnk;   /* 隠れている行の扱いを、まだ選んでいない（または選び直しが必要） */
+    if(pv.hidden||hidUnk){
+      h+='<div style="background:'+(needHid?"#fffbeb":"#f8fafc")+';border:'+(needHid?"2px solid #f59e0b":"1px solid #cbd5e1")+';border-radius:10px;padding:9px;margin:8px 0;font-size:11.5px;color:#334155;line-height:1.7">'+(hidUnk?'<b style="color:#b45309">'+htmlEsc(pv.hiddenUnknownMessage||"元シートの非表示の行を、最後まで確かめられませんでした")+'</b>':'元シートに、フィルタ・非表示で<b>隠れている行が '+pv.hidden+'件</b>あります。<br>'+(needHid?'<b style="color:#b45309">どちらで取り込むか、選んでください</b>（元シートで見えているリストと同じにするなら「見えている行だけ」）':'いまの設定：<b>'+(pv.hiddenMode==="exclude"?"取り込まない（見えている行だけ）":"隠れている行も取り込む（元シートの行をすべて）")+'</b>'));
+      h+='<div style="display:flex;gap:6px;margin-top:6px"><button data-x110="hid" data-pin="'+htmlEsc(m.pin)+'" data-v="include" style="'+X110_BTN+';flex:1'+(!needHid&&pv.hiddenMode!=="exclude"?";background:#eef2ff;border-color:#6366f1;color:#3730a3":"")+'">すべての行を取り込む</button><button data-x110="hid" data-pin="'+htmlEsc(m.pin)+'" data-v="exclude" style="'+X110_BTN+';flex:1'+(!needHid&&pv.hiddenMode==="exclude"?";background:#eef2ff;border-color:#6366f1;color:#3730a3":"")+'">見えている行だけ</button></div></div>';
+    }
+    /* 元シートの「結果」の列に、すでに値が入っている行（v109 のときに架電した行・直接入力した行・ほかの方が架電した行） */
+    var filN=Number(pv.filledNotDone)||0,isNewList=!pv.sameList&&!pv.unchanged;
+    var needFil=!!(filN&&isNewList&&!m.filled);    /* 新しいリストのときは、どちらにするか選んでから取り込む */
+    if(filN){
+      h+='<div style="background:'+(needFil?"#fffbeb":"#f8fafc")+';border:'+(needFil?"2px solid #f59e0b":"1px solid #cbd5e1")+';border-radius:10px;padding:9px;margin:8px 0;font-size:11.5px;color:#334155;line-height:1.7">元シートの「結果」の列に、<b>すでに値が入っているのに未架電の行が '+filN+'件</b>あります'+((pv.filledSample||[]).length?'（例： '+htmlEsc(pv.filledSample.join("、"))+'）':'')+'。<br>';
+      if(pv.unchanged)h+='架電済みにするときは、下の「元シートに合わせる」を押してください。';
+      else{
+        h+=(needFil?'<b style="color:#b45309">どちらで取り込むか、選んでください</b>':'この行の扱い：<b>'+(m.filled==="done"?"架電済みにする（結果が空の行から架電）":"未架電のまま（この行にも架電する）")+'</b>');
+        h+='<div style="display:flex;gap:6px;margin-top:6px"><button data-x110="fill" data-v="done" style="'+X110_BTN+';flex:1'+(m.filled==="done"?";background:#eef2ff;border-color:#6366f1;color:#3730a3":"")+'">架電済みにする</button><button data-x110="fill" data-v="ignore" style="'+X110_BTN+';flex:1'+(m.filled==="ignore"||(!m.filled&&!needFil)?";background:#eef2ff;border-color:#6366f1;color:#3730a3":"")+'">未架電のまま</button></div>';
+      }
+      h+='</div>';
+    }
+    (pv.warn||[]).filter(function(w){return String(w).indexOf("隠れている行")<0}).forEach(function(w){h+='<div style="font-size:11px;color:#b45309;line-height:1.6;margin-top:4px">⚠ '+htmlEsc(w)+'</div>'});
+    if(pv.sharedWith&&pv.sharedWith.length)h+='<div style="font-size:11.5px;color:#b91c1c;line-height:1.6;margin-top:6px;font-weight:700">⚠ このタブは '+htmlEsc(pv.sharedWith.join("・"))+' さんの連携先にもなっています。取り込みは止まります（各自のタブを指定してください）。</div>';
+    h+='<div style="margin-top:10px;padding:10px;border-radius:10px;font-size:12px;line-height:1.7;';
+    if(pv.unchanged){
+      h+='background:#ecfdf5;border:1.5px solid #6ee7b7;color:#065f46"><b>元シートに変更はありません。</b><br>取り込んでも何も変わりません。架電済み '+pv.done+'件の印と位置はそのままで、続きから架電できます。</div>';
+      if(filN)h+='<button data-x110="align" data-pin="'+htmlEsc(m.pin)+'" data-v="'+filN+'" style="'+X110_PRI+';margin-top:10px;background:#7c3aed">🧩 元シートに合わせる（'+filN+'行を架電済みにする）</button>';
+      h+='<button data-x110="impClose" style="'+X110_PRI+';margin-top:'+(filN?6:10)+'px'+(filN?";background:#fff;color:#334155;border:1px solid #cbd5e1":"")+'">閉じる（このまま続きから）</button>';
+    }else if(pv.sameList){
+      var df=pv.diff||{added:0,gone:0,moved:0};
+      h+='background:#eff6ff;border:1.5px solid #93c5fd;color:#1e3a8a"><b>同じ元シートの更新です（続きから架電できます）。</b><br>前回との差： 追加 '+df.added+'件・削除 '+df.gone+'件・行の移動 '+df.moved+'件<br>架電済み '+pv.done+'件のうち <b>'+pv.carry+'件</b>の印を引き継ぎます'+(pv.done>pv.carry?"（元シートから無くなった "+(pv.done-pv.carry)+"件を除く）":"")+'。</div>';
+      h+=needHid?'<div style="'+X110_PRI+';margin-top:10px;background:#cbd5e1;text-align:center;box-sizing:border-box">'+(hidUnk?"↑「すべての行を取り込む」を選んでください":"↑ 先に、隠れている行の扱いを選んでください")+'</div>':'<button data-x110="impGo" data-pin="'+htmlEsc(m.pin)+'" data-v="auto" style="'+X110_PRI+';margin-top:10px">📥 取り込む（続きから）</button>';
+    }else{
+      h+='background:#fffbeb;border:1.5px solid #fcd34d;color:#92400e"><b>新しいリストとして取り込みます（'+(filN&&m.filled==="done"?"結果が入っている "+filN+"行は架電済み・結果が空の行から":"1件目から")+'）。</b><br>いまの '+htmlEsc(pv.name)+' さんのリスト（'+pv.current+'件）は置き換わります。</div>';
+      h+=needHid?'<div style="'+X110_PRI+';margin-top:10px;background:#cbd5e1;text-align:center;box-sizing:border-box">'+(hidUnk?"↑「すべての行を取り込む」を選んでください":"↑ 先に、隠れている行の扱いを選んでください")+'</div>':(needFil?'<div style="'+X110_PRI+';margin-top:10px;background:#cbd5e1;text-align:center;box-sizing:border-box">↑ 先に、結果が入っている行の扱いを選んでください</div>':'<button data-x110="impGo" data-pin="'+htmlEsc(m.pin)+'" data-v="auto" style="'+X110_PRI+';margin-top:10px">📥 取り込む</button>');
+    }
+    if(pv.sameList)h+='<button data-x110="reset" data-pin="'+htmlEsc(m.pin)+'" style="'+X110_BTN+';width:100%;padding:10px;margin-top:6px;color:#b45309;border-color:#fcd34d">🔁 このリストを最初からかけ直す（架電済みの印を消す）</button>';
+    if(!pv.unchanged)h+='<button data-x110="impClose" style="'+X110_BTN+';width:100%;padding:10px;margin-top:6px">キャンセル</button>';
+  }
+  h+='</div></div>';
+  return h;
+}
+
+/* ── 連携の点検 ── */
+function x110Health(deep){
+  if(!GAS||!navigator.onLine){flash("⚠️ オンライン接続が必要です");return}
+  X110.healthBusy=true;render();
+  directGasPost({type:"ext_health",deep:deep===true},240000).then(function(res){
+    X110.healthBusy=false;X110.health=(res&&res.result)||null;render();
+  }).catch(function(err){X110.healthBusy=false;flash("⚠️ 点検できませんでした: "+err.message);render()});
+}
+/* ── 集計の点検 ── */
+function x110Diag(pinOpt,dateOpt){
+  var ps=document.getElementById("x110DiagPin"),ds=document.getElementById("x110DiagDate");
+  if(pinOpt){X110.diagPin=String(pinOpt);X110.diagDate=dateOpt||dateStr()}
+  else{X110.diagPin=ps?ps.value:X110.diagPin;X110.diagDate=ds?ds.value:X110.diagDate}
+  if(!X110.diagPin){flash("⚠️ 点検する方を選んでください");return}
+  X110.diagBusy=true;X110.fix=null;render();
+  directGasPost({type:"live_diag",pin:X110.diagPin,date:X110.diagDate||""},120000).then(function(res){
+    X110.diagBusy=false;X110.diag=(res&&res.result)||null;render();
+  }).catch(function(err){X110.diagBusy=false;flash("⚠️ 点検できませんでした: "+err.message);render()});
+}
+function x110Fix(apply){
+  var d=X110.diag;if(!d)return;
+  X110.fixBusy=true;render();
+  directGasPost({type:"live_fix_times",pin:d.pin,from:d.date,to:d.date,apply:apply===true},180000).then(function(res){
+    X110.fixBusy=false;X110.fix=(res&&res.result)||null;
+    if(apply){vib([40,30,40]);flash("✅ "+((X110.fix&&X110.fix.message)||"直しました"));x110Diag();try{fetchLive(null,true)}catch(e){}}
+    render();
+  }).catch(function(err){X110.fixBusy=false;flash("⚠️ "+err.message);render()});
+}
+/* ── 録音の保存先 ── */
+function x110RecCheck(){
+  X110.recBusy=true;render();
+  directGasPost({type:"rec_autosave_check"},120000).then(function(res){
+    X110.recBusy=false;X110.rec=(res&&res.result)||null;
+    flash(X110.rec&&X110.rec.writable?"✅ 保存先に書き込めます":"⚠️ 保存先に書き込めません");render();
+  }).catch(function(err){X110.recBusy=false;flash("⚠️ 確認できませんでした: "+err.message);render()});
+}
+function x110Load(){
+  if(!admTok||U!=="admin")return;
+  directGasPost({type:"acct_status"},30000).then(function(r){X110.acct=(r&&r.result)||null;render()}).catch(function(){});
+}
+function x110AdminCards(){
+  var h='',card='background:#fff;border-radius:14px;padding:12px;margin-bottom:12px;border:1.5px solid ';
+  /* 録音の保存先（指定フォルダ） */
+  var A=X110.rec||(admTop.rec&&admTop.rec.autosave)||null;
+  if(A){
+    var bad=A.ok===false||A.writable===false||(A.failures&&A.failures.count);
+    h+='<div id="x110Rec" style="'+card+(bad?"#ef4444":"#86efac")+'"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><div style="font-size:13px;font-weight:800;color:'+(bad?"#b91c1c":"#166534")+';flex:1">📁 録音の保存先：'+(A.ok?('<a href="'+htmlEsc(A.url||"#")+'" target="_blank" rel="noopener" style="color:inherit">'+htmlEsc(A.name||"指定フォルダ")+'</a>'):"開けません")+'</div><button data-x110="recCheck" style="'+X110_BTN+'">'+(X110.recBusy?"⏳ 確認中…":"保存できるか確認")+'</button></div>';
+    var tot=0,parts=[];Object.keys(A.today||{}).forEach(function(p){tot+=A.today[p];parts.push(x110Name(p)+" "+A.today[p]+"件")});
+    h+='<div style="font-size:11px;color:#475569;margin-top:4px;line-height:1.7">きょう届いた録音： <b>'+tot+'件</b>'+(parts.length?"（"+htmlEsc(parts.join("・"))+"）":"")+'　保存の形：「年-月」→「日」のフォルダに「氏名_日付_時刻_電話番号.m4a」</div>';
+    if(A.message)h+='<div style="font-size:11px;color:'+(bad?"#b91c1c":"#166534")+';margin-top:3px;line-height:1.6;font-weight:700">'+(bad?"⚠️ ":"")+htmlEsc(A.message)+'</div>';
+    if(A.failures&&A.failures.count)h+='<div style="font-size:11px;color:#b91c1c;margin-top:3px;line-height:1.6">⚠️ きょう、指定フォルダへ保存できなかった録音が '+A.failures.count+'件あります（'+htmlEsc(A.failures.at||"")+'・'+htmlEsc(A.failures.last||"")+'）。録音は担当者フォルダに保存してあり、共有を直すと自動で指定フォルダへ写します。</div>';
+    if(A.ok===false||A.writable===false)h+='<div style="font-size:11px;color:#7f1d1d;margin-top:4px;line-height:1.7;background:#fef2f2;border-radius:8px;padding:7px">直し方：Googleドライブでこのフォルダを開き、「共有」→ <b>'+htmlEsc(A.owner||CONFIG.GAS_OWNER_EMAIL)+'</b> を <b>編集者</b> として追加してください。</div>';
+    h+='</div>';
+  }
+  /* 連携の点検 */
+  h+='<div id="x110Health" style="'+card+'#c4b5fd"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><div style="font-size:13px;font-weight:800;color:#5b21b6;flex:1">🔗 元スプレッドシート連携の点検</div><button data-x110="health" style="'+X110_BTN+'">'+(X110.healthBusy?"⏳ 点検中…":"点検する")+'</button><button data-x110="healthDeep" style="'+X110_BTN+'">元シートも開いて点検</button></div>';
+  var H=X110.health;
+  if(!H)h+='<div style="font-size:11px;color:#64748b;margin-top:4px;line-height:1.6">だれが・どの元シートのどのタブを・どこまで架電したか、元シートとズレていないかを確かめます。架電結果は、保存した瞬間に元シートへ書き込みます（退勤時にもまとめて反映）。</div>';
+  else{
+    h+='<div style="font-size:10px;color:#94a3b8;margin:3px 0 6px">'+htmlEsc(H.at||"")+' 時点'+(H.deep?"（元シートも確認）":"")+'・保存した瞬間の反映：'+(H.realtime?"ON":"OFF")+'</div>';
+    (H.members||[]).forEach(function(m){
+      if(!m.set){h+='<div style="padding:6px 0;border-top:1px solid #f1f5f9;font-size:11.5px;color:#94a3b8"><b style="color:#475569">'+htmlEsc(m.name)+'</b>　連携は未設定です</div>';return}
+      var ok=!m.issues.length;
+      h+='<div style="padding:7px 0;border-top:1px solid #f1f5f9">';
+      h+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px"><b>'+htmlEsc(m.name)+'</b><span style="background:'+(ok?"#dcfce7":"#fef3c7")+';color:'+(ok?"#166534":"#92400e")+';border-radius:10px;padding:1px 7px;font-weight:800;font-size:10.5px">'+(ok?"問題なし":"要確認 "+m.issues.length)+'</span><span style="flex:1"></span>';
+      h+='<button data-x110="imp" data-pin="'+m.pin+'" style="'+X110_BTN+';padding:4px 9px;color:#1d4ed8;border-color:#bfdbfe">取込</button><button data-x110="sync" data-pin="'+m.pin+'" style="'+X110_BTN+';padding:4px 9px;color:#059669;border-color:#6ee7b7">反映</button><button data-x110="reset" data-pin="'+m.pin+'" style="'+X110_BTN+';padding:4px 9px;color:#b45309;border-color:#fcd34d">最初から</button>'+(m.sheetOnly?'<button data-x110="align" data-pin="'+m.pin+'" data-v="'+m.sheetOnly+'" style="'+X110_BTN+';padding:4px 9px;color:#fff;background:#7c3aed;border-color:#7c3aed">元シートに合わせる（'+m.sheetOnly+'件）</button>':'')+'</div>';
+      h+='<div style="font-size:10.5px;color:#475569;line-height:1.7;margin-top:2px">元シート： <a href="'+htmlEsc(m.sourceUrl||"#")+'" target="_blank" rel="noopener" style="color:#6d28d9">'+htmlEsc(m.sourceTitle||"（名前は「元シートも開いて点検」で表示）")+'</a> ／ タブ「'+htmlEsc(m.tab||"")+'」'+(m.importedAt?"・取込 "+htmlEsc(m.importedAt):"")+'<br>';
+      h+='リスト '+m.listCount+'件・<b>架電済み '+m.done+'件</b>'+(m.lastCo?"（最後： "+htmlEsc(m.lastCo)+(m.lastAt?" "+htmlEsc(m.lastAt):"")+"）":"")+(m.next?"・<b>次は "+m.next.no+"件目 "+htmlEsc(m.next.co)+"</b>（元シート "+m.next.src+"行目）":(m.listCount&&m.done>=m.listCount?"・最後まで架電済み":""))+(m.cycleAt?"・進捗の開始 "+htmlEsc(m.cycleAt):"");
+      if(m.pending!==undefined&&m.pending!==null)h+='<br>元シートにまだ書かれていない結果： '+(m.pending?'<b style="color:#b45309">'+m.pending+'セル</b>':"なし");
+      if(m.drift)h+='・元シートの変更： 追加 '+m.drift.added+'／削除 '+m.drift.gone+'／移動 '+m.drift.moved;
+      h+='</div>';
+      m.issues.forEach(function(x){h+='<div style="font-size:11px;color:#b45309;line-height:1.6">⚠ '+htmlEsc(x)+'</div>'});
+      if(m.gaps&&m.gaps.length){
+        var op=!!X110.open["g"+m.pin];
+        h+='<button data-x110="gaps" data-pin="'+m.pin+'" style="background:none;border:none;color:#6d28d9;font-size:10.5px;text-decoration:underline;padding:2px 0;font-family:inherit">'+(op?"閉じる":"順番の途中で架電していない行を見る（"+m.gapCount+"件）")+'</button>';
+        if(op)m.gaps.forEach(function(g){h+='<div style="font-size:10.5px;color:#475569;padding-left:8px">・'+g.no+'件目（元シート '+g.src+'行目） '+htmlEsc(g.co)+' — '+htmlEsc(g.why)+'</div>'});
+      }
+      h+='</div>';
+    });
+  }
+  h+='</div>';
+  /* 集計の点検 */
+  h+='<div id="x110Diag" style="'+card+'#fcd34d"><div style="font-size:13px;font-weight:800;color:#92400e;margin-bottom:6px">📊 集計の点検（特定の人・特定の時間帯が出ないとき）</div>';
+  h+='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><select id="x110DiagPin" style="flex:1;min-width:120px;padding:8px;border:1px solid #cbd5e1;border-radius:8px;font-size:12px;font-family:inherit"><option value="">— 点検する方 —</option>';
+  (STAFF||[]).forEach(function(s){h+='<option value="'+htmlEsc(s.pin)+'"'+(X110.diagPin===s.pin?" selected":"")+'>'+htmlEsc(s.nm)+'</option>'});
+  h+='</select><input id="x110DiagDate" type="date" value="'+htmlEsc(X110.diagDate||dateStr())+'" style="padding:7px;border:1px solid #cbd5e1;border-radius:8px;font-size:12px;font-family:inherit"><button data-x110="diag" style="'+X110_BTN+'">'+(X110.diagBusy?"⏳…":"点検")+'</button></div>';
+  var D=X110.diag;
+  if(D){
+    h+='<div style="margin-top:8px;font-size:11.5px;color:#334155;line-height:1.7"><b>'+htmlEsc(D.name)+'</b>　'+htmlEsc(D.date)+'　サーバーに届いた記録 <b>'+D.rows+'件</b></div>';
+    var hrs={};Object.keys(D.byHour||{}).forEach(function(k){hrs[k]=1});Object.keys(D.byIdHour||{}).forEach(function(k){hrs[k]=1});
+    var hk=Object.keys(hrs).map(Number).sort(function(a,b){return a-b});
+    if(hk.length){
+      h+='<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:10.5px;margin:4px 0"><tr><td style="padding:2px 6px;color:#64748b">時</td>';
+      hk.forEach(function(k){h+='<td style="padding:2px 6px;text-align:center;color:#64748b">'+k+'</td>'});
+      h+='</tr><tr><td style="padding:2px 6px;color:#64748b;white-space:nowrap">集計（シートの時刻）</td>';
+      hk.forEach(function(k){h+='<td style="padding:2px 6px;text-align:center;font-weight:800">'+((D.byHour||{})[k]||"")+'</td>'});
+      h+='</tr><tr><td style="padding:2px 6px;color:#64748b;white-space:nowrap">実際（記録した瞬間）</td>';
+      hk.forEach(function(k){var a=(D.byIdHour||{})[k]||0,b=(D.byHour||{})[k]||0;h+='<td style="padding:2px 6px;text-align:center;font-weight:800;color:'+(a!==b?"#b91c1c":"#166534")+'">'+(a||"")+'</td>'});
+      h+='</tr></table></div>';
+    }
+    (D.notes||[]).forEach(function(x){h+='<div style="font-size:11.5px;color:#7c2d12;line-height:1.7;margin-top:3px">・'+htmlEsc(x)+'</div>'});
+    if(D.shifted||D.otherDate){
+      h+='<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap"><button data-x110="fixDry" style="'+X110_BTN+'">'+(X110.fixBusy?"⏳…":"過去の時刻を直す（まず件数を確認）")+'</button>';
+      if(X110.fix&&!X110.fix.apply&&X110.fix.toFix)h+='<button data-x110="fixApply" style="'+X110_BTN+';background:#b45309;color:#fff;border-color:#b45309">'+X110.fix.toFix+'行を日本時間に直す</button>';
+      h+='</div>';
+      if(X110.fix)h+='<div style="font-size:11px;color:#475569;margin-top:3px">'+htmlEsc(X110.fix.message||"")+'（もとの値は「端末の時刻」列に残します）</div>';
+    }
+  }else h+='<div style="font-size:10.5px;color:#64748b;margin-top:4px;line-height:1.6">その日の記録を1件ずつ確かめ、「端末の時計・タイムゾーン」「名前の表記」「送信の遅れ・未送信」のどれが原因かを表示します。</div>';
+  h+='</div>';
+  /* 削除したアカウント */
+  var C=X110.acct;
+  if(C&&C.list&&C.list.length){
+    h+='<div style="'+card+(C.done?"#e2e8f0":"#ef4444")+';font-size:11.5px;color:#475569;line-height:1.7"><b style="color:'+(C.done?"#334155":"#b91c1c")+'">🗑 削除したアカウント：</b> '+htmlEsc(C.list.map(function(a){return a.name+"（"+a.pin+"）"}).join("・"))+'　'+(C.done?'<span style="color:#166534;font-weight:800">削除済み</span>（名簿・暗証番号・各設定を削除。架電結果・勤怠の記録は残しています）':'<span style="color:#b91c1c;font-weight:800">まだ名簿に残っています</span> <button data-x110="acctPurge" style="'+X110_BTN+'">いま削除する</button>')+'</div>';
+  }
+  return h;
+}
+document.addEventListener("click",function(e){
+  var el=e.target&&e.target.closest?e.target.closest("[data-x110]"):null;
+  if(!el)return;
+  var a=el.getAttribute("data-x110"),pin=el.getAttribute("data-pin")||"",v=el.getAttribute("data-v")||"";
+  e.preventDefault();
+  if(a==="impClose"){X110.imp=null;render();return}
+  if(a==="imp"){previewExtImport(pin);return}
+  if(a==="impGo"){x110ImportRun(pin,v||"auto");return}
+  if(a==="pick"){x110PickTab(pin,v);return}
+  if(a==="hid"){previewExtImport(pin,{hidden:v});return}
+  if(a==="reset"){x110Reset(pin);return}
+  if(a==="align"){x110Align(pin,v);return}
+  if(a==="fill"){if(X110.imp){X110.imp.filled=v;render()}return}
+  if(a==="sync"){runExtSync(pin,false);return}
+  if(a==="health"){x110Health(false);return}
+  if(a==="healthDeep"){x110Health(true);return}
+  if(a==="gaps"){X110.open["g"+pin]=!X110.open["g"+pin];render();return}
+  if(a==="diag"){x110Diag();return}
+  if(a==="diagOpen"){x110Diag(pin,dateStr());setTimeout(function(){try{var el2=document.getElementById("x110Diag");if(el2&&el2.scrollIntoView)el2.scrollIntoView({block:"center"})}catch(eS){}},500);return}
+  if(a==="fixDry"){x110Fix(false);return}
+  if(a==="fixApply"){if(confirm("シートに書かれた日付・時刻を、記録した瞬間の日本時間に直します。よろしいですか？\n（もとの値は「端末の時刻」列に残します）"))x110Fix(true);return}
+  if(a==="recCheck"){x110RecCheck();return}
+  if(a==="acctPurge"){directGasPost({type:"acct_purge"},120000).then(function(r){X110.acct=(r&&r.result)||null;flash("✅ 削除しました");try{fetchRoster(true)}catch(e2){}render()}).catch(function(err){flash("⚠️ "+err.message)});return}
+});
+
 function render(){
 try{
 if(!__rosterBoot){ __rosterBoot=true; try{loadRosterCache()}catch(e){} setTimeout(function(){try{fetchRoster(true)}catch(e){}},900); setTimeout(function(){try{admResume()}catch(e){}},400); setTimeout(function(){try{srvVersionCheck()}catch(e){}},1500); }
+/* v110: 結果の入力中は、発信した瞬間に固定した架電先の行を表示する（途中で位置が動いても、かけた会社の画面のまま） */
+if(V==="call"&&callCtx&&U&&U!=="admin"){try{var cxr=ctxIndex(callCtx);if(cxr>=0&&cxr!==ci)ci=cxr}catch(eCx){}}
+/* v110: 通話中に待たせていた同期を、通話が終わったら反映する */
+if(syncState.pending&&!syncState.applying&&U&&U!=="admin"&&!callBusy()){syncState.applying=true;setTimeout(function(){syncState.applying=false;try{afterCallSync()}catch(eAp){}},0)}
 var root=document.getElementById("root"),h="",isA=U==="admin",cur=rows[ci]||null;
 
 /* v20: アップロード進捗オーバーレイ */
@@ -7575,6 +8408,9 @@ if(lastSaved&&!isA&&(Date.now()-lastSaved.at<UNDO_MS)){
   h+='<div style="height:3px;background:rgba(255,255,255,.15)"><div style="height:100%;background:#f59e0b;animation:undoShrink '+UNDO_MS+'ms linear forwards"></div></div>';
   h+='</div>';
 }
+
+/* v110: 取込の確認（管理者） */
+if(isA&&X110.imp){try{h+=x110Modal()}catch(eXm){}}
 
 /* 確認ダイアログ */
 if(showConfirm){
@@ -8402,6 +9238,8 @@ if(V==="admin"){
         h+=' <button class="exImp" data-pin="'+c.pin+'" data-set="'+(c.set?"1":"0")+'" style="font-size:10px;color:'+(c.set?"#1d4ed8":"#94a3b8")+';background:'+(c.set?"#eff6ff":"#f8fafc")+';border:1px solid '+(c.set?"#bfdbfe":"#e2e8f0")+';border-radius:6px;padding:4px 8px;font-weight:700">取込</button>';
         h+=' <button class="exOne" data-pin="'+c.pin+'" data-set="'+(c.set?"1":"0")+'" style="font-size:10px;color:'+(c.set?"#059669":"#94a3b8")+';background:'+(c.set?"#ecfdf5":"#f8fafc")+';border:1px solid '+(c.set?"#6ee7b7":"#e2e8f0")+';border-radius:6px;padding:4px 8px;font-weight:700">反映</button>';
         h+='</td></tr>';
+        /* v110: どの元シートの・どのタブを・いつ・何件取り込んだか（取り違えに気づけるように） */
+        if(c.set)h+='<tr><td colspan="4" style="padding:0 6px 6px;font-size:9.5px;color:#64748b;line-height:1.5">'+htmlEsc(c.srcTitle||"")+(c.sheetName?(c.srcTitle?" ／ ":"")+'タブ「'+htmlEsc(c.sheetName)+'」':'')+(c.importedAt?'・取込 '+htmlEsc(c.importedAt)+(c.importedCount?'（'+c.importedCount+'件）':''):'・<span style="color:#b45309">まだ取り込んでいません</span>')+(c.hiddenMode==="除外"?'・非表示の行は除外':'')+'</td></tr>';
         /* v94/v104: 未設定の方、または前回の結果がエラーの方は、URL入力欄を出して即準備できるようにする */
         var needFix=(!c.set)||(c.lastResult&&/開けません|見つかりません|未設定|ありません|失敗/.test(String(c.lastResult)));
         if(needFix){
@@ -9525,12 +10363,16 @@ if(V==="admin"){
           hrCells+='<span style="display:inline-block;min-width:30px;text-align:center;padding:1px 2px;margin-right:2px;border-radius:4px;background:'+(v2>0?"rgba(59,130,246,"+Math.min(1,v2/15)+")":"#f8fafc")+';color:'+(v2>=8?"#fff":"#64748b")+';font-size:9px">'+hh2+'時<br><b>'+(v2||"-")+'</b></span>';
         }
         if(hasHr){
-          h+='<tr><td colspan="8" style="padding:2px 5px 8px;font-size:9px;color:#94a3b8">時間帯別: '+hrCells+'</td></tr>';
+          h+='<tr><td colspan="8" style="padding:2px 5px 8px;font-size:9px;color:#94a3b8">時間帯別: '+hrCells+(((lv.early||0)+(lv.over||0))>0?'<span style="margin-left:6px;color:#64748b">（9時より前 '+(lv.early||0)+'件・18時より後 '+(lv.over||0)+'件は、9時・18時の欄に含めています）</span>':'')+'</td></tr>';
+        }
+        /* v110: 集計が合わない原因になる端末の状態（未送信・時計のずれ・タイムゾーン・古い版・古いリスト・名前の表記）を知らせる */
+        if(lv.warnings&&lv.warnings.length){
+          h+='<tr><td colspan="8" style="padding:2px 5px 8px;font-size:10px;color:#b45309;line-height:1.6;background:#fffbeb">'+lv.warnings.map(function(w){return "⚠ "+htmlEsc(w)}).join("<br>")+(lv.pin?' <button data-x110="diagOpen" data-pin="'+htmlEsc(lv.pin)+'" style="margin-left:6px;padding:2px 8px;border:1px solid #f59e0b;border-radius:6px;background:#fff;color:#b45309;font-size:10px;font-weight:800;font-family:inherit">点検</button>':'')+'</td></tr>';
         }
       });
       h+='</tbody></table></div>';
     }
-    h+='<div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center"><div style="font-size:9px;color:#94a3b8">※「結果」「アポ」「時間帯別」は、サーバーに届いた架電記録（架電結果シート）から集計（同じ記録は1件）。「状態」「リスト進捗」は各端末から2分ごとに届く情報で、⚠は10分以上届いていない端末です。</div><button id="expLive" style="padding:5px 10px;border:1px solid #10b981;border-radius:6px;background:#ecfdf5;color:#059669;font-size:10px;font-weight:700;white-space:nowrap;margin-left:8px">📥 CSV</button></div>';
+    h+='<div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center"><div style="font-size:9px;color:#94a3b8">※ v110: 時刻はサーバーが日本時間で決め、人は PIN で決めます（端末の時計・タイムゾーン・名前の表記に左右されません）。「結果」「アポ」「時間帯別」は、サーバーに届いた架電記録（架電結果シート）から集計（同じ記録は1件）。「状態」「リスト進捗」は各端末から2分ごとに届く情報で、⚠は10分以上届いていない端末です。</div><button id="expLive" style="padding:5px 10px;border:1px solid #10b981;border-radius:6px;background:#ecfdf5;color:#059669;font-size:10px;font-weight:700;white-space:nowrap;margin-left:8px">📥 CSV</button></div>';
     h+='</div>';
     /* v30: リーダーボード (本日・結果数ランキング - Dialpad方式) */
     var lbRanked=adminLive.slice().filter(function(l){return l.status!=="未出勤"}).sort(function(a,b){
@@ -9581,12 +10423,12 @@ if(V==="admin"){
     h+='<div style="background:#fff;border-radius:12px;padding:12px;text-align:center;border:1px solid #e2e8f0"><div style="font-size:22px">'+k[3]+'</div><div style="font-size:24px;font-weight:800;color:'+k[2]+';line-height:1.1;margin-top:2px">'+k[1]+'</div><div style="font-size:10px;color:#64748b;margin-top:2px">'+k[0]+'</div></div>';
   });
   h+='</div>';
-  /* 全員ヒートマップ (本日 9-17時) */
+  /* 全員ヒートマップ (本日 9-18時)。v110: 18時の列を追加（v109 は 18時台を 17時の列に入れていた） */
   h+='<div style="background:#fff;border-radius:14px;padding:14px;border:1px solid #e2e8f0;margin-bottom:14px">';
   h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:6px;flex-wrap:wrap"><div style="font-size:13px;font-weight:800;color:#1a237e">⏰ 本日 1時間ごと架電数 (全員)</div><div style="font-size:10px;color:'+(srvOk?"#7c3aed":"#b45309")+'">'+todStr+(srvOk?'・サーバーの記録（'+Math.round((Date.now()-adminLiveAt)/1000)+'秒前）':'・⚠ この端末の保存データ（「📡 リアルタイム現況」で最新になります）')+'</div></div>';
-  h+='<div style="overflow-x:auto"><table style="width:100%;font-size:11px;border-collapse:collapse;min-width:520px">';
+  h+='<div style="overflow-x:auto"><table style="width:100%;font-size:11px;border-collapse:collapse;min-width:560px">';
   h+='<thead><tr><th style="padding:5px;text-align:left;color:#64748b;font-weight:700">アポインター</th>';
-  for(var hh=9;hh<=17;hh++){h+='<th style="padding:5px;text-align:center;color:#64748b;font-weight:700;width:38px">'+hh+'時</th>'}
+  for(var hh=9;hh<=18;hh++){h+='<th style="padding:5px;text-align:center;color:#64748b;font-weight:700;width:38px">'+hh+'時</th>'}
   h+='<th style="padding:5px;text-align:right;color:#64748b;font-weight:700;width:36px">合計</th>';
   h+='<th style="padding:5px;text-align:right;color:#64748b;font-weight:700;width:32px">🎯</th></tr></thead><tbody>';
   /* 各アポインターの行 */
@@ -9594,23 +10436,23 @@ if(V==="admin"){
   STAFF.forEach(function(s){
     var cl=ld("h-"+s.id)||[],todCalls=cl.filter(function(c){return c.d===todStr});
     var hCount={},apCnt=0,todTotal=todCalls.length;
-    for(var hh=9;hh<=17;hh++)hCount[hh]=0;
+    for(var hh=9;hh<=18;hh++)hCount[hh]=0;
     var lvH=liveBy[s.pin];
     if(srvOk){
       /* v108: サーバーの記録（JSTの時間帯・同じ記録は1件）を使う */
       var hrs=(lvH&&lvH.hoursRaw)||{};
-      Object.keys(hrs).forEach(function(x){var n=+x;if(n<9)n=9;if(n>17)n=17;hCount[n]+=hrs[x]});
+      Object.keys(hrs).forEach(function(x){var n=+x;if(n<9)n=9;if(n>18)n=18;hCount[n]+=hrs[x]});
       apCnt=lvH?(lvH.apoCount||0):0;todTotal=lvH?(lvH.resultCount||0):0;
     }else todCalls.forEach(function(c){
       if(!c.tm)return;
       var hr=parseInt(String(c.tm).slice(0,2));if(isNaN(hr))return;
-      if(hr<9)hr=9;if(hr>17)hr=17;
+      if(hr<9)hr=9;if(hr>18)hr=18;
       hCount[hr]++;
       if(c.r==="appo")apCnt++;
     });
     allHrCounts.push(hCount);
     h+='<tr style="border-top:1px solid #f1f5f9"><td style="padding:6px 5px;font-weight:700;color:#1a237e">'+s.nm+'</td>';
-    for(var hh=9;hh<=17;hh++){
+    for(var hh=9;hh<=18;hh++){
       var v=hCount[hh];
       var bg="#fafbfc",col="#cbd5e1";
       if(v>0){
@@ -9625,7 +10467,7 @@ if(V==="admin"){
   });
   /* 合計行 */
   h+='<tr style="border-top:2px solid #cbd5e1;background:#f8fafc"><td style="padding:6px 5px;font-weight:800;color:#475569">合計</td>';
-  for(var hh=9;hh<=17;hh++){var sum=0;allHrCounts.forEach(function(hc){sum+=hc[hh]||0});h+='<td style="padding:6px 5px;text-align:center;font-weight:800;color:'+(sum>0?"#1a237e":"#cbd5e1")+'">'+(sum||"")+'</td>'}
+  for(var hh=9;hh<=18;hh++){var sum=0;allHrCounts.forEach(function(hc){sum+=hc[hh]||0});h+='<td style="padding:6px 5px;text-align:center;font-weight:800;color:'+(sum>0?"#1a237e":"#cbd5e1")+'">'+(sum||"")+'</td>'}
   h+='<td style="padding:6px 5px;text-align:right;font-weight:800;color:#1a237e">'+totC+'</td>';
   h+='<td style="padding:6px 5px;text-align:right;font-weight:800;color:#f59e0b">'+totA+'</td>';
   h+='</tr></tbody></table></div>';
@@ -9692,16 +10534,17 @@ else if(V==="home"&&!isA){
   var pendingCBcount=cbs.filter(function(c){return!c.done}).length;
   h+=verBanner(false);   /* v109 */
   h+=raCard();   /* v109: 通話録音の自動送信 */
+  h+=syncBanner();   /* v110: サーバーと同期できていないときの警告（リストが古い可能性） */
 
   /* v62: 本日の稼働予定（士気を高める表示）*/
   (function(){
     var plan=todayShiftPlan();
     var nowS=now().slice(0,5);
-    var dowJ=["日","月","火","水","木","金","土"][new Date().getDay()];
-    var dNow=new Date();
+    var dNow=jstD();   /* v110: 日本時間の日付（getUTC〜 で読む） */
+    var dowJ=["日","月","火","水","木","金","土"][dNow.getUTCDay()];
     if(!plan){
       h+='<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;padding:12px;margin-bottom:10px">';
-      h+='<div style="font-size:11px;color:#64748b;font-weight:700">📅 '+(dNow.getMonth()+1)+'/'+dNow.getDate()+'（'+dowJ+'）本日の稼働予定は登録されていません</div>';
+      h+='<div style="font-size:11px;color:#64748b;font-weight:700">📅 '+(dNow.getUTCMonth()+1)+'/'+dNow.getUTCDate()+'（'+dowJ+'）本日の稼働予定は登録されていません</div>';
       h+='<div style="font-size:10px;color:#94a3b8;margin-top:3px">シフト画面から登録すると、ここに本日の勤務時間が表示されます</div>';
       h+='</div>';
       return;
@@ -9731,7 +10574,7 @@ else if(V==="home"&&!isA){
     }
     h+='<div style="background:'+bg+';border:2px solid '+accent+';border-radius:14px;padding:12px;margin-bottom:10px">';
     h+='<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">';
-    h+='<div style="flex:1"><div style="font-size:10px;color:'+accent+';font-weight:800;letter-spacing:.04em">'+(dNow.getMonth()+1)+'/'+dNow.getDate()+'（'+dowJ+'）本日の稼働予定</div>';
+    h+='<div style="flex:1"><div style="font-size:10px;color:'+accent+';font-weight:800;letter-spacing:.04em">'+(dNow.getUTCMonth()+1)+'/'+dNow.getUTCDate()+'（'+dowJ+'）本日の稼働予定</div>';
     h+='<div style="font-size:19px;font-weight:800;color:#1e293b;margin-top:2px;letter-spacing:-.01em">'+plan.start+' 〜 '+plan.end+'</div>';
     var brs=[];
     (plan.breaks||[]).forEach(function(b){brs.push(b.start+"〜"+b.end)});
@@ -9929,12 +10772,13 @@ else if(V==="home"&&!isA){
     h+='</div>';
   }
 
+  h+=progressBanner();   /* v110: 元シートの順番で、どこまで架電したか */
   /* 架電カード */
   if(rows.length>0&&cur){
     var cSk=skipped[ci];var phone=gf(cur,"ph");var fmtP=fmtPhone(phone);
     h+='<div style="background:#fff;border-radius:14px;padding:14px;border:2px solid '+(cSk?"#f59e0b":"#3b82f6")+';margin-bottom:10px">';
     if(cSk)h+='<div style="background:#fef3c7;padding:5px 10px;border-radius:6px;font-size:11px;color:#92400e;margin-bottom:8px;font-weight:700">⏭ スキップ済み</div>';
-    h+='<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#94a3b8"><span>架電先 '+(ci+1)+'/'+rows.length+(skC>0?' (スキップ'+skC+')':'')+'</span><span>残り'+rows.filter(function(_,i){return show(i)}).length+'件</span></div>';
+    h+='<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#94a3b8"><span>架電先 '+(ci+1)+'/'+rows.length+(skC>0?' (スキップ'+skC+')':'')+'</span><span>残り'+rows.filter(function(_,i){return show(i)&&!called(i)}).length+'件</span></div>';
     h+='<div style="font-size:18px;font-weight:800;margin-top:4px">'+(gf(cur,"co")||"行"+(ci+1))+'</div>';
     if(gf(cur,"pe"))h+='<div style="font-size:13px;color:#64748b;margin-top:2px">👤 '+gf(cur,"pe")+'</div>';
     if(gf(cur,"ad"))h+='<div style="font-size:11px;color:#94a3b8;margin-top:2px">📍 '+gf(cur,"ad")+'</div>';
@@ -10027,7 +10871,7 @@ else if(V==="home"&&!isA){
 
   /* メニュー (v11: 集計・シフト追加, v21: アポインターには「リスト読込」非表示) */
   h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px">';
-  var unc=rows.filter(function(_,i){return show(i)}).length;
+  var unc=rows.filter(function(_,i){return show(i)&&!called(i)}).length;   /* v110: まだ架電していない行の数 */
   h+='<button id="ml" style="padding:14px 8px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;font-size:12px;font-weight:700;text-align:center"><div style="font-size:20px">📑</div>リスト<br><span style="font-size:10px;color:#94a3b8">残'+unc+'</span></button>';
   h+='<button id="ma" style="padding:14px 8px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;font-size:12px;font-weight:700;text-align:center"><div style="font-size:20px">🎯</div>アポ<br><span style="font-size:10px;color:#94a3b8">'+appos.length+'件</span></button>';
   h+='<button id="mc" style="padding:14px 8px;border:1px solid '+(pendingCBcount?"#f59e0b":"#e2e8f0")+';border-radius:12px;background:'+(pendingCBcount?"#fffbeb":"#fff")+';font-size:12px;font-weight:700;text-align:center"><div style="font-size:20px">'+(pendingCBcount?'<span class="bell">🔔</span>':"📞")+'</div>再架電<br><span style="font-size:10px;color:'+(pendingCBcount?"#f59e0b":"#94a3b8")+';font-weight:'+(pendingCBcount?700:400)+'">'+pendingCBcount+'件</span></button>';
@@ -10067,9 +10911,13 @@ else if(V==="home"&&!isA){
 
 /* ========== 通話・チェックリスト ========== */
 else if(V==="call"){
-  var phone=cur?gf(cur,"ph"):"";var fmtP=fmtPhone(phone);
-  h+='<div style="padding:10px 14px;background:#fff;border-bottom:1px solid #e2e8f0;border-radius:12px;margin-bottom:8px"><div style="font-size:15px;font-weight:800">'+(cur?gf(cur,"co"):"—")+'</div>';
-  if(cur&&gf(cur,"pe"))h+='<div style="font-size:12px;color:#64748b;margin-top:1px">👤 '+gf(cur,"pe")+'</div>';
+  /* v110: いまのリストに無い先（再架電のお知らせからの発信）は、固定した架電先を表示する（リストの行は表示しない） */
+  var offCx=(callCtx&&callCtx.off&&ctxIndex(callCtx)<0)?callCtx:null;
+  var phone=offCx?(offCx.ph||""):(cur?gf(cur,"ph"):"");var fmtP=fmtPhone(phone);
+  h+='<div style="padding:10px 14px;background:#fff;border-bottom:1px solid #e2e8f0;border-radius:12px;margin-bottom:8px"><div style="font-size:15px;font-weight:800">'+(offCx?htmlEsc(offCx.co||"(会社名なし)"):(cur?gf(cur,"co"):"—"))+'</div>';
+  if(offCx){if(offCx.pe)h+='<div style="font-size:12px;color:#64748b;margin-top:1px">👤 '+htmlEsc(offCx.pe)+'</div>'}
+  else if(cur&&gf(cur,"pe"))h+='<div style="font-size:12px;color:#64748b;margin-top:1px">👤 '+gf(cur,"pe")+'</div>';
+  if(callCtx&&callCtx.cb)h+='<div style="font-size:10px;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:5px 8px;margin-top:5px;font-weight:700;line-height:1.6">🔔 再架電の先です。結果はこの会社に記録します'+(offCx?'（いまのリストには無い会社なので、リストの位置は動かしません）':'（保存したら、発信の前に表示していた行へ戻ります）')+'</div>';
   /* v53: 現在位置（リストの何件目か） */
   /* v80: PC発信の切替は「オートコールのON/OFFに関係なく」常に見える場所に置く */
   if(isPCEnv()||pcDialMode){
@@ -10099,8 +10947,8 @@ else if(V==="call"){
     if(pcDialCount)h+='<span style="font-size:9px;color:#059669;font-weight:800">'+pcDialCount+'件</span>';
     h+='</div>';
   }
-  h+='<div style="display:flex;align-items:center;gap:6px;margin-top:3px"><span style="font-size:10px;color:#7c3aed;font-weight:800">📍 '+(ci+1)+' / '+rows.length+' 件目（リストの並び順）</span>';
-  if(ci>0)h+='<button id="toTop" style="padding:3px 8px;border:1px solid #ddd6fe;border-radius:6px;background:#f5f3ff;color:#6d28d9;font-size:9px;font-weight:800;font-family:inherit">⏮ 1件目へ</button>';
+  h+='<div style="display:flex;align-items:center;gap:6px;margin-top:3px"><span style="font-size:10px;color:#7c3aed;font-weight:800">📍 '+(offCx?'リスト外（再架電）':((ci+1)+' / '+rows.length+' 件目（リストの並び順）'))+'</span>';
+  if(ci>0&&!offCx)h+='<button id="toTop" style="padding:3px 8px;border:1px solid #ddd6fe;border-radius:6px;background:#f5f3ff;color:#6d28d9;font-size:9px;font-weight:800;font-family:inherit">⏮ 1件目へ</button>';
   h+='</div>';
   /* v43: この番号への累計通話時間 */
   (function(){
@@ -10875,7 +11723,7 @@ else if(V==="list"){
   var tcL=tdc();
   rows.forEach(function(_,i){
     if(skipped[i])counts.skipped++;
-    else if(called(i)){counts.called++;var m=tcL.filter(function(c){return c.i===i});if(m.length&&m[0].r==="appo")counts.appo++}
+    else if(calledInfo(i)){counts.called++;if(calledRes(i)==="appo")counts.appo++}
     else counts.uncalled++;
   });
   h+='<div style="display:flex;gap:5px;margin-bottom:10px;overflow-x:auto;padding:2px">';
@@ -11270,6 +12118,7 @@ B("manualDialBtn",function(){
 
 B("sc",function(){
   /* 手動でチェックリストへ：タイマーは0から（手動の場合は通話自動検出無し） */
+  if(!callCtx||ctxIndex(callCtx)!==ci)setCallCtx(ctxOf(ci));   /* v110: いま表示している架電先を固定 */
   ck={};tsec=0;selRes=null;bousou=[];endStep="";clearInterval(tref);trReset();
   tref=setInterval(function(){tsec++;var el=document.getElementById("tmr");if(el)el.textContent=timerStr(tsec)},1000);
   V="call";lockScreen();render();
@@ -11297,11 +12146,15 @@ Array.prototype.slice.call(document.querySelectorAll(".afYN")).forEach(function(
     af[b.getAttribute("data-k")]=b.getAttribute("data-v");vib(20);render();
   });
 });
-B("bk",function(){if(V==="appo")goNext();V="home";unlockScreen();render()});
+B("bk",function(){if(V==="appo")advanceAfterCall();else if(V==="call"&&!CALL_PENDING)dropCallCtx();V="home";unlockScreen();try{afterCallSync()}catch(e){}render()});
 B("pv",function(){if(ci>0){ci--;render()}});
 B("nx",function(){if(ci<rows.length-1){ci++;render()}});
-B("sk",function(){skipped[ci]=true;sv("sk-"+U.id,skipped);vib(30);flash("⏭ スキップ");goNext();render()});
-B("us",function(){skipped={};sv("sk-"+U.id,{});flash("全解除");render()});
+B("sk",function(){skipped[ci]=true;skipSave();vib(30);flash("⏭ スキップ");goNext();render()});
+B("us",function(){skipped={};skipSave();listDone=false;flash("全解除");render()});
+/* v110: 同期の再試行・手前の未架電へ戻る・不在の先をもう一巡 */
+B("syncRetry",function(){if(!U||U==="admin")return;loading=true;render();loadFromGAS(U,function(ok,info){loading=false;flash(ok?"✅ 同期しました":"⚠️ まだ同期できません（"+String(info||"").slice(0,40)+"）");render()})});
+B("gapBack",function(){var g=nextUncalled(0,ci);if(g>=0){ci=g;savePos();vib(30);flash("↩ "+(gf(rows[ci],"co")||"")+"（"+(ci+1)+"件目）に戻りました");render()}});
+B("repassBtn",function(){startRepass()});
 /* v21: 「サーバーから取得」 - loadFromGASを使う (アポインターも管理者も両方対応) */
 B("rf",function(){
   if(U&&U!=="admin"){
@@ -11387,7 +12240,7 @@ B("mresync",function(){
   if(U&&U!=="admin"){
     setTimeout(function(){try{fetchRecSelf()}catch(e){}},2500);
     loading=true;render();
-    /* v63: 手動の再同期は「リストを取り直す」操作なので、必ず1件目から始める */
+    /* v110: 再同期しても、同じリストなら続きから（v63〜v109 は必ず1件目に戻していた） */
     loadFromGAS(U,function(ok,info){
       loading=false;
       if(ok){
@@ -11406,7 +12259,7 @@ B("mresync",function(){
         vib([100,60,100]);
       }
       render();
-    },{forceTop:true});
+    });
   }
 });
 B("upMain",function(){
@@ -11535,7 +12388,7 @@ document.querySelectorAll("[data-voice]").forEach(function(el){
     startVoice(id);
   });
 });
-B("cancelCall",function(){CALL_PENDING=false;CALL_INIT_AT=null;render()});
+B("cancelCall",function(){CALL_PENDING=false;CALL_INIT_AT=null;dropCallCtx();try{afterCallSync()}catch(e){}render()});
 
 /* tel: タップを記録 */
 var phLnk=document.getElementById("phLnk");
@@ -11730,8 +12583,8 @@ B("pcTest",function(){
   });
 })();
 B("pcRedial",function(){
-  var cur2=rows[ci]||null;
-  var ph2=cur2?normPh(gf(cur2,"ph")):"";
+  var cxR=curCtx();   /* v110: 通話中の会社（固定した架電先）へかけ直す */
+  var ph2=cxR?normPh(cxR.ph):"";
   if(!ph2){flash("⚠️ 電話番号がありません");return}
   try{
     var a2=document.createElement("a");a2.href="tel:"+ph2;a2.style.display="none";
@@ -11784,23 +12637,21 @@ var cbAlertDialEl=document.getElementById("cbAlertDial");
 if(cbAlertDialEl)cbAlertDialEl.addEventListener("click",function(){
   var c=showCbAlert;
   showCbAlert=null;
-  CALL_INIT_AT=Date.now();
-  CALL_PENDING=!pcDialMode;   /* v79 */
-  bumpCallCount();
-  if(c)setLastCalled(c.co||"");
-  ck={};selRes=null;bousou=[];endStep="";tsec=0;clearInterval(tref);trReset();
-  vib(40);
+  /* v110: 再架電の相手を架電先として固定する。
+     v109 は固定しておらず、通話のあとの結果入力が「そのとき表示していたリストの行」の会社で開き、その行に記録していた
+     （＝別の会社に結果が付く → 元シートのその行に書かれる → その行は架電していないのに飛ばされる） */
+  cbDialStart(c);
 });
 
 /* v28: NGリスト */
 B("ngSkipNext",function(){
-  skipped[ci]=true;sv("sk-"+U.id,skipped);
+  skipped[ci]=true;skipSave();
   goNext();vib(40);flash("⏭ NG番号をスキップしました");render();
 });
 B("addNgBtn",function(){
-  var cur2=rows[ci]||null;
-  if(!cur2){flash("⚠️ 対象がありません");return}
-  var ph2=gf(cur2,"ph"),co2=gf(cur2,"co");
+  var cxN=curCtx();   /* v110: 通話している会社（固定した架電先）。リストに無い再架電の先でも、その番号を登録する */
+  if(!cxN){flash("⚠️ 対象がありません");return}
+  var ph2=cxN.ph,co2=cxN.co;
   if(!ph2){flash("⚠️ 電話番号がありません");return}
   var reason=prompt("NG登録の理由を入力してください (任意)\n例: コール拒否 / クレーム / 廃業","コール拒否");
   if(reason===null)return;
@@ -11826,6 +12677,7 @@ B("autoQuickStart",function(){
   CALL_INIT_AT=Date.now();
   CALL_PENDING=!pcDialMode;   /* v79 */
   bumpCallCount();
+  setCallCtx(ctxOf(ci));   /* v110: 発信した架電先を固定 */
   setLastCalled(gf(cur2,"co"));
   ck={};selRes=null;bousou=[];endStep="";tsec=0;clearInterval(tref);trReset();
   vib([40,30,60]);
@@ -11998,12 +12850,12 @@ if(lst){
   var qn=q.replace(/[^\d]/g,"");  /* 数字のみ (電話番号検索用) */
   var filtered=[];
   rows.forEach(function(row,i){
-    var cl=called(i),sk=skipped[i];
+    var cl=!!calledInfo(i),sk=skipped[i];   /* v110: 架電済みは、このリスト（進捗）での記録。きょうだけではない */
     /* フィルタ */
     if(listFilter==="uncalled"&&(cl||sk))return;
     if(listFilter==="skipped"&&!sk)return;
     if(listFilter==="called"&&!cl)return;
-    if(listFilter==="appo"){var m=tc.filter(function(c){return c.i===i});if(!m.length||m[0].r!=="appo")return}
+    if(listFilter==="appo"){if(calledRes(i)!=="appo")return}
     /* 検索 */
     if(q){
       var co=String(gf(row,"co")||"").toLowerCase();
@@ -12023,7 +12875,7 @@ if(lst){
     filtered.forEach(function(f){
       var row=f.row,i=f.i,cl=f.cl,sk=f.sk;
       var ri=null;
-      if(cl){var m=tc.filter(function(c){return c.i===i});if(m.length)RESULTS.forEach(function(r){if(r.id===m[0].r)ri=r})}
+      if(cl){var rid0=calledRes(i);RESULTS.forEach(function(r){if(r.id===rid0)ri=r})}   /* v110: このリストでの最新の結果 */
       var ph=gf(row,"ph"),pe=gf(row,"pe"),co=gf(row,"co"),ad=gf(row,"ad");
       var fp=ph?fmtPhone(ph):"";
       var d=document.createElement("div");
@@ -12132,13 +12984,21 @@ function renderCBItem(c,done){
       histHtml+='</div></details>';
     }
   }
-  d.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><b style="color:'+(done?"#94a3b8":overdue?"#dc2626":"#92400e")+';font-size:14px">'+(overdue&&!done?"⏰ 期限超過 ":"")+dtJP(dt)+(c.noTime?' <span style="font-size:10px;color:#94a3b8">(時間未定)</span>':'')+'</b>'+(done?'<span style="font-size:10px;background:#dcfce7;color:#166534;padding:2px 8px;border-radius:6px;font-weight:700">✓完了</span>':'')+'</div><div style="font-size:13px;color:#475569;line-height:1.7"><div style="font-weight:700">'+(c.co||"—")+'</div>'+(c.pe?'<div>👤 '+esc(c.pe)+'</div>':'')+(ph?'<div><a href="tel:'+ph+'" style="color:#3b82f6;font-weight:700;text-decoration:none;font-family:monospace">📞 '+fp+'</a></div>':'')+(c.memo?'<div>💬 '+esc(c.memo)+'</div>':'')+'</div>'+histHtml+(!done?'<button data-cbdone="'+c.id+'" style="margin-top:8px;width:100%;padding:8px;border:1px solid #10b981;border-radius:8px;background:#ecfdf5;color:#059669;font-size:12px;font-weight:700">✓ 完了にする</button>':'');
+  d.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><b style="color:'+(done?"#94a3b8":overdue?"#dc2626":"#92400e")+';font-size:14px">'+(overdue&&!done?"⏰ 期限超過 ":"")+dtJP(dt)+(c.noTime?' <span style="font-size:10px;color:#94a3b8">(時間未定)</span>':'')+'</b>'+(done?'<span style="font-size:10px;background:#dcfce7;color:#166534;padding:2px 8px;border-radius:6px;font-weight:700">✓完了</span>':'')+'</div><div style="font-size:13px;color:#475569;line-height:1.7"><div style="font-weight:700">'+(c.co||"—")+'</div>'+(c.pe?'<div>👤 '+esc(c.pe)+'</div>':'')+(ph?'<div><a href="tel:'+ph+'" data-cbcall="'+c.id+'" style="color:#3b82f6;font-weight:700;text-decoration:none;font-family:monospace">📞 '+fp+'</a></div>':'')+(c.memo?'<div>💬 '+esc(c.memo)+'</div>':'')+'</div>'+histHtml+(!done?'<button data-cbdone="'+c.id+'" style="margin-top:8px;width:100%;padding:8px;border:1px solid #10b981;border-radius:8px;background:#ecfdf5;color:#059669;font-size:12px;font-weight:700">✓ 完了にする</button>':'');
   return d;
 }
 var cbList=document.getElementById("cbList");
 if(cbList){cbs.filter(function(c){return!c.done}).forEach(function(c){cbList.appendChild(renderCBItem(c,false))})}
 var cbDoneList=document.getElementById("cbDoneList");
 if(cbDoneList){cbs.filter(function(c){return c.done}).slice(0,20).forEach(function(c){cbDoneList.appendChild(renderCBItem(c,true))})}
+/* v110: 再架電リストの電話番号から発信 → 通話のあと、その会社で結果を入力できる（架電数にも数える） */
+document.querySelectorAll("[data-cbcall]").forEach(function(el){
+  el.addEventListener("click",function(){
+    var id=parseInt(el.getAttribute("data-cbcall")),c=null;
+    cbs.forEach(function(x){if(x.id===id)c=x});
+    if(c)cbDialStart(c);
+  });
+});
 document.querySelectorAll("[data-cbdone]").forEach(function(el){
   el.addEventListener("click",function(){
     var id=parseInt(el.getAttribute("data-cbdone"));
@@ -12210,8 +13070,9 @@ if("serviceWorker" in navigator){
 /* 初期描画 */
 render();
 
-/* 起動時にキューがあれば送信 */
-setTimeout(flushSQ,500);
+/* 起動時にキューがあれば送信。v110: 以前の版で「送信失敗」に回された記録も、自動で送り直す */
+setTimeout(function(){try{dlqAutoResend()}catch(e){}flushSQ()},500);
+try{purgeDeletedLocal()}catch(ePd){}
 
 /* v13: キーボードショートカット初期化 */
 setupKbd();

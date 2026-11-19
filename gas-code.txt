@@ -1,5 +1,11 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v111
+// 川嶋メソッド テレアポ管理 — GAS完全版 v112
+// v112: ⑴ 設定シートは「1人に1行」：PIN が 0 で始まる人（091 など）の行が、以前の版の保存で増えていた。
+//          「外部連携設定」は、画面が先頭の1行を表示・保存するのに、取込は全部の行を順に実行していた（最後に取り込んだ別のリストが残る）。
+//          読むときに1人1行にまとめ、余分な行は「◯◯_退避」シートへ移す。「録音設定」「KPI目標」も、読む行と保存する行をそろえた。
+//       ⑵ 会社スケジュール（休業・行事）を管理者が登録する。休業（シフト登録不可）の日の出勤は、登録できない。
+//       ⑶ SV不在を管理者が登録する。不在の間、アポインターの画面に「LINE の返事はすぐに来ません」と出す。
+//       ⑷ 架電ルール（不在の先への掛け直し：何回まで・何時間あけて）を管理者が決め、サーバーの架電結果から掛け直せる先を決める。
 // v111: ⑴ 通話録音の自動保存先を変更（CONFIG.REC_AUTOSAVE_FOLDER）。以前の保存先の録音も、架電記録との紐づけに使う。
 //       ⑵ アポイント台帳：アポ取得報告を、指定のスプレッドシート（CONFIG.APPO_LEDGER）へ商談日の順に自動で登録する。
 //       ⑶ 架電リスト（元シート）の各社の行に「架電回数（自動）」「架電履歴（自動）」（かけた日時・結果）を自動で書く。
@@ -213,14 +219,15 @@ var CONFIG = {
 var SHEET_ID = CONFIG.SHEET_ID;
 var ADMIN_SHEET_ID = CONFIG.ADMIN_SHEET_ID;
 // v95: この GAS がどの版で、どの機能に対応しているか
-var GAS_VERSION = "v111";
+var GAS_VERSION = "v112";
 var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
   "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run",
   "ext_prepare","pl_dashboard","pl_ledger","pl_projects","pl_bank","pl_quality","pl_bank_drive","jp_holidays",   // v105-107: 収支・損益・銀行明細
   "notify_log","notify_retry","shift_registered","shift_status","shift_admin_days","live_server","ext_list_id","ext_import_preview","roster_check",   // v108
   "adm_auth","shift_receipt","shift_pending","rec_auto","kanri_key_props",   // v109
   "acct_delete","live_v110","live_diag","fetch_rank","list_meta","list_progress","pos_v110","ext_v110","ext_health","ext_realtime","rec_autosave",   // v110
-  "appo_v111","appo_checks","apo_ledger","list_registry","ext_history","call_report","proj_board"];   // v111
+  "appo_v111","appo_checks","apo_ledger","list_registry","ext_history","call_report","proj_board",   // v111
+  "ext_one_row","company_calendar","sv_absence","dial_rules","recall_server","pin_rows"];   // v112
 // 名簿（稼働中）→ PIN・氏名・姓・メール。起動時に「アポインター名簿」シートの内容で置き換わる（rosterApply_）
 var PIN_MAP = {}, FULL_NAME_MAP = {}, STAFF_EMAILS = {};
 (function () {
@@ -440,7 +447,8 @@ function doPost(e) {
     var READ_ONLY_TYPES = ["fetch_state", "fetch_live", "status_update", "fetch_all_shifts", "notify_log", "roster_get", "roster_check", "config_check", "shift_status",
       "shift_pending", "rec_auto_status", "adm_status", "adm_session", "adm_devices", "adm_kanri_keys", "adm_notify_get",   // v109
       "list_meta", "fetch_rank", "live_diag", "ext_health", "rec_autosave_check", "acct_status",   // v110
-      "apl_status", "rep_lists", "rep_build", "proj_board"];   // v111
+      "apl_status", "rep_lists", "rep_build", "proj_board",   // v111
+      "cal_get", "cal_list", "rules_get", "pin_rows_audit"];   // v112
     var idemOn = !!(d.clientReqId && READ_ONLY_TYPES.indexOf(d.type) < 0);
     if (idemOn) {
       var idempSeen = idemSeen_(d.clientReqId);
@@ -481,6 +489,9 @@ function doPostRoute_(d) {
         message: "このアカウント（" + delAcc.name + "）は削除されています。管理者にお問い合わせください" });
     }
     // v111: アポ取得報告・アポイント台帳・架電報告書・案件別の進み具合
+    // v112: 会社スケジュール・SV不在・架電ルール・設定シートの整理（連携の操作の前には、連携設定の余分な行を片付ける）
+    var v112Res = v112Handle_(d);
+    if (v112Res) return v112Res;
     var v111Res = v111Handle_(d);
     if (v111Res) return v111Res;
     // v110: 新しい要求（リストの版・順位・集計の点検・連携の点検・タブの選び直し など）
@@ -723,6 +734,10 @@ function doPostRoute_(d) {
       // v110: リストの版（件数・署名）と、進捗（架電済みの元行・最後に架電した行）
       try { result.listMeta = listMeta_(d.pin, true); } catch (lmErr) {}
       try { result.prog = progForClient_(d.pin); } catch (pgErr) { result.progError = String(pgErr); }
+      // v112: 会社スケジュール・SV不在／架電ルール（不在の掛け直し）と、その判断に使う「不在の先」の架電回数
+      try { result.cal = calForClient_(); } catch (calErr) {}
+      try { result.rules = rulesGet_(); } catch (ruErr) {}
+      try { result.recall = recallBuild_(d.pin); } catch (rcErr) { result.recallError = String(rcErr); }
 
       // v57→v110: 架電位置（どの端末で保存したものでも返す。同じリストで、端末内の記録より新しければ、画面がそれを使う）
       try {
@@ -1505,6 +1520,7 @@ function doPostRoute_(d) {
           var c = raCfgs[ri];
           if (!c.enabled) continue;
           if (raPin && String(c.pin) !== raPin) continue;
+          if (!raPin && !FULL_NAME_MAP[c.pin]) continue;   // v112
           var one = { pin: c.pin, name: FULL_NAME_MAP[c.pin] || c.name || "" };
           if (d.skipImport !== true) {
             var im = importFromExternal_(c, { mode: "auto" });   // v110: 元シートに変更が無ければ何も変えない（架電の続きもそのまま）
@@ -2676,7 +2692,20 @@ function parseResultMap_(s) {
   return map;
 }
 // 設定シートを読み込む
+// v112: 1人に1つ。同じ人の行が複数あるとき（PIN が 91 と 091 で保存されていた）は、先頭の行だけを使う（管理者の画面が表示・保存する行）。
+//       v111 までは全部の行を返していたため、取込・反映が行の数だけ実行され、最後の行のリストが残っていた
+var EXT_CFG_DUP_ = {};      // この実行で見つけた余分な行（PIN → 行数）
 function readExtConfigs_() {
+  var all = readExtConfigsRaw_(), seen = {}, out = [], dup = {};
+  for (var i = 0; i < all.length; i++) {
+    var c = all[i];
+    if (seen[c.pin]) { dup[c.pin] = (dup[c.pin] || 0) + 1; continue; }
+    seen[c.pin] = true; out.push(c);
+  }
+  EXT_CFG_DUP_ = dup;
+  return out;
+}
+function readExtConfigsRaw_() {
   var ss = SpreadsheetApp.openById(SHEET_ID);
   var sh = ensureSheet(ss, EXT_CONFIG_SHEET, EXT_CONFIG_HEADER);
   var out = [];
@@ -2690,7 +2719,7 @@ function readExtConfigs_() {
       row: i + 1, pin: rosterNormPin_(r[0]), name: String(r[1] || ""),   // v104: PINの先頭ゼロ消え（"012"→12）を補正
       ssId: extractSsId_(r[2]), sheetName: String(r[3] || ""),
       headerRow: Number(r[4]) || 1,
-      gid: String(r[5] || ""),
+      gid: (r[5] === 0 || r[5] === "0") ? "0" : String(r[5] || ""),   // v112: 先頭のタブ（GID 0）が、空として読まれていた
       colCompany: colToIndex_(r[6]), colPhone: colToIndex_(r[7]),
       colPerson: colToIndex_(r[8]), colAddress: colToIndex_(r[9]),
       colName: colToIndex_(r[10]), colStep: colToIndex_(r[11]),
@@ -2821,6 +2850,7 @@ function importExternalAll(pinFilter, opts) {
   for (var i = 0; i < cfgs.length; i++) {
     if (pinFilter && String(cfgs[i].pin) !== String(pinFilter)) continue;
     if (!pinFilter && !cfgs[i].enabled) continue;   // v110: 全員分のときは、無効にした設定を取り込まない
+    if (!pinFilter && !FULL_NAME_MAP[cfgs[i].pin]) continue;   // v112: 全員分のときは、名簿にいない方（退職した方）の設定を使わない
     reports.push(importFromExternal_(cfgs[i], opts));
   }
   return reports;
@@ -2887,6 +2917,7 @@ function syncExternalAll(pinFilter, dryRun) {
   var reports = [];
   for (var i = 0; i < cfgs.length; i++) {
     if (pinFilter && String(cfgs[i].pin) !== String(pinFilter)) continue;
+    if (!pinFilter && !FULL_NAME_MAP[cfgs[i].pin]) continue;   // v112
     reports.push(syncExternalFor_(cfgs[i], dryRun));
   }
   return reports;
@@ -4484,7 +4515,14 @@ function recIngestAll(days, rootFolderId, inboxFolderId) {
   return out;
 }
 
+// v112: 1人に1つ。同じ人の行が複数あるときは、最後の行（これまで実際に使われていた行）だけを使う。保存（writeRecConfig_）も同じ行に書く
 function readRecConfigs_() {
+  var all = readRecConfigsRaw_(), last = {}, out = [];
+  all.forEach(function (c, i) { last[c.pin] = i; });
+  all.forEach(function (c, i) { if (last[c.pin] === i) out.push(c); });
+  return out;
+}
+function readRecConfigsRaw_() {
   var ss = SpreadsheetApp.openById(SHEET_ID);
   var sh = ensureSheet(ss, REC_CONFIG_SHEET, REC_CONFIG_HEADER);
   var out = [];
@@ -4513,7 +4551,8 @@ function writeRecConfig_(c) {
   var found = -1;
   if (sh.getLastRow() > 1) {
     var v = sh.getDataRange().getValues();
-    for (var i = 1; i < v.length; i++) { if (rosterNormPin_(v[i][0]) === rp && pinOwnerOk_(rp, v[i][1])) { found = i + 1; break; } }
+    // v112: 同じ人の行が複数あるときは、最後の行に書く（読むときに使う行と同じ。v111 までは先頭の行に書いていたため、保存しても変わらなかった）
+    for (var i = 1; i < v.length; i++) { if (rosterNormPin_(v[i][0]) === rp && pinOwnerOk_(rp, v[i][1])) { found = i + 1; } }
   }
   if (found > 0) {
     var keep = sh.getRange(found, 6, 1, 2).getValues()[0];
@@ -5730,6 +5769,9 @@ function nightlyPipeline() {
   run("backup", function () { kanriBackupDaily(); return "保存しました"; });
   // ⑥ v111: アポイント台帳の整合（書けなかった報告の登録・録音のリンク）。ここまでに時間がかかりすぎていたら、次の夜に回す
   run("ledger", function () { return v111NightlyLedger_(startedAt); });
+  // v112: 連携設定の余分な行の片付けと、設定シートの点検（結果はメールに載せる）
+  var v112Note = "";
+  try { v112Note = v112Nightly_(); } catch (eV112) {}
 
   var endedAt = new Date().getTime();
   var sum = nightlySummarize_(results, startedAt, endedAt);
@@ -5751,7 +5793,7 @@ function nightlyPipeline() {
   if (sum.ok) { try { PropertiesService.getScriptProperties().setProperty("NIGHTLY_LAST_OK", String(endedAt)); } catch (e3) {} }
 
   // 結果を1通にまとめて通知（毎晩バラバラに届かないように）
-  try { notifyDispatch_("夜間処理", DAILY_REPORT_TO, sum.subject, sum.body + v111NightlyExtra_() + "\n\n川嶋メソッド テレアポ業務管理システム", "夜間自動処理"); }   // v108: 通知ログに記録／v111: 明日の商談・前回の報告書の自動作成の結果を足す
+  try { notifyDispatch_("夜間処理", DAILY_REPORT_TO, sum.subject, sum.body + v111NightlyExtra_() + (v112Note ? "\n\n■ 設定シートの点検\n" + v112Note : "") + "\n\n川嶋メソッド テレアポ業務管理システム", "夜間自動処理"); }   // v108: 通知ログに記録／v111: 明日の商談・前回の報告書の自動作成の結果を足す
   catch (eMail) { Logger.log("nightly mail failed: " + eMail); }
 
   logAudit("夜間自動処理", "trigger", sum.ok ? "成功" : "要確認", sum.failed.join("/"));
@@ -7187,6 +7229,7 @@ function extRunEveryone(skipImport) {
   var cfgs = readExtConfigs_(), out = [];
   cfgs.forEach(function (c) {
     if (!c.enabled) return;
+    if (!FULL_NAME_MAP[c.pin]) return;   // v112: 名簿にいない方の設定は使わない
     var one = { pin: c.pin, name: FULL_NAME_MAP[c.pin] || c.name || "", ok: false };
     try {
       if (skipImport !== true) {
@@ -7434,7 +7477,8 @@ function kpiTargetsWrite_(pin, t) {
   if (sh.getLastRow() > 1) {
     var v = sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues();
     var v2 = sh.getRange(2, 1, sh.getLastRow() - 1, 2).getValues();
-    for (var i = 0; i < v2.length; i++) { if (rosterNormPin_(v2[i][0]) === rosterNormPin_(pin) && pinOwnerOk_(pin, v2[i][1])) { row = i + 2; break; } }
+    // v112: 同じ人の行が複数あるときは、最後の行に書く（kpiTargetsRead_ が使う行と同じ）
+    for (var i = 0; i < v2.length; i++) { if (rosterNormPin_(v2[i][0]) === rosterNormPin_(pin) && pinOwnerOk_(pin, v2[i][1])) { row = i + 2; } }
   }
   pin = rosterNormPin_(pin);   // v105: 先頭ゼロを保つため文字列で保存
   var line = ["'" + pin, FULL_NAME_MAP[pin] || "", Number(t.calls) || KPI_DEFAULT.calls,
@@ -10375,6 +10419,9 @@ function shiftSubmit_(d) {
   var month = monthKey_(d.month);
   if (!month) return { status: "error", handled: true, code: "bad_month", message: "対象月が読めません（" + (d.month || "") + "）" };
   var nd = shiftNormDays_(d.days || {}, month);
+  // v112: 会社の休業日（シフト登録不可）の出勤は、休みに直して登録する（画面でも選べないが、古い版の画面・送信待ちの申請から届いたときの備え）
+  var closedAdj = [];
+  try { closedAdj = calApplyClosures_(nd.days); } catch (eCal) { closedAdj = []; }
   if (!Object.keys(nd.days).length) return { status: "error", handled: true, code: "empty", message: "登録する日がありません", errors: nd.errors };
   var sum = shiftSummary_(nd.days);
   var reqId = String(d.requestId || d.clientReqId || ("S-" + Utilities.getUuid())).slice(0, 80);
@@ -10395,7 +10442,7 @@ function shiftSubmit_(d) {
         if (String(ids[i][0]) === reqId) {
           var dupRow = from + i;
           return { status: "ok", handled: true, saved: true, duplicate: true, requestId: reqId, month: month, pin: pin, name: name,
-            workCount: sum.workCount, offCount: sum.offCount, totalMins: sum.totalMins, days: nd.days,
+            workCount: sum.workCount, offCount: sum.offCount, totalMins: sum.totalMins, days: nd.days, closedAdjusted: closedAdj,
             notify: { status: String(sh.getRange(dupRow, col["通知状態"]).getValue() || "") } };
         }
       }
@@ -10419,11 +10466,11 @@ function shiftSubmit_(d) {
   // 通知（ロックの外で送る。結果は通知ログとシフト申請の「通知状態」に残る）
   var subj = (isModify ? "【シフト修正申請】" : "【シフト申請】") + month.replace("-", "年") + "月 " + name;
   var nr = notifyDispatch_(isModify ? "シフト修正申請" : "シフト申請", shiftNotifyList_(), subj,   // v109: 管理者ログインのGmailにも
-    shiftMailBody_(isModify, name, pin, month, nd.days, sum, reqId), name + " / " + month + " / " + reqId, "SHIFT-" + reqId);
+    shiftMailBody_(isModify, name, pin, month, nd.days, sum, reqId) + calAdjText_(closedAdj), name + " / " + month + " / " + reqId, "SHIFT-" + reqId);
   var nameNote = (d.name && !sameName_(d.name, name)) ? "（端末の表示名: " + d.name + "）" : "";
-  try { logAudit(isModify ? "シフト修正申請" : "シフト申請", name, month, "通知: " + nr.status + nameNote); } catch (eA) {}
+  try { logAudit(isModify ? "シフト修正申請" : "シフト申請", name, month, "通知: " + nr.status + nameNote + (closedAdj.length ? "／休業日の出勤 " + closedAdj.length + "日を休みに変更" : "")); } catch (eA) {}
   return { status: "ok", handled: true, saved: true, requestId: reqId, month: month, pin: pin, name: name,
-    workCount: sum.workCount, offCount: sum.offCount, totalMins: sum.totalMins, days: nd.days, errors: nd.errors,
+    workCount: sum.workCount, offCount: sum.offCount, totalMins: sum.totalMins, days: nd.days, errors: nd.errors, closedAdjusted: closedAdj,
     notify: { id: nr.id, status: nr.status, error: nr.error || "", next: nr.next || "" } };
 }
 // シフト申請の「通知状態」を更新（通知IDから申請IDを引いて書く）
@@ -10687,6 +10734,7 @@ function liveStatusUpdate_(d) {
     out.skewSec = skew;
     if (pin && devMs) skewPut_(pin, skew);       // 送信時刻を付けない古い版の画面からの記録を、この値で補正する
     try { if (pin && FULL_NAME_MAP[pin]) out.list = listMeta_(pin); } catch (eLm) {}
+    try { out.cal = calForClient_(); out.rules = rulesGet_(); } catch (eCal) {}   // v112: 管理者が登録した SV不在・休業・架電ルールを、次のハートビートで画面へ
     var lvSh = ensureSheet(SpreadsheetApp.openById(ADMIN_SHEET_ID), "現況", LIVE_HEADER);
     var vals = lvSh.getDataRange().getValues(), row = -1;
     for (var i = 1; i < vals.length; i++) {
@@ -11121,7 +11169,9 @@ function v108Handle_(d) {
       var sp = shiftPendingV109_(); sp.status = "ok"; sp.handled = true;
       return jsonOut_(sp);
     case "shift_status":   // 本人の申請状況だけ（リストなどは返さない・軽い）
-      return jsonOut_({ status: "ok", handled: true, gasVersion: GAS_VERSION, history: shiftHistoryFor_(rosterNormPin_(d.pin)) });
+      var ssCal = null;
+      try { ssCal = calForClient_(); } catch (eSc) {}
+      return jsonOut_({ status: "ok", handled: true, gasVersion: GAS_VERSION, history: shiftHistoryFor_(rosterNormPin_(d.pin)), cal: ssCal });   // v112: 休業日（シフトを登録できない日）
     case "fetch_all_shifts":
       try { notifyRetryPending(3); } catch (e) {}
       return jsonOut_(shiftAdminList_(d.month));
@@ -11227,7 +11277,9 @@ var ADMIN_ONLY_TYPES = (function () {
    // v110
    "live_diag live_fix_times ext_health ext_tab_pick ext_progress_reset ext_progress_rebuild ext_progress_from_sheet rec_autosave_check acct_status acct_purge " +
    // v111
-   "apl_status apl_sync apl_digest_set rep_lists rep_list_set rep_build rep_pdf rep_auto_set rep_monthly_now proj_board ").split(" ").forEach(function (t) { if (t) o[t] = true; });
+   "apl_status apl_sync apl_digest_set rep_lists rep_list_set rep_build rep_pdf rep_auto_set rep_monthly_now proj_board " +
+   // v112
+   "cal_list cal_save cal_cancel cal_shift_fix rules_get rules_set pin_rows_audit pin_rows_repair ").split(" ").forEach(function (t) { if (t) o[t] = true; });
   return o;
 })();
 
@@ -13387,7 +13439,11 @@ function extHealth_(deep, pinFilter) {
     }
     out.push(one);
   });
-  return { members: out, deep: deep === true, at: fmtJst_(new Date()), realtime: CONFIG.EXT_REALTIME !== false };
+  // v112: 連携設定の余分な行を片付けた記録と、ほかの設定シートに残っている余分な行の数
+  var cfgRepair = null, pinRowsExtra = 0;
+  try { cfgRepair = extCfgRepairInfo_(); } catch (eCr) {}
+  try { pinRowsExtra = pinRowsAudit_().total; } catch (ePr) {}
+  return { members: out, deep: deep === true, at: fmtJst_(new Date()), realtime: CONFIG.EXT_REALTIME !== false, cfgRepair: cfgRepair, pinRowsExtra: pinRowsExtra };
 }
 
 
@@ -15830,4 +15886,699 @@ function v111SetupCheck() {
   } catch (e2) { Logger.log("⑤ 架電報告書: ⚠ " + String(e2 && e2.message || e2) + "（画面の「印刷／PDFに保存」は使えます）"); }
   Logger.log("⑥ サーバーの版: " + GAS_VERSION + "（アプリの版と同じであること）");
   Logger.log("⑦ 自己点検: " + (v111SelfTest() ? "すべて合格" : "不合格の項目があります（上のログ）"));
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// v112（2026年11月）
+//   ⑴ 設定シートは「1人に1行」
+//      v111 までに起きていたこと（実データで確認）：
+//        ・PIN が 0 で始まる人（091 など）は、以前の版が PIN を数字（91）で保存していたため、保存のたびに行が増えていた
+//        ・「外部連携設定」：管理者の画面は先頭の1行を表示・保存するのに、取込・反映は全部の行を順に実行していた
+//          → 設定したリストを取り込んだ直後に、古い行のリストで上書きされ、最後に取り込んだ別のリストが残る
+//          → 古い行がほかの人と同じタブを指していると、その人の取込も「同じタブは使えません」と止まる
+//        ・「録音設定」「KPI目標」：読むときは最後の行・保存するときは先頭の行を使っていた（保存しても変わらない）
+//      v112：読むときに1人1行にまとめる（連携設定＝先頭の行／録音設定・KPI目標＝いま効いている最後の行）。
+//            保存は、読むのと同じ行に書く。余分な行は「◯◯_退避」シートへ写し、もとの行は中身を空にする（行は詰めない）
+//   ⑵ 会社スケジュール（休業・行事）：管理者が登録する。休業（シフト登録不可）の日は、出勤を登録できない
+//   ⑶ SV不在：管理者が登録する。不在の間、アポインターの画面に「LINE の返事はすぐに来ません」と出す
+//   ⑷ 架電ルール（不在の先への掛け直し）：何回まで・何時間あけてからかを管理者が決め、サーバーの架電結果から掛け直せる先を決める
+//      （v111 までは、端末に残っている直近1000件の結果だけで決めていたため、大きなリストでは古い「不在」に掛け直せなかった）
+// ═══════════════════════════════════════════════════════════════════════
+var V112_PROP = { extRepair: "V112_EXTCFG_REPAIR", rules: "V112_DIAL_RULES" };
+
+// ── ⑴ 設定シートの「1人に1行」 ──
+//   keep＝同じ人の行が複数あるときに残す行（その処理が実際に使っている行）。blankCol＝PIN が空でもこの列に値があれば「以前の重複」とみなす
+function pinRowsSheetDefs_() {
+  return [
+    { name: EXT_CONFIG_SHEET, label: "元スプレッドシート連携", keep: "first", blankCol: 3 },
+    { name: REC_CONFIG_SHEET, label: "録音設定", keep: "last" },
+    { name: KPI_SHEET, label: "KPI目標", keep: "last" },
+    { name: "アカウント認証", label: "暗証番号", keep: "last" },
+    { name: "架電位置", label: "架電位置", keep: "first" }
+  ];
+}
+// どの行を残し、どの行を退避するか（純粋関数）。values＝見出しを含むシートの値（1列目 PIN・2列目 名前）
+function pinRowsPlan_(values, def) {
+  var groups = {}, order = [], drop = [], blank = 0, textFix = [], dup = {};
+  for (var i = 1; i < (values || []).length; i++) {
+    var r = values[i] || [], pin = rosterNormPin_(r[0]), nm = String(r[1] == null ? "" : r[1]);
+    if (!pin) {
+      if (def.blankCol && String(r[def.blankCol - 1] == null ? "" : r[def.blankCol - 1]).trim()) { drop.push({ row: i + 1, why: "PIN が空の行（以前に重複していた行）" }); blank++; }
+      continue;
+    }
+    // 同じ PIN でも、別の人（以前の在籍者）の行は別の組にする
+    var who = FULL_NAME_MAP[pin] ? (pinOwnerOk_(pin, nm) ? "@" : "x:" + normName_(nm)) : "n:" + normName_(nm);
+    var k = pin + "|" + who;
+    if (!groups[k]) { groups[k] = []; order.push(k); }
+    groups[k].push(i + 1);
+  }
+  order.forEach(function (k) {
+    var rows = groups[k], pin = k.split("|")[0];
+    var keepRow = def.keep === "last" ? rows[rows.length - 1] : rows[0];
+    rows.forEach(function (rn) {
+      if (rn === keepRow) return;
+      drop.push({ row: rn, why: "同じ人の行が複数ある（使っていない行）" });
+      dup[pin] = (dup[pin] || 0) + 1;
+    });
+    var cell = values[keepRow - 1][0];
+    if (typeof cell !== "string" || cell !== pin) textFix.push({ row: keepRow, pin: pin });
+  });
+  drop.sort(function (a, b) { return a.row - b.row; });
+  return { drop: drop, dup: dup, blank: blank, textFix: textFix };
+}
+function pinRowsRead_(sh) {
+  var lastRow = sh.getLastRow(), lastCol = Math.max(1, sh.getLastColumn());
+  return { vals: sh.getRange(1, 1, lastRow, lastCol).getValues(), lastRow: lastRow, lastCol: lastCol };
+}
+// 点検だけ（シートは変えない）
+function pinRowsAudit_() {
+  var ss = SpreadsheetApp.openById(SHEET_ID), out = [], total = 0;
+  pinRowsSheetDefs_().forEach(function (def) {
+    var one = { sheet: def.name, label: def.label, rows: 0, extra: 0, pins: [] };
+    try {
+      var sh = ss.getSheetByName(def.name);
+      if (sh && sh.getLastRow() > 1) {
+        var rd = pinRowsRead_(sh), plan = pinRowsPlan_(rd.vals, def);
+        one.rows = rd.lastRow - 1; one.extra = plan.drop.length;
+        Object.keys(plan.dup).sort().forEach(function (p) { one.pins.push({ pin: p, name: FULL_NAME_MAP[p] || "", extra: plan.dup[p] }); });
+        if (plan.blank) one.pins.push({ pin: "", name: "PIN が空の行", extra: plan.blank });
+      }
+    } catch (e) { one.error = String(e && e.message || e).slice(0, 120); }
+    total += one.extra;
+    out.push(one);
+  });
+  return { sheets: out, total: total, at: fmtJst_(new Date()) };
+}
+// 退避シートに書く値（文字は文字のまま残す。"091" が 91 に変わらないように）
+function pinRowsKeepText_(v) { return (typeof v === "string" && v !== "") ? asText_(v) : v; }
+// 余分な行を「◯◯_退避」シートへ移す。names を省くと、すべての設定シート
+function pinRowsRepair_(names, by) {
+  var want = null;
+  if (names && names.length) { want = {}; names.forEach(function (n) { want[String(n)] = true; }); }
+  var res = v111Lock_(function () {
+    var ss = SpreadsheetApp.openById(SHEET_ID), out = [], total = 0;
+    pinRowsSheetDefs_().forEach(function (def) {
+      if (want && !want[def.name]) return;
+      var sh = ss.getSheetByName(def.name);
+      if (!sh || sh.getLastRow() < 2) return;
+      var rd = pinRowsRead_(sh), plan = pinRowsPlan_(rd.vals, def);
+      var one = { sheet: def.name, label: def.label, moved: 0, textFixed: 0, pins: plan.dup };
+      if (plan.drop.length) {
+        var hdr = rd.vals[0].map(function (h) { return String(h == null ? "" : h); });
+        var head = hdr.concat(["退避日時", "理由", "元の行"]);
+        var arName = def.name + "_退避", ar = ss.getSheetByName(arName);
+        if (!ar) {
+          ar = ss.insertSheet(arName);
+          gridEnsure_(ar, 0, head.length);
+          ar.getRange(1, 1, 1, head.length).setValues([head.map(pinRowsKeepText_)]);
+          try { ar.setFrozenRows(1); } catch (eF) {}
+        }
+        var now = new Date();
+        var block = plan.drop.map(function (x) {
+          var r = rd.vals[x.row - 1].slice(0, hdr.length);
+          while (r.length < hdr.length) r.push("");
+          return r.map(pinRowsKeepText_).concat([now, x.why, x.row]);
+        });
+        var at = ar.getLastRow() + 1;
+        gridEnsure_(ar, at + block.length, head.length);
+        ar.getRange(at, 1, block.length, head.length).setValues(block);
+        // もとのシートでは、行は消さずに、中身だけを空にする（続いた行はまとめて）。
+        //   行を消して詰めると、残す行の番号が変わる。同じ瞬間に動いているほかの保存（取込・反映・架電位置・暗証番号）は、
+        //   先に読んだ行番号へ書くため、ずれた行（別の人の行）に書いてしまうおそれがある。空にするだけなら、残す行の番号は変わらない。
+        //   空の行は、どの処理も読み飛ばす（PIN が空の行）。末尾の空の行は、データの範囲から外れる
+        var rows = plan.drop.map(function (x) { return x.row; }), i = rows.length - 1;
+        while (i >= 0) {
+          var end = rows[i], start = end;
+          while (i - 1 >= 0 && rows[i - 1] === start - 1) { start--; i--; }
+          sh.getRange(start, 1, end - start + 1, rd.lastCol).clearContent();
+          i--;
+        }
+        one.moved = plan.drop.length;
+      }
+      // 残した行の PIN を、文字（"091"）にそろえる（行番号は変わっていない）
+      plan.textFix.forEach(function (t) {
+        try { sh.getRange(t.row, 1).setValue(asText_(t.pin)); one.textFixed++; } catch (eT) {}
+      });
+      if (one.moved || one.textFixed) {
+        try { logAudit("設定シートの整理", by || "システム", def.label, (one.moved ? one.moved + "行を「" + def.name + "_退避」へ移動" : "") + (one.textFixed ? " PINを文字にそろえた行 " + one.textFixed : "")); } catch (eA) {}
+      }
+      total += one.moved;
+      out.push(one);
+    });
+    return { ok: true, sheets: out, total: total };
+  }, 20000, true);
+  if (res === V111_NOLOCK) return { ok: false, busy: true, message: "ほかの処理が書き込み中です。少し待ってから、もう一度押してください" };
+  try { extCfgCacheClear_(); } catch (eC) {}
+  return res;
+}
+// 「外部連携設定」の見出しを、いまの列の並びに合わせる（古い見出しのまま列だけ増えていて、GID の列が「会社名列」と表示されていた）
+function extCfgHeaderFix_(sh, apply) {
+  var w = EXT_CONFIG_HEADER.length, lastCol = sh.getLastColumn();
+  var cur = lastCol > 0 ? sh.getRange(1, 1, 1, Math.min(w, lastCol)).getValues()[0] : [];
+  var same = cur.length === w;
+  for (var i = 0; same && i < w; i++) { if (String(cur[i] == null ? "" : cur[i]).trim() !== EXT_CONFIG_HEADER[i]) same = false; }
+  if (same) return false;
+  if (apply) { gridEnsure_(sh, 0, w); sh.getRange(1, 1, 1, w).setValues([EXT_CONFIG_HEADER]); }
+  return true;
+}
+// 連携設定に余分な行・古い見出しがあれば片付ける（無ければ何もしない）。連携の操作の前と、導入時の確認で呼ぶ
+function extCfgRepairIfNeeded_(by) {
+  var sh, need = false, hdr = false;
+  try {
+    sh = SpreadsheetApp.openById(SHEET_ID).getSheetByName(EXT_CONFIG_SHEET);
+    if (!sh || sh.getLastRow() < 2) return null;
+    var plan = pinRowsPlan_(pinRowsRead_(sh).vals, pinRowsSheetDefs_()[0]);
+    need = plan.drop.length > 0 || plan.textFix.length > 0;
+    hdr = extCfgHeaderFix_(sh, false);
+  } catch (e) { return null; }
+  if (!need && !hdr) return null;
+  var r = need ? pinRowsRepair_([EXT_CONFIG_SHEET], by || "システム") : { ok: true, sheets: [], total: 0 };
+  if (!r || !r.ok) return r;
+  if (hdr) { try { extCfgHeaderFix_(sh, true); r.headerFixed = true; } catch (eH) {} }
+  var one = (r.sheets || [])[0] || { moved: 0, pins: {} };
+  if (one.moved || r.headerFixed) {
+    v111PropSet_(V112_PROP.extRepair, JSON.stringify({ at: new Date().getTime(), moved: one.moved || 0,
+      pins: Object.keys(one.pins || {}).map(function (p) { return { pin: p, name: FULL_NAME_MAP[p] || "", extra: one.pins[p] }; }), headerFixed: !!r.headerFixed }));
+  }
+  try { extCfgCacheClear_(); } catch (eC) {}
+  return r;
+}
+function extCfgRepairInfo_() {
+  try { var raw = v111Prop_(V112_PROP.extRepair); if (!raw) return null; var o = JSON.parse(raw); o.atText = fmtJst_(new Date(o.at), "MM/dd HH:mm"); return o; } catch (e) { return null; }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// v112 ⑵⑶: 会社スケジュール（休業・行事）と SV不在
+//   シート「会社スケジュール」（メイン）に1件1行。日付・時刻は文字（"2026-12-24"・"13:00"）で持つ
+//   種別：休業＝会社が休みの期間（「シフト登録」が「不可」なら、その日の出勤は登録できない）／行事＝知らせるだけ／SV不在＝SV に連絡がつかない時間
+// ═══════════════════════════════════════════════════════════════════════
+var CAL_SHEET = "会社スケジュール";
+var CAL_HEADER = ["ID", "種別", "名称", "開始日", "終了日", "開始時刻", "終了時刻", "対象", "シフト登録", "連絡先", "メモ", "状態", "登録者", "登録日時", "更新日時"];
+var CAL_KINDS = { "休業": true, "行事": true, "SV不在": true };
+var CAL_CACHE_KEY = "cal_v112";
+var CAL_MAX_DAYS = 366;
+function calSheet_(create) {
+  var ss = SpreadsheetApp.openById(SHEET_ID), sh = ss.getSheetByName(CAL_SHEET);
+  if (!sh && create) {
+    sh = ensureSheet(ss, CAL_SHEET, CAL_HEADER);
+    try { sh.getRange(2, 4, Math.max(1, sh.getMaxRows() - 1), 4).setNumberFormat("@"); } catch (e) {}   // 日付・時刻の列は文字のまま
+  }
+  return sh;
+}
+function calJstMs_(dateKey, hm) {
+  var t = Date.parse(String(dateKey || "") + "T" + (hm || "00:00") + ":00+09:00");
+  return isNaN(t) ? 0 : t;
+}
+function calDateOk_(k) {
+  var m = String(k || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return false;
+  var t = Date.parse(k + "T12:00:00+09:00");
+  return !isNaN(t) && jstKey_(t) === k;      // 2026-02-30 のような、無い日付を断る
+}
+// シートの1行 → 予定（読めない行は null）。始まり・終わりの時刻（ms）も入れる
+function calRowToItem_(r, rowNo) {
+  var kind = String(r[1] == null ? "" : r[1]).trim(), id = String(r[0] == null ? "" : r[0]).trim();
+  var from = cellDateKey_(r[3]), to = cellDateKey_(r[4]) || from;
+  if (!id || !CAL_KINDS[kind] || !calDateOk_(from)) return null;
+  if (!calDateOk_(to) || to < from) to = from;
+  var it = { row: rowNo, id: id, kind: kind, title: String(r[2] == null ? "" : r[2]).trim(), from: from, to: to,
+    ft: kind === "SV不在" ? hm_(r[5]) : "", tt: kind === "SV不在" ? hm_(r[6]) : "", target: String(r[7] == null ? "" : r[7]).trim(),
+    lock: kind !== "SV不在" && String(r[8] == null ? "" : r[8]).trim() === "不可",
+    contact: String(r[9] == null ? "" : r[9]).trim(), memo: String(r[10] == null ? "" : r[10]).trim(),
+    status: String(r[11] == null ? "" : r[11]).trim() === "取消" ? "取消" : "有効", by: String(r[12] == null ? "" : r[12]),
+    createdAt: isDate_(r[13]) ? r[13].getTime() : 0, updatedAt: isDate_(r[14]) ? r[14].getTime() : 0 };
+  it.start = calJstMs_(it.from, it.ft || "00:00");
+  it.end = it.tt ? calJstMs_(it.to, it.tt) : calJstMs_(v111AddDays_(it.to, 1), "00:00");
+  if (it.end <= it.start) it.end = calJstMs_(v111AddDays_(it.to, 1), "00:00");
+  return it;
+}
+function calAll_() {
+  var sh = calSheet_(false);
+  if (!sh || sh.getLastRow() < 2) return [];
+  var w = Math.min(CAL_HEADER.length, Math.max(1, sh.getLastColumn()));
+  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, w).getValues(), out = [];
+  vals.forEach(function (r, i) {
+    while (r.length < CAL_HEADER.length) r.push("");
+    var it = calRowToItem_(r, i + 2);
+    if (it) out.push(it);
+  });
+  return out;
+}
+function calText_(v, max) { return String(v == null ? "" : v).replace(/[\r\n\t]+/g, " ").trim().slice(0, max); }
+// 入力の点検（純粋関数）。{ ok, item } か { ok:false, message }
+function calValidate_(x) {
+  x = x || {};
+  var kind = String(x.kind || "").trim();
+  if (!CAL_KINDS[kind]) return { ok: false, message: "種別（休業・行事・SV不在）を選んでください" };
+  var from = cellDateKey_(x.from), to = cellDateKey_(x.to) || from;
+  if (!calDateOk_(from)) return { ok: false, message: "開始日を入力してください" };
+  if (!calDateOk_(to)) return { ok: false, message: "終了日が正しくありません" };
+  if (to < from) return { ok: false, message: "終了日は、開始日と同じか後の日にしてください" };
+  var span = Math.round((calJstMs_(to, "12:00") - calJstMs_(from, "12:00")) / 86400000) + 1;
+  if (span > CAL_MAX_DAYS) return { ok: false, message: "期間が長すぎます（" + CAL_MAX_DAYS + "日まで）" };
+  var it = { id: calText_(x.id, 40), kind: kind, title: calText_(x.title, 40), from: from, to: to, ft: "", tt: "", target: "", lock: false,
+    contact: calText_(x.contact, 80), memo: calText_(x.memo, 200) };
+  if (kind === "SV不在") {
+    it.target = calText_(x.target, 30) || "SV";
+    var rawF = String(x.ft == null ? "" : x.ft).trim(), rawT = String(x.tt == null ? "" : x.tt).trim();
+    it.ft = hm_(rawF); it.tt = hm_(rawT);
+    if (rawF && !it.ft) return { ok: false, message: "開始時刻が正しくありません（例 13:00）" };
+    if (rawT && !it.tt) return { ok: false, message: "終了時刻が正しくありません（例 15:00）" };
+    if (from === to && it.ft && it.tt && hmMin_(it.tt) <= hmMin_(it.ft)) return { ok: false, message: "終了時刻は、開始時刻より後にしてください" };
+    if (!it.title) it.title = "不在";
+  } else {
+    if (!it.title) return { ok: false, message: "名称を入力してください（例：冬期休暇）" };
+    it.target = "全員";
+    it.lock = kind === "休業" ? x.lock !== false : x.lock === true;
+  }
+  return { ok: true, item: it };
+}
+function calNewId_() { return "C" + new Date().getTime().toString(36) + Math.floor(Math.random() * 46656).toString(36); }
+function calCacheClear_() { try { CacheService.getScriptCache().remove(CAL_CACHE_KEY); } catch (e) {} }
+// 登録・更新（id があれば、その行を書き換える）
+function calSave_(x, by) {
+  var v = calValidate_(x);
+  if (!v.ok) return v;
+  var it = v.item, res = v111Lock_(function () {
+    var sh = calSheet_(true), now = new Date(), row = 0, created = now;
+    if (it.id && sh.getLastRow() > 1) {
+      var ids = sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues();
+      for (var i = 0; i < ids.length; i++) { if (String(ids[i][0]).trim() === it.id) { row = i + 2; break; } }
+      if (!row) return { ok: false, message: "直そうとした予定が見つかりません（すでに消されています）" };
+      var c0 = sh.getRange(row, 14).getValue();
+      if (isDate_(c0)) created = c0;
+    }
+    if (!it.id) it.id = calNewId_();
+    var line = [asText_(it.id), it.kind, v111Txt_(it.title), asText_(it.from), asText_(it.to), asText_(it.ft), asText_(it.tt), v111Txt_(it.target),
+      it.kind === "SV不在" ? "" : (it.lock ? "不可" : "可"), v111Txt_(it.contact), v111Txt_(it.memo), "有効", String(by || "管理者"), created, now];
+    if (row) sh.getRange(row, 1, 1, line.length).setValues([line]);
+    else { gridEnsure_(sh, sh.getLastRow() + 2, CAL_HEADER.length); sh.getRange(sh.getLastRow() + 1, 1, 1, line.length).setValues([line]); }
+    return { ok: true, id: it.id, created: !row };
+  }, 15000, true);
+  if (res === V111_NOLOCK) return { ok: false, busy: true, message: "ほかの処理が書き込み中です。少し待ってから、もう一度押してください" };
+  if (!res.ok) return res;
+  calCacheClear_();
+  try {
+    logAudit(it.kind === "SV不在" ? "SV不在の登録" : "会社スケジュールの登録", by || "管理者", (it.kind === "SV不在" ? it.target + " " : "") + it.title,
+      it.from + (it.ft ? " " + it.ft : "") + "〜" + it.to + (it.tt ? " " + it.tt : "") + (it.kind === "SV不在" ? "" : (it.lock ? "／シフト登録不可" : "／シフト登録可")));
+  } catch (eA) {}
+  res.item = it;
+  return res;
+}
+// 取消（行は残し、「状態」を「取消」にする）
+function calCancel_(id, by) {
+  var key = String(id || "").trim();
+  if (!key) return { ok: false, message: "予定が指定されていません" };
+  var res = v111Lock_(function () {
+    var sh = calSheet_(false);
+    if (!sh || sh.getLastRow() < 2) return { ok: false, message: "予定が見つかりません" };
+    var vals = sh.getRange(2, 1, sh.getLastRow() - 1, 3).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      if (String(vals[i][0]).trim() !== key) continue;
+      gridEnsure_(sh, 0, CAL_HEADER.length);
+      sh.getRange(i + 2, 12).setValue("取消");
+      sh.getRange(i + 2, 15).setValue(new Date());
+      return { ok: true, id: key, kind: String(vals[i][1] || ""), title: String(vals[i][2] || "") };
+    }
+    return { ok: false, message: "予定が見つかりません" };
+  }, 15000, true);
+  if (res === V111_NOLOCK) return { ok: false, busy: true, message: "ほかの処理が書き込み中です。少し待ってから、もう一度押してください" };
+  if (res.ok) { calCacheClear_(); try { logAudit(res.kind === "SV不在" ? "SV不在の取消" : "会社スケジュールの取消", by || "管理者", res.title, key); } catch (eA) {} }
+  return res;
+}
+// アポインターの画面へ渡す内容（純粋関数）：休業・行事（今月の初日以降に終わるもの）と、SV不在（まだ終わっていないもの・14日先まで）
+function calDigestFrom_(items, nowMs) {
+  var today = jstKey_(nowMs), monthStart = today.slice(0, 8) + "01", limit = v111AddDays_(today, 200), days = [], sv = [];
+  (items || []).forEach(function (it) {
+    if (it.status !== "有効") return;
+    if (it.kind === "SV不在") {
+      if (it.end <= nowMs || it.start > nowMs + 14 * 86400000) return;
+      sv.push({ id: it.id, name: it.target || "SV", from: it.from, to: it.to, ft: it.ft, tt: it.tt, s: it.start, e: it.end, memo: it.memo, contact: it.contact });
+    } else {
+      if (it.to < monthStart || it.from > limit) return;
+      days.push({ id: it.id, kind: it.kind, title: it.title || it.kind, from: it.from, to: it.to, lock: !!it.lock, memo: it.memo });
+    }
+  });
+  days.sort(function (a, b) { return a.from < b.from ? -1 : (a.from > b.from ? 1 : 0); });
+  sv.sort(function (a, b) { return a.s - b.s; });
+  var out = { days: days, sv: sv };
+  out.v = v111Hash_(JSON.stringify(out));
+  return out;
+}
+function calForClient_() {
+  var cache = null;
+  try { cache = CacheService.getScriptCache(); var c = cache.get(CAL_CACHE_KEY); if (c) return JSON.parse(c); } catch (e) {}
+  var out = calDigestFrom_(calAll_(), new Date().getTime());
+  try { if (cache) cache.put(CAL_CACHE_KEY, JSON.stringify(out), 60); } catch (e2) {}
+  return out;
+}
+// シフトを登録できない日 → 名称
+function calClosedMapFrom_(items) {
+  var map = {};
+  (items || []).forEach(function (it) {
+    if (it.status !== "有効" || it.kind === "SV不在" || !it.lock) return;
+    var k = it.from, guard = 0;
+    while (k && k <= it.to && guard++ <= CAL_MAX_DAYS) { if (!map[k]) map[k] = it.title || it.kind; k = v111AddDays_(k, 1); }
+  });
+  return map;
+}
+// 申請された日別の内容のうち、休業日の出勤を「休み」に直す（days を書き換える）。戻り値：直した日 [{date,title}]
+function calApplyClosuresWith_(days, map) {
+  var out = [];
+  Object.keys(days || {}).sort().forEach(function (k) {
+    var v = days[k];
+    if (v && v !== "off" && map[k]) { days[k] = "off"; out.push({ date: k, title: map[k] }); }
+  });
+  return out;
+}
+function calApplyClosures_(days) {
+  if (!days || !Object.keys(days).length) return [];
+  return calApplyClosuresWith_(days, calClosedMapFrom_(calAll_()));
+}
+function calMd_(k) { var p = String(k || "").split("-"); return p.length === 3 ? Number(p[1]) + "/" + Number(p[2]) + "（" + v111Dow_(k) + "）" : String(k || ""); }
+function calAdjText_(adj) {
+  if (!adj || !adj.length) return "";
+  return "\n\n※ 会社の休業日のため、次の日の出勤は登録せず、休みにしました：\n" + adj.map(function (a) { return "・" + calMd_(a.date) + "　" + a.title; }).join("\n");
+}
+function calMonthsBetween_(fromKey, toKey) {
+  var out = [], y = Number(fromKey.slice(0, 4)), m = Number(fromKey.slice(5, 7)), end = toKey.slice(0, 7), guard = 0;
+  while (guard++ < 30) {
+    var k = y + "-" + ("0" + m).slice(-2);
+    if (k > end) break;
+    out.push(k);
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+// 休業（シフト登録不可）の期間に、出勤が登録されている人。きょう以降の日だけ。戻り値：{ 予定ID: [{pin,name,month,days,status}] }
+function calConflicts_(items) {
+  var out = {}, cache = {}, today = jstKey_(new Date().getTime());
+  (items || []).forEach(function (it) {
+    if (it.status !== "有効" || it.kind === "SV不在" || !it.lock || it.to < today) return;
+    var list = [];
+    calMonthsBetween_(it.from < today ? today : it.from, it.to).forEach(function (m) {
+      if (!cache[m]) cache[m] = shiftLatest_(null, m);
+      Object.keys(cache[m]).forEach(function (k) {
+        var s = cache[m][k], hit = [];
+        if (!FULL_NAME_MAP[s.pin]) return;
+        Object.keys(s.days || {}).forEach(function (dk) { var v = s.days[dk]; if (v && v !== "off" && dk >= it.from && dk <= it.to && dk >= today) hit.push(dk); });
+        if (hit.length) list.push({ pin: s.pin, name: s.name, month: m, days: hit.sort(), status: s.status });
+      });
+    });
+    if (list.length) out[it.id] = list;
+  });
+  return out;
+}
+// 休業の期間に登録済みの出勤を、休みに直す（管理者が押したときだけ）。本人には、メールで知らせる
+function calShiftFix_(id, by) {
+  var item = null;
+  calAll_().forEach(function (it) { if (it.id === String(id || "").trim()) item = it; });
+  if (!item || item.status !== "有効" || item.kind === "SV不在" || !item.lock) return { ok: false, message: "シフトを登録できない休業の予定が見つかりません" };
+  var conf = calConflicts_([item])[item.id] || [];
+  if (!conf.length) return { ok: true, fixed: [], message: "この期間に登録されている出勤はありません" };
+  var ss = SpreadsheetApp.openById(SHEET_ID), fixed = [], today = jstKey_(new Date().getTime());
+  var res = v111Lock_(function () {
+    var sh = ensureSheet(ss, SHIFT_REQ_SHEET, SHIFT_REQ_BASE), col = ensureCols_(sh, SHIFT_REQ_EXTRA);
+    conf.forEach(function (c) {
+      var cur = shiftLatest_(c.pin, c.month)[c.pin + "|" + c.month];
+      if (!cur) return;
+      var days = JSON.parse(JSON.stringify(cur.days || {})), changed = [];
+      Object.keys(days).forEach(function (dk) { var v = days[dk]; if (v && v !== "off" && dk >= item.from && dk <= item.to && dk >= today) { days[dk] = "off"; changed.push(dk); } });
+      if (!changed.length) return;
+      var sum = shiftSummary_(days), now = new Date();
+      var width = Math.max(SHIFT_REQ_BASE.length, col["申請ID"], col["通知状態"], col["日別JSON"]), line = [];
+      for (var x = 0; x < width; x++) line.push("");
+      // 承認済みの月は承認済みのまま（会社の都合で休みにしただけのため）。それ以外は、もとの状態のまま
+      var st = cur.status === "承認済" ? "承認済" : (cur.status === "差戻し" ? "差戻し" : (cur.status === "受付" ? "受付" : "修正受付"));
+      var base = [now, "修正", cur.name, asText_(c.pin), asText_(c.month), sum.workCount, sum.offCount, sum.totalMins, shiftDetailText_(days), st];
+      for (var b = 0; b < base.length; b++) line[b] = base[b];
+      line[col["申請ID"] - 1] = "CAL-" + item.id + "-" + c.pin + "-" + c.month + "-" + now.getTime();
+      line[col["通知状態"] - 1] = "";
+      line[col["日別JSON"] - 1] = JSON.stringify(days);
+      gridEnsure_(sh, 0, width);
+      sh.appendRow(line);
+      shiftReplaceDetail_(ss, c.pin, cur.name, c.month, days, now);
+      fixed.push({ pin: c.pin, name: cur.name, month: c.month, days: changed.sort() });
+    });
+    return true;
+  }, 20000, true);
+  if (res === V111_NOLOCK) return { ok: false, busy: true, message: "ほかの処理が書き込み中です。少し待ってから、もう一度押してください" };
+  var span = calMd_(item.from) + (item.to !== item.from ? "〜" + calMd_(item.to) : "");
+  fixed.forEach(function (f) {
+    var to = personalEmailFor(f.pin);
+    f.notified = false;
+    if (!to) return;
+    try {
+      var nr = notifyDispatch_("会社スケジュール（本人）", [to], "【シフト変更】" + item.title + "（" + span + "）のため、出勤予定を休みにしました",
+        f.name + " 様\n\n会社の休業（" + item.title + "：" + span + "）のため、次の日の出勤予定を「休み」に変更しました。\n\n" +
+        f.days.map(function (k) { return "・" + calMd_(k); }).join("\n") + "\n\nアプリのシフト画面でもご確認いただけます。\n\n川嶋メソッド テレアポ業務管理システム",
+        f.name + " / " + item.title, "CALFIX-" + item.id + "-" + f.pin + "-" + f.month + "-" + f.days.join(","));
+      f.notified = nr && (nr.status === "送信済" || nr.status === "再送待ち");
+    } catch (eN) {}
+  });
+  try { logAudit("休業日の出勤を休みに変更", by || "管理者", item.title + "（" + item.from + "〜" + item.to + "）", fixed.map(function (f) { return f.name + " " + f.days.length + "日"; }).join(" / ")); } catch (eA) {}
+  return { ok: true, fixed: fixed };
+}
+// 管理者の画面へ渡す一覧（終わってから45日以内のものまで）
+function calAdmin_() {
+  var items = calAll_(), now = new Date().getTime(), today = jstKey_(now), since = v111AddDays_(today, -45);
+  var list = items.filter(function (it) { return it.to >= since; });
+  list.sort(function (a, b) { return a.start - b.start; });
+  var names = {}, sv = [];
+  items.forEach(function (it) { if (it.kind === "SV不在" && it.target && !names[it.target]) { names[it.target] = true; sv.push(it.target); } });
+  return { today: today, now: now,
+    items: list.map(function (it) {
+      return { id: it.id, kind: it.kind, title: it.title, from: it.from, to: it.to, ft: it.ft, tt: it.tt, target: it.target, lock: it.lock, contact: it.contact, memo: it.memo,
+        status: it.status, s: it.start, e: it.end, state: it.status !== "有効" ? "取消" : (it.end <= now ? "終了" : (it.start <= now ? "期間中" : "予定")) };
+    }),
+    conflicts: calConflicts_(items), svNames: sv, sheet: CAL_SHEET };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// v112 ⑷: 架電ルール（不在の先への掛け直し）
+//   max＝1社にかける回数の上限（最初の1回を含む）／minHours＝前にかけてから、次にかけるまでにあける時間
+// ═══════════════════════════════════════════════════════════════════════
+var DIAL_RULES_DEFAULT = { recall: { on: true, max: 3, minHours: 20 } };
+function rulesNorm_(o) {
+  var r = (o && o.recall) || {}, d = DIAL_RULES_DEFAULT.recall;
+  var max = Math.round(Number(r.max)), mh = Number(r.minHours);
+  if (!(max >= 1)) max = d.max;
+  if (max > 10) max = 10;
+  if (!(mh >= 0) || r.minHours === "" || r.minHours === null || r.minHours === undefined) mh = d.minHours;
+  if (mh > 240) mh = 240;
+  return { recall: { on: r.on !== false, max: max, minHours: Math.round(mh * 10) / 10 } };
+}
+function rulesGet_() {
+  try { var raw = v111Prop_(V112_PROP.rules); if (raw) return rulesNorm_(JSON.parse(raw)); } catch (e) {}
+  return rulesNorm_(DIAL_RULES_DEFAULT);
+}
+function rulesSet_(o, by) {
+  var n = rulesNorm_(o);
+  v111PropSet_(V112_PROP.rules, JSON.stringify(n));
+  try { logAudit("架電ルールの変更", by || "管理者", "不在の掛け直し", (n.recall.on ? "使う" : "使わない") + "／上限 " + n.recall.max + "回／間隔 " + n.recall.minHours + "時間"); } catch (e) {}
+  return n;
+}
+// その人のいまのリスト（進捗の開始以降）で、最後の結果が「不在」の行。"元行:回数:最後にかけた時刻(分)" を並べた文字で返す
+function recallBuild_(pin) {
+  var p = rosterNormPin_(pin), cfg = extCfgFor_(p);
+  if (!p || !FULL_NAME_MAP[p] || !cfg || !cfg.ssId) return null;
+  var lid = extCfgLid_(cfg), stamp = Number(cfg.importedAt) || 0, cycle = Number(cfg.cycleStart) || stamp || 0;
+  if (!lid) return null;
+  var ck = "rcl_v112_" + p + "_" + v111Hash_(lid + "|" + cycle + "|" + stamp), cache = null;
+  try { cache = CacheService.getScriptCache(); var c = cache.get(ck); if (c) return JSON.parse(c); } catch (e) {}
+  var sinceKey = cycle ? jstKey_(cycle - 86400000) : "2000-01-01";
+  var by = {}, resolve = liveResolver_(), idMap = null;
+  // 取込をはさんだ記録は、元行の番号が変わっていることがある → 会社（電話番号＋会社名）で、いまの行を探す（1件に決まるときだけ）
+  function byIdentity(co, ph) {
+    if (!idMap) {
+      idMap = {};
+      memberListRows_(p).forEach(function (r) { var s = Number(r[4]) || 0; if (!s) return; var k = phKey_(r[1]) + "|" + normCompany_(r[0]); idMap[k] = idMap[k] === undefined ? s : 0; });
+    }
+    return idMap[phKey_(ph) + "|" + normCompany_(co)] || 0;
+  }
+  var scan = crScanSince_(sinceKey, function (r, rowNo, cols) {
+    var raw = String(r[0] || "").trim();
+    if (!raw || resolve(raw, cols.pin >= 0 ? r[cols.pin] : "") !== p) return true;
+    if (cols.lid < 0 || String(r[cols.lid] || "") !== lid) return true;
+    var ms = epochOk_(r[13]) || callMs_(kanriDateKey_(r[1]), kanriHM_(r[2]));
+    if (cycle && ms && ms < cycle) return true;
+    var src = Number(r[15]) || 0, ls = cols.ls >= 0 ? progMs_(r[cols.ls]) : 0;
+    if (!src) return true;
+    if (ls && stamp && ls !== stamp) { src = byIdentity(String(r[3] || ""), String(r[4] || "")); if (!src) return true; }
+    var o = by[src] || (by[src] = { n: 0, at: 0, r: "" });
+    o.n++;
+    if (ms >= o.at) { o.at = ms; o.r = mapResultLabelToId(r[6]); }
+    return true;
+  }, { max: 40000, grace: 800 });
+  var parts = [];
+  Object.keys(by).forEach(function (s) { var o = by[s]; if (o.r === "absent") parts.push(s + ":" + o.n + ":" + Math.floor(o.at / 60000)); });
+  var out = { lid: lid, cycle: cycle, a: parts.join(","), n: parts.length, capped: !!(scan && scan.capped) };
+  try { if (cache) { var js = JSON.stringify(out); if (js.length < 90000) cache.put(ck, js, 120); } } catch (e2) {}
+  return out;
+}
+function recallParse_(a) {
+  var out = {};
+  String(a || "").split(",").forEach(function (t) { var m = t.match(/^(\d+):(\d+):(\d+)$/); if (m) out[m[1]] = { n: Number(m[2]), at: Number(m[3]) * 60000 }; });
+  return out;
+}
+// 掛け直しの見通し（管理者の画面用）：いま掛け直せる・間隔待ち・上限に達した
+function recallBoard_() {
+  var rules = rulesGet_().recall, now = new Date().getTime(), out = [];
+  rosterPins_().forEach(function (p) {
+    var one = { pin: p, name: FULL_NAME_MAP[p], absent: 0, ready: 0, waiting: 0, capped: 0, linked: false };
+    try {
+      var rc = recallBuild_(p);
+      if (rc) {
+        one.linked = true;
+        var m = recallParse_(rc.a);
+        Object.keys(m).forEach(function (s) {
+          one.absent++;
+          if (m[s].n >= rules.max) one.capped++;
+          else if (now - m[s].at < rules.minHours * 3600000) one.waiting++;
+          else one.ready++;
+        });
+      }
+    } catch (e) { one.error = String(e && e.message || e).slice(0, 100); }
+    out.push(one);
+  });
+  return out;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// v112: 新しい要求の入口（doPostRoute_ から最初に呼ぶ。該当しなければ null）
+// ═══════════════════════════════════════════════════════════════════════
+var V112_EXT_TYPES = { ext_config_get: 1, ext_config_set: 1, ext_import: 1, ext_run_all: 1, ext_run_everyone: 1, ext_sync: 1, ext_health: 1, ext_bulk_setup: 1, ext_bulk_configure: 1, ext_config_audit: 1 };
+function v112Handle_(d) {
+  switch (d.type) {
+    case "cal_get":          // アポインターの画面（休業・行事・SV不在）。名簿にある PIN からの要求にだけ返す
+      var cgPin = rosterNormPin_(d.pin);
+      if (!cgPin || !FULL_NAME_MAP[cgPin]) return jsonOut_({ status: "error", handled: true, code: "pin", message: "PIN を確認できません" });
+      return jsonOut_({ status: "ok", handled: true, cal: calForClient_(), now: new Date().getTime() });
+    case "cal_list":
+      return jsonOut_({ status: "ok", handled: true, result: calAdmin_() });
+    case "cal_save":
+      var cs = calSave_(d.item || {}, "管理者");
+      if (!cs.ok) return jsonOut_({ status: "error", handled: true, code: cs.busy ? "busy" : "invalid", message: cs.message });
+      return jsonOut_({ status: "ok", handled: true, saved: cs, result: calAdmin_() });
+    case "cal_cancel":
+      var cc = calCancel_(d.id, "管理者");
+      if (!cc.ok) return jsonOut_({ status: "error", handled: true, code: cc.busy ? "busy" : "not_found", message: cc.message });
+      return jsonOut_({ status: "ok", handled: true, result: calAdmin_() });
+    case "cal_shift_fix":
+      var cf = calShiftFix_(d.id, "管理者");
+      if (!cf.ok) return jsonOut_({ status: "error", handled: true, code: cf.busy ? "busy" : "invalid", message: cf.message });
+      return jsonOut_({ status: "ok", handled: true, fixed: cf.fixed, message: cf.message || "", result: calAdmin_() });
+    case "rules_get":
+      return jsonOut_({ status: "ok", handled: true, result: { rules: rulesGet_(), board: d.board === true ? recallBoard_() : null } });
+    case "rules_set":
+      return jsonOut_({ status: "ok", handled: true, result: { rules: rulesSet_(d.rules || {}, "管理者"), board: null } });
+    case "pin_rows_audit":
+      // 管理者の画面を開いたときに呼ばれる。連携設定の余分な行は、ここで片付ける（取込が別のリストで上書きされる原因のため、待たずに直す）。
+      // ほかの設定シートは数えるだけ（片付けるのは、管理者が「退避シートへ移す」を押したとき）
+      try { extCfgRepairIfNeeded_("システム（管理者の画面を開いたとき）"); } catch (eRp) {}
+      return jsonOut_({ status: "ok", handled: true, result: { audit: pinRowsAudit_(), ext: extCfgRepairInfo_() } });
+    case "pin_rows_repair":
+      var pr = pinRowsRepair_(d.sheets || null, "管理者");
+      if (!pr.ok) return jsonOut_({ status: "error", handled: true, code: "busy", message: pr.message });
+      try { CacheService.getScriptCache().remove(ROSTER_CACHE_KEY); } catch (eRc) {}
+      return jsonOut_({ status: "ok", handled: true, result: { repaired: pr, audit: pinRowsAudit_(), ext: extCfgRepairInfo_() } });
+  }
+  // 連携の操作（管理者）の前に、連携設定の余分な行を片付ける。片付けに失敗しても、操作はそのまま続ける（読むときに1人1行にまとめているため）
+  if (V112_EXT_TYPES[d.type] && ADM_REQ_OK_) { try { extCfgRepairIfNeeded_("システム（連携の操作の前）"); } catch (e) {} }
+  return null;
+}
+// 夜間の処理に足す分
+function v112Nightly_() {
+  var notes = [];
+  try { var r = extCfgRepairIfNeeded_("夜間自動処理"); if (r && r.ok && r.total) notes.push("連携設定の余分な行 " + r.total + "行を退避"); } catch (e) {}
+  try { var a = pinRowsAudit_(); if (a.total) notes.push("設定シートに余分な行 " + a.total + "行（管理者の画面の「設定シートの整理」）"); } catch (e2) {}
+  return notes.join("／");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// v112: エディタから実行する自己点検（ログに PASS/FAIL を出す。シートは変更しない）
+// ═══════════════════════════════════════════════════════════════════════
+function v112SelfTest() {
+  var t = [];
+  function ok(name, cond) { t.push([name, !!cond]); }
+  // ⑴ 1人に1行
+  var saveF = {}, saveP = {};
+  Object.keys(FULL_NAME_MAP).forEach(function (k) { saveF[k] = FULL_NAME_MAP[k]; });
+  Object.keys(PIN_MAP).forEach(function (k) { saveP[k] = PIN_MAP[k]; });
+  try {
+    FULL_NAME_MAP["091"] = "柏木幸代"; PIN_MAP["091"] = "柏木"; FULL_NAME_MAP["101"] = "藤田直美"; PIN_MAP["101"] = "藤田";
+    var vals = [["PIN", "名前", "スプレッドシートID"], ["101", "藤田直美", "A"], [98, "竹之内優子", "B"], [98, "竹之内優子", "B"], ["091", "柏木幸代", "C"], [91, "柏木幸代", "D"], [91, "柏木幸代", "E"], ["", "柏木幸代", "F"], [91, "別の人", "G"]];
+    var p1 = pinRowsPlan_(vals, { keep: "first", blankCol: 3 });
+    ok("⑴ 同じ人の行が複数あれば、先頭の行を残す（PIN 91 と 091 は同じ人）", p1.drop.map(function (x) { return x.row; }).join(",") === "4,6,7,8" && p1.dup["091"] === 2 && p1.dup["098"] === 1 && p1.blank === 1);
+    ok("⑴ 同じ PIN でも、別の人の行は別に扱う（退避しない）", !p1.drop.some(function (x) { return x.row === 9; }));
+    ok("⑴ 数字になっている PIN（91）は、文字（091）に直す対象にする", p1.textFix.some(function (x) { return x.row === 3 && x.pin === "098"; }) && !p1.textFix.some(function (x) { return x.row === 5; }));
+    var p2 = pinRowsPlan_(vals, { keep: "last" });
+    ok("⑴ 録音設定・KPI目標は、いま効いている最後の行を残す", p2.drop.map(function (x) { return x.row; }).join(",") === "3,5,6" && p2.blank === 0);
+  } finally {
+    Object.keys(FULL_NAME_MAP).forEach(function (k) { delete FULL_NAME_MAP[k]; }); Object.keys(saveF).forEach(function (k) { FULL_NAME_MAP[k] = saveF[k]; });
+    Object.keys(PIN_MAP).forEach(function (k) { delete PIN_MAP[k]; }); Object.keys(saveP).forEach(function (k) { PIN_MAP[k] = saveP[k]; });
+  }
+  // ⑵⑶ 会社スケジュール・SV不在
+  var v1 = calValidate_({ kind: "休業", title: "冬期休暇", from: "2026-12-24", to: "2027-01-05" });
+  ok("⑵ 休業の登録（年をまたぐ期間・シフト登録不可が既定）", v1.ok && v1.item.lock === true && v1.item.from === "2026-12-24" && v1.item.to === "2027-01-05");
+  ok("⑵ 終了日が開始日より前・無い日付・名称なしは断る", !calValidate_({ kind: "休業", title: "x", from: "2026-12-24", to: "2026-12-01" }).ok && !calValidate_({ kind: "休業", title: "x", from: "2026-02-30" }).ok && !calValidate_({ kind: "休業", from: "2026-12-24" }).ok);
+  ok("⑵ 行事は、既定ではシフトを登録できる", calValidate_({ kind: "行事", title: "全体研修", from: "2026-12-01" }).item.lock === false);
+  var itH = calRowToItem_(["C1", "休業", "冬期休暇", "2026-12-24", "2027-01-05", "", "", "全員", "不可", "", "", "有効", "管理者", "", ""], 2);
+  var map = calClosedMapFrom_([itH]);
+  ok("⑵ 休業の日（12/24〜1/5 の13日間）を1日ずつ持つ", Object.keys(map).length === 13 && map["2026-12-24"] === "冬期休暇" && map["2027-01-05"] === "冬期休暇" && !map["2026-12-23"] && !map["2027-01-06"]);
+  var days = { "2026-12-23": { start: "09:30", end: "18:00" }, "2026-12-24": { start: "09:30", end: "18:00" }, "2026-12-25": "off", "2026-12-28": { start: "13:00", end: "18:00" } };
+  var adj = calApplyClosuresWith_(days, map);
+  ok("⑵ 休業日の出勤は「休み」に直し、休業でない日は変えない", adj.length === 2 && days["2026-12-24"] === "off" && days["2026-12-28"] === "off" && days["2026-12-23"].start === "09:30");
+  var vS = calValidate_({ kind: "SV不在", target: "伊東由美", from: "2026-11-20", ft: "13:00", tt: "15:00", contact: "山口課長" });
+  ok("⑶ SV不在の登録（時刻つき）・終了が開始より前は断る", vS.ok && vS.item.ft === "13:00" && vS.item.tt === "15:00" && vS.item.lock === false && !calValidate_({ kind: "SV不在", from: "2026-11-20", ft: "15:00", tt: "13:00" }).ok);
+  var itS = calRowToItem_(["C2", "SV不在", "不在", "2026-11-20", "2026-11-20", "13:00", "15:00", "伊東由美", "", "山口課長", "", "有効", "管理者", "", ""], 3);
+  var n1 = Date.parse("2026-11-20T12:00:00+09:00"), n2 = Date.parse("2026-11-20T15:00:00+09:00");
+  var dg1 = calDigestFrom_([itH, itS], n1), dg2 = calDigestFrom_([itH, itS], n2);
+  ok("⑶ SV不在は、終わるまで画面へ渡す（終わったら渡さない）。休業は、これから先の分も渡す", dg1.sv.length === 1 && dg1.sv[0].s === Date.parse("2026-11-20T13:00:00+09:00") && dg1.sv[0].e === n2 && dg2.sv.length === 0 && dg1.days.length === 1 && dg1.days[0].lock === true);
+  ok("⑶ 内容が変わると版（v）が変わる", dg1.v !== dg2.v && dg1.v === calDigestFrom_([itH, itS], n1 + 1000).v);
+  var itA = calRowToItem_(["C3", "SV不在", "", "2026-11-21", "2026-11-22", "", "", "SV", "", "", "", "有効", "", "", ""], 4);
+  ok("⑶ 時刻なしの SV不在は、終日（最後の日の終わりまで）", itA.start === Date.parse("2026-11-21T00:00:00+09:00") && itA.end === Date.parse("2026-11-23T00:00:00+09:00"));
+  ok("⑵ 取消した予定は使わない", Object.keys(calClosedMapFrom_([calRowToItem_(["C4", "休業", "x", "2026-12-01", "2026-12-01", "", "", "", "不可", "", "", "取消", "", "", ""], 5)])).length === 0);
+  // ⑷ 架電ルール
+  var r0 = rulesNorm_({}), r1 = rulesNorm_({ recall: { on: false, max: 99, minHours: 0 } }), r2 = rulesNorm_({ recall: { max: 0, minHours: -1 } });
+  ok("⑷ 架電ルールの既定（不在は3回まで・20時間あける）と、範囲の丸め", r0.recall.on === true && r0.recall.max === 3 && r0.recall.minHours === 20 && r1.recall.on === false && r1.recall.max === 10 && r1.recall.minHours === 0 && r2.recall.max === 3 && r2.recall.minHours === 20);
+  var rp = recallParse_("12:2:29700000,15:1:29700100,x:1:2");
+  ok("⑷ 掛け直しの控えを読む（元行:回数:時刻）", rp["12"].n === 2 && rp["12"].at === 29700000 * 60000 && rp["15"].n === 1 && Object.keys(rp).length === 2);
+  ok("管理者だけが使える要求に、v112 の登録・整理が入っている", ["cal_list", "cal_save", "cal_cancel", "cal_shift_fix", "rules_get", "rules_set", "pin_rows_audit", "pin_rows_repair"].every(function (x) { return ADMIN_ONLY_TYPES[x]; }));
+  ok("アポインターの要求（cal_get）は、管理者専用に入っていない", !ADMIN_ONLY_TYPES["cal_get"]);
+  var all = t.every(function (x) { return x[1]; });
+  t.forEach(function (x) { Logger.log((x[1] ? "PASS " : "FAIL ") + x[0]); });
+  Logger.log(all ? "== v112SelfTest: ALL PASS ==" : "== v112SelfTest: FAILED ==");
+  return all;
+}
+// ── 導入時の確認（v112 の分）：Apps Script のエディタでこの関数を1回実行 ──
+//   ①だけはシートを変えます（「外部連携設定」の余分な行を「外部連携設定_退避」へ移す）。②は数えるだけで、変えません
+function v112SetupCheck() {
+  try { rosterApply_(true); } catch (e0) {}
+  var r = null;
+  try { r = extCfgRepairIfNeeded_("導入時の確認"); } catch (e1) { Logger.log("① 連携設定: ⚠ " + String(e1 && e1.message || e1)); }
+  if (r && r.ok === false) Logger.log("① 連携設定: ⚠ " + r.message);
+  else {
+    var info = extCfgRepairInfo_();
+    Logger.log("① 連携設定（1人に1行）: " + (r && r.total ? "余分な行 " + r.total + "行を「" + EXT_CONFIG_SHEET + "_退避」へ移しました" : "余分な行はありません") + (r && r.headerFixed ? " ／ 見出しを、いまの列の並びに直しました" : "") +
+      (info && info.pins && info.pins.length ? " ／ 直近の整理（" + info.atText + "）：" + info.pins.map(function (p) { return (p.name || p.pin) + " " + p.extra + "行"; }).join("・") : ""));
+  }
+  try {
+    readExtConfigs_().forEach(function (c) { if (FULL_NAME_MAP[c.pin]) Logger.log("　 ・" + FULL_NAME_MAP[c.pin] + "（" + c.pin + "）→ " + (c.srcTitle || "（未取込）") + "／タブ「" + c.sheetName + "」"); });
+  } catch (e2) {}
+  try {
+    var a = pinRowsAudit_();
+    Logger.log("② 設定シートの余分な行: " + (a.total ? a.sheets.filter(function (s) { return s.extra; }).map(function (s) { return s.label + " " + s.extra + "行"; }).join("／") + "（管理者の画面の「🧹 設定シートの整理」で退避できます。読むときは1人1行にまとめているため、そのままでも動きます）" : "ありません"));
+  } catch (e3) { Logger.log("② 設定シートの点検: ⚠ " + String(e3 && e3.message || e3)); }
+  try {
+    calSheet_(true);
+    var items = calAll_().filter(function (it) { return it.status === "有効"; });
+    Logger.log("③ 会社スケジュール: シート「" + CAL_SHEET + "」 有効な予定 " + items.length + "件");
+    items.slice(0, 20).forEach(function (it) { Logger.log("　 ・" + it.kind + "　" + (it.kind === "SV不在" ? it.target + " " : "") + it.title + "　" + it.from + (it.ft ? " " + it.ft : "") + "〜" + it.to + (it.tt ? " " + it.tt : "") + (it.lock ? "（シフト登録不可）" : "")); });
+  } catch (e4) { Logger.log("③ 会社スケジュール: ⚠ " + String(e4 && e4.message || e4)); }
+  var ru = rulesGet_().recall;
+  Logger.log("④ 架電ルール（不在の掛け直し）: " + (ru.on ? "1社 " + ru.max + "回まで・" + ru.minHours + "時間あけてから" : "使わない"));
+  Logger.log("⑤ サーバーの版: " + GAS_VERSION + "（アプリの版と同じであること）");
+  Logger.log("⑥ 自己点検: " + (v112SelfTest() ? "すべて合格" : "不合格の項目があります（上のログ）"));
 }

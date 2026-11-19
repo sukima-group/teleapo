@@ -85,6 +85,12 @@ kbd{display:inline-block;padding:1px 6px;border:1px solid #cbd5e1;border-bottom-
 /* ==========================================================================
    川嶋メソッド テレアポ管理 PWA  v32 (15分刻みシフト + 再架電保存バグ修正 + 管理者シフトExcel取得)
    ==========================================================================
+   v112 変更（2026-11-20。詳しくは README.md）:
+   - ⑴ 元スプレッドシート連携：連携設定は「1人に1行」。PIN が 0 で始まる方（091 など）の古い行が残っていても、設定した1リストだけを取り込む
+   - ⑵ 会社スケジュール：管理者が休業（冬期休暇など）・行事を登録。休業の期間は、シフト（出勤）を登録できない
+   - ⑶ SV不在：管理者が登録すると、アポインターのホーム・通話の画面に「LINE の返事はすぐに来ません」と出る
+   - ⑷ 架電ルール：不在の先への掛け直しを、1社あたりの回数の上限・前の電話からあける時間で決める（回数はサーバーの架電結果から数える）
+   - そのほか：設定シートの整理（録音設定・KPI目標・暗証番号・架電位置の、余分な行の退避）
    v111 変更（2026-11-15。詳しくは README.md）:
    - ⑴ 通話録音：保存先のフォルダを変更／はじめの設定（初回に自動で開く案内）／相手と話した通話の録音が見つからないときの知らせ
    - ⑵ アポイント台帳：アポ取得報告を、指定のスプレッドシートへ商談日の順に自動登録（管理者の画面に、今日・明日の商談）
@@ -216,7 +222,7 @@ var SHIFT_NOTIFY_TO = CONFIG.NOTIFY.SHIFT_TO;
 var DAILY_REPORT_TO = CONFIG.NOTIFY.DAILY_REPORT_TO;  /* v14: 退勤レポート通知先 */
 
 /* v26: 起動時キャッシュクリア - 旧バージョンのキャッシュを強制削除 */
-var APP_VERSION="v111";
+var APP_VERSION="v112";
 /* v35: 会社ロゴ(スキマ) 埋め込み - オフラインでも表示 */
 var LOGO="data:image/png;base64,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";
 (function(){
@@ -759,6 +765,7 @@ function fetchShiftStatus(after){
   directGasPost({type:"shift_status",pin:U.pin},30000).then(function(res){
     shiftStatusLoading=false;
     if(res&&res.handled===true&&res.history){shiftHistCache=res.history;sv("shReg-"+U.id,shiftHistCache)}
+    if(res&&res.cal){try{x112CalApply(res.cal)}catch(eX12){}}   /* v112: 休業日 */
     if(after)after();
     render();
   }).catch(function(){shiftStatusLoading=false;render()});
@@ -2603,6 +2610,7 @@ function loadUser(id){
   listSince=Number(ld("lsince-"+id))||0;
   progSrv=ld("prog-"+id)||null;
   repass=ld("repass-"+id)||null;
+  try{x112Restore(id)}catch(eX12){}   /* v112 */
   if(repass&&((repass.lid||"")!==(listLid||"")||(listCycle&&repass.cyc&&Number(repass.cyc)!==Number(listCycle))))repass=null;
   listDone=false;syncState.ok=true;syncState.err="";syncState.fails=0;syncState.pending=null;
   skipped=skipLoad(id);
@@ -3056,7 +3064,7 @@ function rangesEach(str,fn){
 }
 /* 架電済みの印を作り直す（同期のあと・結果を保存したあと・取消のあとに呼ぶ） */
 function rebuildCalled(){
-  calledSrc={};calledIdx={};
+  calledSrc={};calledIdx={};X112._loc={};
   if(!U||U==="admin")return;
   var uid=U.id,k,e,t;
   if(listLid){
@@ -3074,8 +3082,9 @@ function rebuildCalled(){
       if(listCycle&&t&&t<listCycle-120000)continue;      /* かけ直しを始める前の結果 */
       s=e.src;
       if(e.ls&&listStamp&&Number(e.ls)!==Number(listStamp)){s=byIdentity(e);if(!s)continue}
-      calledSrc[s]={r:e.r||"",at:t};
+      calledSrc[s]={r:e.r||"",at:t};x112Loc(s,t);
     }
+    try{x112RecallMerge()}catch(eX12){}   /* v112: 架電の回数（サーバーの控え＋この端末の分）。直近1000件より前の「不在」も、掛け直しの対象にする */
   }else{
     for(k=hist.length-1;k>=0;k--){
       e=hist[k];
@@ -3098,11 +3107,11 @@ function calledRes(i){var c=calledInfo(i);return c?c.r:null}
 function called(i){
   var c=calledInfo(i);
   if(!c)return false;
-  if(repass&&repass.lid===listLid&&c.r==="absent"&&c.at<repass.at)return false;   /* もう一巡：不在だった先は、まだかけていない扱い */
+  if(repass&&repass.lid===listLid&&c.r==="absent"&&c.at<repass.at&&x112RecallState(c)==="ready")return false;   /* もう一巡：不在だった先は、まだかけていない扱い */
   return true;
 }
 function calledCount(){var n=0;for(var i=0;i<rows.length;i++)if(calledInfo(i))n++;return n}
-function absentLeft(){var n=0;for(var i=0;i<rows.length;i++){var c=calledInfo(i);if(c&&c.r==="absent"&&show(i)&&(!repass||c.at<repass.at))n++}return n}
+function absentLeft(){var n=0;for(var i=0;i<rows.length;i++){var c=calledInfo(i);if(c&&c.r==="absent"&&show(i)&&(!repass||c.at<repass.at)&&x112RecallState(c)==="ready")n++}return n}   /* v112: 掛け直しのルール（回数の上限・間隔）に合う先だけ */
 function nextUncalled(from,to){for(var i=Math.max(0,from);i<to&&i<rows.length;i++)if(show(i)&&!called(i))return i;return -1}
 /* 手前（いまの行より前）に残っている未架電の件数 */
 function gapsBefore(){var n=0;for(var i=0;i<ci&&i<rows.length;i++)if(show(i)&&!called(i))n++;return n}
@@ -3300,6 +3309,7 @@ function onHeartbeatReply(j){
   if(j.code==="account_deleted"){onAccountDeleted(j.message);return}
   noteServerNow(j.now);
   if(j.gasVersion&&SRV){SRV.ver=String(j.gasVersion);SRV.checkedAt=Date.now()}
+  try{x112HbApply(j)}catch(eX12){}   /* v112: SV不在・会社の休業・架電ルール */
   if(!j.list||!U||U==="admin")return;
   /* v111: 管理者が案件名を直したら、次のハートビートで画面に出る（リストは取り直さない） */
   if(j.list.project!==undefined&&String(j.list.project||"")!==listProject&&String(j.list.lid||"")===String(listLid||"")){
@@ -3347,6 +3357,7 @@ function progressBanner(){
     var ab=absentLeft();
     h+='<div style="margin-top:4px;color:#166534;font-weight:800">🎉 このリストは最後まで架電しました。</div>';
     if(ab>0)h+='<button id="repassBtn" style="margin-top:6px;width:100%;padding:11px;border:none;border-radius:10px;background:#7c3aed;color:#fff;font-weight:800;font-size:13px;font-family:inherit">🔁 不在だった '+ab+'件に、もう一度かける</button>';
+    try{h+=x112RecallNote()}catch(eX12){}   /* v112: 間隔待ち・上限に達した件数 */
     h+='<div style="margin-top:4px;color:#64748b">新しいリスト・最初からのかけ直しは、管理者が設定します。</div>';
   }
   h+='</div>';
@@ -3399,6 +3410,7 @@ function loadFromGAS(staff,cb,opts){
 /* サーバーから受け取った状態を、端末に反映する */
 function applyServerState(staff,d,opts,cb){
     opts=opts||{};
+    try{x112ServerApply(staff,d)}catch(eX12){}   /* v112: 会社スケジュール・架電ルール・掛け直しの控え（架電済みの印を作る前に入れる） */
     var posPlan="";
     /* 1. 架電リスト (v22: サーバーが正 - 空ならローカルもクリア) */
     if(d.list!==undefined){
@@ -6512,6 +6524,7 @@ function applyShiftTemplate(template){
     var key=year+"-"+pad(month)+"-"+pad(d);
     var dow=new Date(year,month-1,d).getDay();
     var isWeekend=(dow===0||dow===6);
+    if(template!=="clear"&&x112Closed(key)){if(shiftDays[key]&&shiftDays[key]!=="off"){delete shiftDays[key];changed++}continue}   /* v112: 会社の休業日には入れない */
     if(template==="weekday_full"){
       if(!isWeekend){shiftDays[key]={start:"09:30",end:"18:00"};changed++}
       else{shiftDays[key]="off";changed++}
@@ -6533,6 +6546,7 @@ function applyShiftTemplate(template){
 
 function submitShift(mode){
   if(U==="admin"){flash("⚠️ 管理者はシフト申請できません");return}
+  try{x112ShiftClean(false)}catch(eX12){}   /* v112: 会社の休業日の出勤は送らない */
   var keys=Object.keys(shiftDays).sort();
   if(!keys.length){flash("⚠️ 1日も入力されていません");vib([100,60,100]);return}
   /* v108: 送る前に入力を点検（時間の前後・休憩の重なり・対象月） */
@@ -6600,6 +6614,7 @@ function doSubmitShift(mode){
         shiftSubmitState.phase="saved";
         shiftSubmitState.notify=(res&&res.notify)?res.notify:{status:(res&&res.status==="duplicate")?"":""};
         shiftApplyResult(mode,res&&res.status==="ok"?res:null,draft);
+        try{x112ShiftAdjusted(res)}catch(eX12){}   /* v112: サーバーが休業日の出勤を休みに直したとき */
         var ns=shiftSubmitState.notify&&shiftSubmitState.notify.status;
         vib([60,40,60,40,120]);
         flash(ns==="送信済"?"✅ 申請を登録し、管理者へ通知しました":(ns==="再送待ち"?"✅ 申請を登録しました（通知は自動で再送します）":"✅ 申請を登録しました"));
@@ -7824,6 +7839,7 @@ function admLoadTop(){
   directGasPost({type:"rec_auto_status"},30000).then(function(r){admTop.rec=(r&&r.result)||null;render()}).catch(function(){});
   try{x110Load()}catch(eX){}   /* v110: 削除したアカウントの状態 */
   try{x111Load()}catch(eX1){}  /* v111: アポイント台帳・架電報告書 */
+  try{x112Load()}catch(eX2){}  /* v112: 会社スケジュール・SV不在・架電ルール・設定シートの整理 */
   if(!admTop.timer)admTop.timer=setInterval(function(){if(U==="admin"&&admTok&&document.visibilityState==="visible")admLoadTop()},300000);
 }
 function admYm(ym){var p=String(ym||"").split("-");return p.length===2?p[0]+"年"+(+p[1])+"月":ym}
@@ -7866,6 +7882,7 @@ function admTopCards(){
       h+='<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-top:1px solid #f1f5f9;font-size:11.5px;flex-wrap:wrap"><b style="min-width:70px">'+htmlEsc(m.name)+'</b><span style="background:'+c[0]+';color:'+c[1]+';border-radius:10px;padding:1px 7px;font-weight:800;font-size:10.5px">'+m.state+'</span><span style="color:#64748b">今日 送信'+m.sentToday+'件／架電'+m.callsToday+'件'+(m.pending?'・待ち'+m.pending+'件':'')+(m.lastScanAt?'・最終 '+htmlEsc(String(m.lastScanAt).slice(5)):'')+'</span>'+(m.lastError?'<span style="color:#b91c1c;width:100%">⚠️ '+htmlEsc(m.lastError)+'</span>':'')+'</div>'});
     h+='<div style="font-size:10px;color:#94a3b8;margin-top:4px">「未接続」の人は、本人のスマホでこのアプリを開くと「はじめの設定」が自動で出ます（出ないときは、ホームの「🎙 はじめの設定を始める」）。赤い字は、録音が見つからない通話が続いている知らせです。</div></div>';
   }
+  try{h+=x112AdminCards()}catch(eX12){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v112 のカードを表示できませんでした：'+htmlEsc(String(eX12&&eX12.message||eX12))+'</div>'}   /* v112: 会社スケジュール・SV不在・架電ルール・設定シートの整理 */
   try{h+=x111AdminCards()}catch(eX11){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v111 のカードを表示できませんでした：'+htmlEsc(String(eX11&&eX11.message||eX11))+'</div>'}   /* v111: アポイント台帳・架電報告書・案件別の進み具合 */
   h+=x110AdminCards();   /* v110: 録音の保存先・連携の点検・集計の点検・削除したアカウント */
   /* セキュリティ */
@@ -8710,6 +8727,505 @@ function raMissBanner(){
 function raMissClear(){var w=raWatchLoad();w.miss=0;w.list=[];sv(raWatchKey(),w);RA.miss=0;render();try{raReport(true)}catch(e){}}
 
 /* ── 管理者：アポイント台帳・架電報告書・案件別の進み具合 ── */
+/* ══════════════════════════════════════════════════════════════════════
+   v112: 会社スケジュール（休業・行事）／SV不在／架電ルール（不在の掛け直し）／設定シートの整理
+   ・休業（シフト登録不可）の日は、シフトのカレンダーで選べない。サーバーも、その日の出勤を登録しない
+   ・SV不在の間は、ホームと通話の画面に「LINE の返事はすぐに来ません」と出す（管理者が登録。ハートビートで2分以内に届く）
+   ・不在の先への掛け直しは、管理者が決めたルール（何回まで・何時間あけて）と、サーバーの架電結果で決める
+   ══════════════════════════════════════════════════════════════════════ */
+var X112={cal:null,rules:null,recall:null,_loc:{},adm:null,admBusy:false,admErr:"",form:null,saving:false,fixBusy:"",
+  rulesAdm:null,rulesBusy:false,rulesEdit:null,pin:null,pinBusy:false,open:{},tick:null,polledAt:0};
+var X112_CARD='background:#fff;border-radius:14px;padding:12px;margin-bottom:12px;border:1.5px solid ';
+var X112_BTN='padding:7px 11px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#334155;font-weight:800;font-size:11px;font-family:inherit';
+var X112_PRI='padding:11px;border:none;border-radius:10px;background:#1d4ed8;color:#fff;font-weight:800;font-size:13px;font-family:inherit';
+var X112_IN='width:100%;padding:9px;border:1.5px solid #cbd5e1;border-radius:8px;font-size:14px;font-family:inherit;box-sizing:border-box;background:#fff;color:#0f172a';
+var X112_LB='display:block;font-size:11px;font-weight:800;color:#475569;margin:8px 0 3px';
+var X112_DOW=["日","月","火","水","木","金","土"];
+function x112Now(){return Date.now()+(CLK_OFF||0)}
+function x112Key(ms){var d=new Date(ms+9*3600000);return d.getUTCFullYear()+"-"+pad(d.getUTCMonth()+1)+"-"+pad(d.getUTCDate())}
+function x112Hm(ms){var d=new Date(ms+9*3600000);return pad(d.getUTCHours())+":"+pad(d.getUTCMinutes())}
+function x112Md(k){var p=String(k||"").split("-");if(p.length!==3)return String(k||"");return (+p[1])+"/"+(+p[2])+"（"+X112_DOW[new Date(Date.UTC(+p[0],+p[1]-1,+p[2])).getUTCDay()]+"）"}
+function x112Span(a,b){return (!b||a===b)?x112Md(a):x112Md(a)+"〜"+x112Md(b)}
+function x112AddDays(k,n){var p=String(k).split("-");return x112Key(Date.UTC(+p[0],+p[1]-1,+p[2])+n*86400000-9*3600000+12*3600000)}
+/* 端末に控えた内容を読む（オフラインで開いたときも、休業日と SV不在が出るように） */
+function x112Init(){
+  if(X112._init)return;X112._init=true;
+  try{var c=ld("cal-v112");if(c&&c.v&&c.days&&c.sv)X112.cal=c}catch(e){}
+  try{var r=ld("rules-v112");if(r&&r.recall)X112.rules=r}catch(e2){}
+  x112TickPlan();
+}
+function x112CalApply(cal){
+  if(!cal||!cal.v||!cal.days||!cal.sv)return false;
+  var changed=!X112.cal||X112.cal.v!==cal.v;
+  X112.cal=cal;X112.polledAt=Date.now();
+  if(changed){sv("cal-v112",cal);try{x112ShiftClean(true)}catch(e){}x112TickPlan()}
+  return changed;
+}
+function x112RulesApply(r){
+  if(!r||!r.recall)return false;
+  var changed=JSON.stringify(X112.rules||{})!==JSON.stringify(r);
+  X112.rules=r;
+  if(changed){sv("rules-v112",r);try{rebuildCalled()}catch(e){}}
+  return changed;
+}
+/* 同期（fetch_state）の返事から */
+function x112ServerApply(staff,d){
+  if(!d)return;
+  if(d.cal)x112CalApply(d.cal);
+  if(d.rules)x112RulesApply(d.rules);
+  if(d.recall!==undefined){
+    X112.recall=d.recall?{lid:String(d.recall.lid||""),cycle:Number(d.recall.cycle)||0,map:x112RecallParse(d.recall.a)}:null;
+    if(staff&&staff.id)sv("rcl-"+staff.id,X112.recall);
+  }
+}
+function x112Restore(id){X112.recall=ld("rcl-"+id)||null;x112Init()}
+/* ハートビートの返事から（管理者が登録した SV不在・休業・架電ルールが、2分以内に画面へ出る） */
+function x112HbApply(j){
+  if(!j)return;
+  var ch=false;
+  if(j.cal)ch=x112CalApply(j.cal)||ch;
+  if(j.rules)ch=x112RulesApply(j.rules)||ch;
+  if(ch)x112Redraw();
+}
+/* 入力中の画面（結果の入力・アポ報告・確認の画面）は描き直さない */
+function x112Redraw(){
+  try{
+    if(!U||U==="admin")return;
+    if(showConfirm||showCB||showShiftDay)return;
+    if(V==="home"&&!callBusy()&&!CALL_PENDING)render();
+    else if(V==="shift")render();
+  }catch(e){}
+}
+/* 出勤前の端末（ハートビートを送らない）も、5分ごとに確かめる */
+function x112Poll(){
+  try{
+    if(!U||U==="admin"||!GAS||!navigator.onLine||document.visibilityState!=="visible")return;
+    if(Date.now()-X112.polledAt<240000)return;
+    X112.polledAt=Date.now();
+    directGasPost({type:"cal_get",pin:U.id},20000).then(function(r){if(r&&r.cal&&x112CalApply(r.cal))x112Redraw()}).catch(function(){});
+  }catch(e){}
+}
+setInterval(x112Poll,300000);
+document.addEventListener("visibilitychange",function(){if(document.visibilityState==="visible")setTimeout(x112Poll,1500)});
+/* SV不在の始まり・終わりの時刻に、画面を描き直す */
+function x112TickPlan(){
+  if(X112.tick){clearTimeout(X112.tick);X112.tick=null}
+  var c=X112.cal;if(!c||!c.sv||!c.sv.length)return;
+  var n=x112Now(),next=0;
+  c.sv.forEach(function(s){[s.s,s.e].forEach(function(t){if(t>n&&(!next||t<next))next=t})});
+  if(!next)return;
+  X112.tick=setTimeout(function(){X112.tick=null;x112Redraw();x112TickPlan()},Math.max(1000,Math.min(600000,next-n+800)));
+}
+
+/* ── 休業日 ── */
+function x112Closed(k){
+  var c=X112.cal;if(!c||!c.days)return "";
+  for(var i=0;i<c.days.length;i++){var d=c.days[i];if(d.lock&&k>=d.from&&k<=d.to)return d.title||"休業"}
+  return "";
+}
+/* 下書きに残っている「休業日の出勤」を外す（登録済みが休みなら休み、そうでなければ未入力に戻す） */
+function x112ShiftClean(silent){
+  if(!U||U==="admin"||!X112.cal||!shiftDays)return 0;
+  var reg=shiftRegFor(shiftMonth),n=0;
+  Object.keys(shiftDays).forEach(function(k){
+    var v=shiftDays[k];
+    if(!v||v==="off"||typeof v!=="object"||!x112Closed(k))return;
+    if(reg&&reg.days&&reg.days[k]==="off")shiftDays[k]="off";else delete shiftDays[k];
+    n++;
+  });
+  if(n){sv("sft-"+U.id+"-"+shiftMonth,shiftDays);if(!silent)flash("🏢 会社の休業日の出勤 "+n+"日を、入力から外しました")}
+  return n;
+}
+/* サーバーが「休業日なので休みにした」と返した日を、下書きにも合わせる */
+function x112ShiftAdjusted(res){
+  var a=res&&res.closedAdjusted;
+  if(!a||!a.length||!U||U==="admin")return;
+  var month=normMonth(res.month||shiftMonth);
+  if(month===shiftMonth){
+    a.forEach(function(x){if(shiftDays[x.date]!==undefined)shiftDays[x.date]="off"});
+    sv("sft-"+U.id+"-"+shiftMonth,shiftDays);
+  }
+  setTimeout(function(){flash("🏢 会社の休業日（"+htmlEsc(a[0].title||"休業")+"）の "+a.length+"日は、出勤を登録せず「休み」にしました")},2600);
+}
+/* シフト画面：この月にかかる休業・行事の知らせ */
+function x112ShiftNotice(){
+  x112Init();
+  var c=X112.cal;if(!c||!c.days||!c.days.length)return "";
+  var p=shiftMonth.split("-"),first=shiftMonth+"-01",last=shiftMonth+"-"+pad(new Date(+p[0],+p[1],0).getDate()),h="";
+  var reg=shiftRegFor(shiftMonth),left=0;
+  c.days.forEach(function(d){
+    if(d.to<first||d.from>last)return;
+    if(d.lock){
+      h+='<div class="x112ShClosed" style="background:#f1f5f9;border:1.5px solid #94a3b8;border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:#334155;line-height:1.7">🏢 <b>'+htmlEsc(x112Span(d.from,d.to))+'　'+htmlEsc(d.title)+'</b>（会社の休業）<br>この期間は、出勤を登録できません。'+(d.memo?'<br><span style="color:#64748b">'+htmlEsc(d.memo)+'</span>':'')+'</div>';
+      if(reg&&reg.days)Object.keys(reg.days).forEach(function(k){var v=reg.days[k];if(v&&v!=="off"&&k>=d.from&&k<=d.to)left++});
+    }else{
+      h+='<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:8px 12px;margin-bottom:10px;font-size:11.5px;color:#1e40af;line-height:1.7">📅 <b>'+htmlEsc(x112Span(d.from,d.to))+'　'+htmlEsc(d.title)+'</b>'+(d.memo?'　'+htmlEsc(d.memo):'')+'</div>';
+    }
+  });
+  if(left>0)h+='<div role="alert" style="background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:#b91c1c;font-weight:700;line-height:1.7">⚠️ 休業の期間に、登録済みの出勤が '+left+'日あります。下の「修正申請」を押すと、休みとして登録し直します。</div>';
+  return h;
+}
+
+/* ── SV不在 ── */
+function x112Sv(){
+  var c=X112.cal,n=x112Now(),out={now:[],soon:[]};
+  if(!c||!c.sv)return out;
+  c.sv.forEach(function(s){
+    if(s.e<=n)return;
+    if(s.s<=n)out.now.push(s);else if(s.s-n<=24*3600000)out.soon.push(s);
+  });
+  return out;
+}
+function x112SvUntil(s){
+  var n=x112Now(),today=x112Key(n),ek=x112Key(s.e-1000);
+  if(!s.tt)return ek===today?"本日いっぱい":x112Md(ek)+" まで";
+  return (ek===today?"":x112Md(ek)+" ")+x112Hm(s.e)+" まで";
+}
+function x112SvWhen(s){
+  var n=x112Now(),today=x112Key(n),sk=x112Key(s.s),ek=x112Key(s.e-1000);
+  var day=function(k){return k===today?"本日":(k===x112AddDays(today,1)?"明日":x112Md(k))};
+  if(!s.ft&&!s.tt)return sk===ek?day(sk)+" 終日":day(sk)+"〜"+x112Md(ek)+"（終日）";
+  if(sk===ek)return day(sk)+" "+(s.ft?x112Hm(s.s):"朝")+"〜"+(s.tt?x112Hm(s.e):"終わり");
+  return day(sk)+" "+(s.ft?x112Hm(s.s):"")+" 〜 "+x112Md(ek)+" "+(s.tt?x112Hm(s.e):"");
+}
+/* ホームの上に出す知らせ：SV不在（いま・これから）／会社の休業／行事 */
+function x112HomeBanner(){
+  x112Init();
+  var c=X112.cal;if(!c)return "";
+  var h="",q=x112Sv(),today=x112Key(x112Now());
+  q.now.forEach(function(s){
+    h+='<div class="x112SvNow" role="alert" style="background:#fff7ed;border:2px solid #f97316;border-radius:14px;padding:12px;margin-bottom:10px">';
+    h+='<div style="font-size:14.5px;font-weight:800;color:#9a3412">🔕 SV（'+htmlEsc(s.name)+'さん）は、いま不在です<span style="font-size:12px;font-weight:700">　'+htmlEsc(x112SvUntil(s))+'</span></div>';
+    h+='<div style="font-size:12.5px;color:#7c2d12;line-height:1.7;margin-top:4px">この間、<b>LINE の返事はすぐに来ません</b>。返事を待たずに、架電を続けてください。</div>';
+    if(s.contact)h+='<div style="font-size:12px;color:#7c2d12;font-weight:700;margin-top:4px">📞 急ぎのとき：'+htmlEsc(s.contact)+'</div>';
+    if(s.memo)h+='<div style="font-size:11.5px;color:#9a3412;margin-top:3px">📝 '+htmlEsc(s.memo)+'</div>';
+    h+='</div>';
+  });
+  if(q.soon.length){
+    h+='<div class="x112SvSoon" style="background:#fffbeb;border:1px solid #fcd34d;border-radius:12px;padding:9px 12px;margin-bottom:10px;font-size:12px;color:#92400e;line-height:1.7">';
+    q.soon.forEach(function(s,i){h+=(i?'<br>':'')+'📌 <b>'+htmlEsc(x112SvWhen(s))+'</b> は、SV（'+htmlEsc(s.name)+'さん）が不在の予定です。LINE の返事はすぐに来ません。'+(s.contact?'（急ぎ：'+htmlEsc(s.contact)+'）':'')});
+    h+='</div>';
+  }
+  (c.days||[]).forEach(function(d){
+    if(d.to<today)return;
+    var inNow=d.from<=today;
+    if(d.lock){
+      if(!inNow&&d.from>x112AddDays(today,45))return;
+      h+='<div class="x112Closed" style="background:#f1f5f9;border:1.5px solid #94a3b8;border-radius:12px;padding:9px 12px;margin-bottom:10px;font-size:12px;color:#334155;line-height:1.7">🏢 '+(inNow?'<b>本日は会社の休業日です</b>（'+htmlEsc(d.title)+'：'+htmlEsc(x112Span(d.from,d.to))+'）':'<b>'+htmlEsc(x112Span(d.from,d.to))+'</b> は <b>'+htmlEsc(d.title)+'</b>（会社の休業）です。この期間は、シフトを登録できません。')+(d.memo?'<br><span style="color:#64748b">'+htmlEsc(d.memo)+'</span>':'')+'</div>';
+    }else{
+      if(!inNow&&d.from>x112AddDays(today,14))return;
+      h+='<div class="x112Event" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#1e40af;line-height:1.7">📅 <b>'+htmlEsc(x112Span(d.from,d.to))+'　'+htmlEsc(d.title)+'</b>'+(d.memo?'　'+htmlEsc(d.memo):'')+'</div>';
+    }
+  });
+  return h;
+}
+/* 通話の画面の上に出す1行（SV に LINE で聞こうとする場面） */
+function x112CallStrip(){
+  x112Init();
+  var q=x112Sv();if(!q.now.length)return "";
+  var s=q.now[0];
+  return '<div class="x112SvStrip" style="background:#fff7ed;border:1.5px solid #f97316;border-radius:10px;padding:7px 10px;margin-bottom:8px;font-size:11.5px;color:#9a3412;font-weight:700;line-height:1.6">🔕 SV不在（'+htmlEsc(x112SvUntil(s))+'）：LINE の返事はすぐに来ません'+(s.contact?'　📞 急ぎ：'+htmlEsc(s.contact):'')+'</div>';
+}
+
+/* ── 架電ルール：不在の先への掛け直し ── */
+function x112RecallParse(a){
+  var out={};
+  String(a||"").split(",").forEach(function(t){var m=t.match(/^(\d+):(\d+):(\d+)$/);if(m)out[m[1]]={n:+m[2],at:(+m[3])*60000}});
+  return out;
+}
+function x112Loc(s,t){(X112._loc[s]=X112._loc[s]||[]).push(t)}
+/* 架電済みの印に、架電の回数を足す。サーバーの控え（最後の結果が不在の行：回数・最後にかけた時刻）＋そのあとに、この端末でかけた分 */
+function x112RecallMerge(){
+  var rc=(X112.recall&&X112.recall.map&&X112.recall.lid===listLid&&(!listCycle||!X112.recall.cycle||Number(X112.recall.cycle)===Number(listCycle)))?X112.recall.map:null;
+  Object.keys(calledSrc).forEach(function(s){
+    var c=calledSrc[s],S=rc?rc[s]:null,L=X112._loc[s]||[];
+    if(S){
+      var extra=0;L.forEach(function(t){if(t>S.at+90000)extra++});
+      c.n=S.n+extra;
+      if(S.at>(c.at||0)){c.r="absent";c.at=S.at}   /* この端末の履歴（直近1000件）より前の「不在」・ほかの端末でかけた「不在」 */
+    }else c.n=L.length;
+  });
+}
+function x112Rule(){var r=X112.rules&&X112.rules.recall;return (r&&r.on!==false)?r:null}
+/* その行に、いま掛け直せるか：ready＝掛け直せる／wait＝まだ間隔があいていない／capped＝回数の上限 */
+function x112RecallState(c){
+  var r=x112Rule();
+  if(!r||!c)return "ready";        /* ルールを使わない・サーバーが古い版のとき：これまでどおり、不在の先すべて */
+  if((c.n||1)>=r.max)return "capped";
+  if(c.at&&x112Now()-c.at<r.minHours*3600000)return "wait";
+  return "ready";
+}
+function x112RecallStat(){
+  var o={ready:0,wait:0,capped:0,nextAt:0},r=x112Rule();
+  for(var i=0;i<rows.length;i++){
+    var c=calledInfo(i);
+    if(!c||c.r!=="absent"||!show(i))continue;
+    if(repass&&repass.lid===listLid&&c.at>=repass.at)continue;     /* このもう一巡で、もうかけた */
+    var st=x112RecallState(c);
+    o[st]++;
+    if(st==="wait"&&r){var t=c.at+r.minHours*3600000;if(!o.nextAt||t<o.nextAt)o.nextAt=t}
+  }
+  return o;
+}
+function x112RuleText(){var r=x112Rule();return r?("1社 "+r.max+"回まで・前の電話から "+(r.minHours>=24&&r.minHours%24===0?(r.minHours/24)+"日":r.minHours+"時間")+"あける"):""}
+/* 進捗の帯に足す1行（最後まで架電したとき）：間隔待ち・上限に達した件数 */
+function x112RecallNote(){
+  var r=x112Rule();if(!r||!listLid)return "";
+  var st=x112RecallStat();
+  if(!st.wait&&!st.capped)return "";
+  var h='<div class="x112Recall" style="margin-top:5px;color:#5b21b6;font-size:11px;line-height:1.7">不在の先（掛け直しのルール：'+x112RuleText()+'）';
+  if(st.wait){var today=x112Key(x112Now()),nk=x112Key(st.nextAt);h+='<br>・まだ間隔があいていない <b>'+st.wait+'件</b>（いちばん早い先は '+(nk===today?"本日 ":x112Md(nk)+" ")+x112Hm(st.nextAt)+' から）'}
+  if(st.capped)h+='<br>・'+r.max+'回かけて不在だった <b>'+st.capped+'件</b>（これ以上はかけません）';
+  return h+'</div>';
+}
+
+/* ════════ 管理者の画面 ════════ */
+function x112Load(){
+  if(!admTok||U!=="admin")return;
+  x112Init();
+  x112AdmCal();
+  directGasPost({type:"rules_get",board:true},90000).then(function(r){X112.rulesAdm=(r&&r.result)||null;render()}).catch(function(){});
+  directGasPost({type:"pin_rows_audit"},60000).then(function(r){X112.pin=(r&&r.result)||null;render()}).catch(function(){});
+}
+function x112AdmCal(){
+  X112.admBusy=true;
+  directGasPost({type:"cal_list"},60000).then(function(r){X112.admBusy=false;X112.admErr="";X112.adm=(r&&r.result)||null;render()})
+    .catch(function(e){X112.admBusy=false;X112.admErr=(e&&e.code==="admin_auth")?"":("確認できませんでした："+e.message);render()});
+}
+function x112Err(prefix,e){flash(prefix+htmlEsc(String(e&&e.message||e||"").slice(0,140)))}
+function x112FormNew(kind){
+  var today=x112Key(x112Now());
+  if(kind==="SV不在"){
+    var nm=((CONFIG.MEETING_PARTNERS||[])[0]||{}).nm||"SV";
+    X112.form={id:"",kind:"SV不在",title:"",from:today,to:today,ft:"",tt:"",target:nm,lock:false,contact:"",memo:""};
+  }else X112.form={id:"",kind:"休業",title:"",from:"",to:"",ft:"",tt:"",target:"",lock:true,contact:"",memo:""};
+}
+function x112FormEdit(id){
+  var it=null;((X112.adm&&X112.adm.items)||[]).forEach(function(x){if(x.id===id)it=x});
+  if(!it)return;
+  X112.form={id:it.id,kind:it.kind,title:it.title||"",from:it.from,to:it.to,ft:it.ft||"",tt:it.tt||"",target:it.target||"",lock:!!it.lock,contact:it.contact||"",memo:it.memo||""};
+}
+/* SV不在の早見ボタン：いまから◯時間／本日いっぱい／明日 終日 */
+function x112SvPreset(v){
+  var f=X112.form;if(!f)return;
+  var n=x112Now(),today=x112Key(n);
+  if(v==="1h"||v==="2h"||v==="3h"){
+    var s=Math.floor(n/300000)*300000,e=s+(+v.charAt(0))*3600000;
+    f.from=x112Key(s);f.ft=x112Hm(s);f.to=x112Key(e);f.tt=x112Hm(e);
+  }else if(v==="today"){f.from=today;f.to=today;f.ft=x112Hm(Math.floor(n/300000)*300000);f.tt=""}
+  else if(v==="tomorrow"){var t=x112AddDays(today,1);f.from=t;f.to=t;f.ft="";f.tt=""}
+}
+function x112Save(){
+  var f=X112.form;if(!f||X112.saving)return;
+  if(!f.from){flash("⚠️ 開始日を入力してください");return}
+  if(f.kind!=="SV不在"&&!String(f.title||"").trim()){flash("⚠️ 名称を入力してください（例：冬期休暇）");return}
+  var item={id:f.id||"",kind:f.kind,title:f.title,from:f.from,to:f.to||f.from,ft:f.kind==="SV不在"?f.ft:"",tt:f.kind==="SV不在"?f.tt:"",target:f.kind==="SV不在"?f.target:"",lock:f.kind==="休業"?f.lock!==false:(f.kind==="行事"?f.lock===true:false),contact:f.contact,memo:f.memo};
+  X112.saving=true;render();
+  directGasPost({type:"cal_save",item:item},60000).then(function(r){
+    X112.saving=false;X112.adm=(r&&r.result)||X112.adm;X112.form=null;
+    var id=r&&r.saved&&r.saved.id,cf=id&&X112.adm&&X112.adm.conflicts&&X112.adm.conflicts[id];
+    vib([40,30,40]);
+    flash(item.kind==="SV不在"?"✅ SV不在を登録しました。アポインターの画面には、2分以内に出ます":("✅ 登録しました"+(item.lock?"。この期間は、シフトの出勤を登録できません":"")+(cf&&cf.length?"（すでに出勤を登録している人が "+cf.length+"名います）":"")));
+    render();
+  }).catch(function(e){X112.saving=false;x112Err("⚠️ 登録できませんでした：",e);render()});
+}
+function x112Cancel(id){
+  var it=null;((X112.adm&&X112.adm.items)||[]).forEach(function(x){if(x.id===id)it=x});
+  if(!it)return;
+  showConfirm={title:"この予定を取り消しますか？",msg:(it.kind==="SV不在"?"SV不在（"+(it.target||"SV")+"）":it.kind+"「"+it.title+"」")+"\n"+x112ItemWhen(it)+"\n\n取り消すと、アポインターの画面から消えます"+(it.lock?"（この期間のシフトも、登録できるようになります）":"")+"。",
+    yesLabel:"取り消す",noLabel:"やめる",
+    onYes:function(){showConfirm=null;render();
+      directGasPost({type:"cal_cancel",id:id},60000).then(function(r){X112.adm=(r&&r.result)||X112.adm;if(X112.form&&X112.form.id===id)X112.form=null;flash("取り消しました");render()}).catch(function(e){x112Err("⚠️ 取り消せませんでした：",e)})},
+    onNo:function(){showConfirm=null;render()}};
+  render();
+}
+function x112Fix(id){
+  var it=null;((X112.adm&&X112.adm.items)||[]).forEach(function(x){if(x.id===id)it=x});
+  var cf=(X112.adm&&X112.adm.conflicts&&X112.adm.conflicts[id])||[];
+  if(!it||!cf.length)return;
+  showConfirm={title:"登録済みの出勤を、休みに直しますか？",
+    msg:"「"+it.title+"」（"+x112Span(it.from,it.to)+"）の期間の出勤を、休みに変えます。\n\n"+cf.map(function(c){return "・"+c.name+"："+c.days.map(function(k){return x112Md(k)}).join("、")}).join("\n")+"\n\n本人には、メールで知らせます。",
+    yesLabel:"休みに直す",noLabel:"やめる",
+    onYes:function(){showConfirm=null;X112.fixBusy=id;render();
+      directGasPost({type:"cal_shift_fix",id:id},120000).then(function(r){X112.fixBusy="";X112.adm=(r&&r.result)||X112.adm;
+        var n=0;((r&&r.fixed)||[]).forEach(function(f){n+=f.days.length});
+        vib([40,30,40]);flash(n?"✅ "+((r.fixed||[]).length)+"名・"+n+"日の出勤を、休みに直しました（本人へメールで知らせます）":"直す出勤はありませんでした");render()})
+      .catch(function(e){X112.fixBusy="";x112Err("⚠️ 直せませんでした：",e);render()})},
+    onNo:function(){showConfirm=null;render()}};
+  render();
+}
+function x112ItemWhen(it){
+  if(it.kind!=="SV不在"||(!it.ft&&!it.tt))return x112Span(it.from,it.to)+(it.kind==="SV不在"?"（終日）":"");
+  if(it.from===it.to)return x112Md(it.from)+" "+(it.ft||"朝")+"〜"+(it.tt||"終わり");
+  return x112Md(it.from)+" "+(it.ft||"")+" 〜 "+x112Md(it.to)+" "+(it.tt||"");
+}
+function x112AdminCards(){
+  x112Init();
+  var h='',A=X112.adm,B=X112_BTN;
+  /* ── 🗓 会社スケジュール・SV不在 ── */
+  h+='<div id="x112CalCard" style="'+X112_CARD+'#0ea5e9"><div style="display:flex;align-items:center;gap:6px;margin-bottom:6px"><div style="font-size:14px;font-weight:800;color:#0c4a6e;flex:1">🗓 会社スケジュール・SV不在</div><button data-x112="calReload" style="'+B+'">'+(X112.admBusy?"⏳":"🔄")+'</button></div>';
+  if(!A){
+    h+='<div style="font-size:11.5px;color:'+(X112.admErr?"#b91c1c":"#64748b")+'">'+(X112.admErr?htmlEsc(X112.admErr):(srvMismatch()?"サーバー（GAS）を v112 にすると使えます。":"確認中…"))+'</div>';
+  }else{
+    var items=A.items||[],act=items.filter(function(x){return x.state==="期間中"||x.state==="予定"}),old=items.filter(function(x){return x.state==="終了"||x.state==="取消"});
+    var svNow=act.filter(function(x){return x.kind==="SV不在"&&x.state==="期間中"});
+    h+='<div id="x112SvState" style="font-size:12px;font-weight:800;padding:7px 10px;border-radius:9px;margin-bottom:8px;'+(svNow.length?'background:#fff7ed;color:#9a3412;border:1px solid #fdba74':'background:#f0fdf4;color:#166534;border:1px solid #bbf7d0')+'">'+(svNow.length?'🔕 いま、SV（'+htmlEsc(svNow.map(function(x){return x.target||"SV"}).join("・"))+'）は不在です。アポインターの画面に「LINE の返事はすぐに来ません」と出ています':'✅ いま、SV不在の登録はありません')+'</div>';
+    Object.keys(A.conflicts||{}).forEach(function(id){
+      var it=null;items.forEach(function(x){if(x.id===id)it=x});if(!it)return;
+      var cf=A.conflicts[id];
+      h+='<div class="x112Conflict" style="background:#fef2f2;border:1.5px solid #fca5a5;border-radius:10px;padding:9px 11px;margin-bottom:8px;font-size:11.5px;color:#7f1d1d;line-height:1.7"><b>⚠ 「'+htmlEsc(it.title)+'」（'+htmlEsc(x112Span(it.from,it.to))+'）の期間に、出勤が登録されています</b>';
+      cf.forEach(function(c){h+='<br>・'+htmlEsc(c.name)+'：'+htmlEsc(c.days.map(function(k){return x112Md(k)}).join("、"))+'（'+htmlEsc(c.status)+'）'});
+      h+='<br><button data-x112="fix" data-v="'+htmlEsc(id)+'" style="'+B+';margin-top:6px;border-color:#f87171;color:#b91c1c">'+(X112.fixBusy===id?"⏳ 直しています…":"この出勤を、休みに直す（本人へメール）")+'</button></div>';
+    });
+    if(!act.length)h+='<div style="font-size:11.5px;color:#94a3b8;padding:4px 0 8px">これからの予定は、登録されていません。</div>';
+    var rowHtml=function(it){
+      var kc=it.kind==="SV不在"?["#fff7ed","#9a3412"]:(it.kind==="休業"?["#f1f5f9","#334155"]:["#eff6ff","#1e40af"]);
+      var sc=it.state==="期間中"?["#fee2e2","#b91c1c"]:(it.state==="予定"?["#e0f2fe","#075985"]:["#f1f5f9","#64748b"]);
+      var r='<div class="x112Item" data-id="'+htmlEsc(it.id)+'" style="padding:8px 0;border-top:1px solid #f1f5f9'+(it.state==="取消"?';opacity:.55':'')+'"><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">';
+      r+='<span style="background:'+kc[0]+';color:'+kc[1]+';border-radius:8px;padding:1px 7px;font-weight:800;font-size:10.5px">'+htmlEsc(it.kind)+'</span>';
+      r+='<b style="font-size:12.5px;color:#0f172a">'+htmlEsc(it.kind==="SV不在"?(it.target||"SV")+"さん":it.title)+'</b>';
+      r+='<span style="font-size:12px;color:#334155">'+htmlEsc(x112ItemWhen(it))+'</span>';
+      r+='<span style="background:'+sc[0]+';color:'+sc[1]+';border-radius:8px;padding:1px 7px;font-weight:800;font-size:10px">'+htmlEsc(it.state)+'</span>';
+      if(it.kind!=="SV不在")r+='<span style="font-size:10px;color:'+(it.lock?"#b91c1c":"#64748b")+';font-weight:700">'+(it.lock?"シフト登録不可":"シフト登録可")+'</span>';
+      r+='<span style="flex:1"></span>';
+      if(it.state==="期間中"||it.state==="予定")r+='<button data-x112="edit" data-v="'+htmlEsc(it.id)+'" style="'+B+'">直す</button><button data-x112="cancel" data-v="'+htmlEsc(it.id)+'" style="'+B+';color:#b91c1c">'+(it.kind==="SV不在"&&it.state==="期間中"?"戻った（解除）":"取消")+'</button>';
+      r+='</div>';
+      if(it.contact||it.memo)r+='<div style="font-size:10.5px;color:#64748b;margin-top:2px">'+(it.contact?'📞 '+htmlEsc(it.contact)+'　':'')+(it.memo?'📝 '+htmlEsc(it.memo):'')+'</div>';
+      return r+'</div>';
+    };
+    act.forEach(function(it){h+=rowHtml(it)});
+    if(old.length){
+      h+='<button data-x112="tglOld" style="'+B+';margin-top:6px">'+(X112.open.old?"▲":"▼")+' 終わった予定・取り消した予定（'+old.length+'件）</button>';
+      if(X112.open.old)old.slice().reverse().forEach(function(it){h+=rowHtml(it)});
+    }
+    /* 登録の入力欄 */
+    var f=X112.form;
+    if(!f){
+      h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px"><button data-x112="newSv" style="'+X112_PRI+';background:#ea580c">＋ SV不在を登録</button><button data-x112="newDay" style="'+X112_PRI+'">＋ 休業・行事を登録</button></div>';
+    }else{
+      var isSv=f.kind==="SV不在";
+      h+='<div id="x112Form" style="background:#f8fafc;border:1.5px solid #cbd5e1;border-radius:12px;padding:11px;margin-top:10px"><div style="font-size:13px;font-weight:800;color:#0f172a">'+(f.id?"予定を直す":(isSv?"SV不在を登録":"休業・行事を登録"))+'</div>';
+      if(isSv){
+        h+='<label style="'+X112_LB+'">不在にする人（SV）</label><input data-x112f="target" list="x112SvList" value="'+htmlEsc(f.target)+'" placeholder="例：伊東由美" style="'+X112_IN+'"><datalist id="x112SvList">';
+        var seen={};(CONFIG.MEETING_PARTNERS||[]).map(function(p){return p.nm}).concat(A.svNames||[]).forEach(function(nm){if(nm&&!seen[nm]){seen[nm]=1;h+='<option value="'+htmlEsc(nm)+'">'}});
+        h+='</datalist>';
+        if(!f.id)h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'+[["1h","いまから1時間"],["2h","いまから2時間"],["3h","いまから3時間"],["today","いまから本日いっぱい"],["tomorrow","明日 終日"]].map(function(x){return '<button data-x112="svPre" data-v="'+x[0]+'" style="'+B+';border-color:#fdba74;color:#9a3412">'+x[1]+'</button>'}).join("")+'</div>';
+        h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><div><label style="'+X112_LB+'">開始日</label><input data-x112f="from" type="date" value="'+htmlEsc(f.from)+'" style="'+X112_IN+'"></div><div><label style="'+X112_LB+'">開始時刻（空＝朝から）</label><input data-x112f="ft" type="time" value="'+htmlEsc(f.ft)+'" style="'+X112_IN+'"></div>';
+        h+='<div><label style="'+X112_LB+'">終了日</label><input data-x112f="to" type="date" value="'+htmlEsc(f.to)+'" style="'+X112_IN+'"></div><div><label style="'+X112_LB+'">終了時刻（空＝その日いっぱい）</label><input data-x112f="tt" type="time" value="'+htmlEsc(f.tt)+'" style="'+X112_IN+'"></div></div>';
+        h+='<label style="'+X112_LB+'">急ぎのときの連絡先（アポインターの画面に出ます）</label><input data-x112f="contact" value="'+htmlEsc(f.contact)+'" maxlength="80" placeholder="例：山口課長へ電話" style="'+X112_IN+'">';
+        h+='<label style="'+X112_LB+'">ひとこと（任意）</label><input data-x112f="memo" value="'+htmlEsc(f.memo)+'" maxlength="200" placeholder="例：研修のため。戻ってから順に返事します" style="'+X112_IN+'">';
+        h+='<div style="font-size:10.5px;color:#64748b;margin-top:6px;line-height:1.6">登録すると、不在の間、各アポインターの画面（ホーム・通話の画面）に「SV は不在です。LINE の返事はすぐに来ません」と出ます。始まる24時間前からは、予定として出ます。</div>';
+      }else{
+        h+='<div style="display:flex;gap:6px;margin-top:8px">'+[["休業","休業（会社が休み）"],["行事","行事・お知らせ"]].map(function(x){var on=f.kind===x[0];return '<button data-x112="kind" data-v="'+x[0]+'" style="flex:1;padding:9px;border-radius:9px;font-weight:800;font-size:12px;font-family:inherit;border:1.5px solid '+(on?"#1d4ed8":"#cbd5e1")+';background:'+(on?"#eff6ff":"#fff")+';color:'+(on?"#1d4ed8":"#64748b")+'">'+x[1]+'</button>'}).join("")+'</div>';
+        h+='<label style="'+X112_LB+'">名称</label><input data-x112f="title" value="'+htmlEsc(f.title)+'" maxlength="40" placeholder="'+(f.kind==="休業"?"例：冬期休暇":"例：全体研修")+'" style="'+X112_IN+'">';
+        h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><div><label style="'+X112_LB+'">開始日</label><input data-x112f="from" type="date" value="'+htmlEsc(f.from)+'" style="'+X112_IN+'"></div><div><label style="'+X112_LB+'">終了日（1日だけなら空で可）</label><input data-x112f="to" type="date" value="'+htmlEsc(f.to)+'" style="'+X112_IN+'"></div></div>';
+        h+='<label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12.5px;font-weight:700;color:#0f172a"><input data-x112f="lock" type="checkbox"'+(f.lock?" checked":"")+' style="width:20px;height:20px"> この期間は、シフト（出勤）を登録できないようにする</label>';
+        h+='<label style="'+X112_LB+'">ひとこと（任意。アポインターの画面に出ます）</label><input data-x112f="memo" value="'+htmlEsc(f.memo)+'" maxlength="200" placeholder="例：年始は 1/6（水）から" style="'+X112_IN+'">';
+      }
+      h+='<div style="display:grid;grid-template-columns:2fr 1fr;gap:8px;margin-top:10px"><button data-x112="save" style="'+X112_PRI+(isSv?';background:#ea580c':'')+'">'+(X112.saving?"⏳ 登録しています…":(f.id?"この内容で直す":"登録する"))+'</button><button data-x112="formClose" style="'+B+'">閉じる</button></div></div>';
+    }
+  }
+  h+='</div>';
+  /* ── 🔁 架電ルール（不在の先への掛け直し） ── */
+  var R=X112.rulesAdm;
+  h+='<div id="x112RuleCard" style="'+X112_CARD+'#8b5cf6"><div style="display:flex;align-items:center;gap:6px;margin-bottom:6px"><div style="font-size:14px;font-weight:800;color:#4c1d95;flex:1">🔁 架電ルール（不在の先への掛け直し）</div><button data-x112="ruleReload" style="'+B+'">'+(X112.rulesBusy?"⏳":"🔄")+'</button></div>';
+  if(!R||!R.rules){h+='<div style="font-size:11.5px;color:#64748b">'+(srvMismatch()?"サーバー（GAS）を v112 にすると使えます。":"確認中…")+'</div>'}
+  else{
+    var e=X112.rulesEdit||R.rules.recall,hrs=[[0,"あけない"],[1,"1時間"],[2,"2時間"],[4,"4時間"],[20,"20時間（翌日から）"],[44,"44時間（2日後から）"],[68,"68時間（3日後から）"],[164,"164時間（1週間後から）"]];
+    if(!hrs.some(function(x){return x[0]===Number(e.minHours)}))hrs.push([Number(e.minHours),e.minHours+"時間"]);
+    h+='<div style="font-size:11.5px;color:#475569;line-height:1.7;margin-bottom:6px">リストを最後までかけたあと、アポインターが「🔁 不在だった先に、もう一度かける」を押したときに、どの先にかけるかを決めます。回数と時刻は、サーバーの架電結果から数えます（端末が変わっても同じ）。</div>';
+    h+='<label style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;color:#0f172a"><input data-x112r="on" type="checkbox"'+(e.on!==false?" checked":"")+' style="width:20px;height:20px"> ルールを使う（外すと、不在だった先すべてにかけ直せます）</label>';
+    h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><div><label style="'+X112_LB+'">1社にかける回数の上限</label><select data-x112r="max" style="'+X112_IN+'">';
+    for(var mi=1;mi<=10;mi++)h+='<option value="'+mi+'"'+(Number(e.max)===mi?" selected":"")+'>'+mi+'回'+(mi===1?"（掛け直さない）":"")+'</option>';
+    h+='</select></div><div><label style="'+X112_LB+'">前の電話からあける時間</label><select data-x112r="minHours" style="'+X112_IN+'">';
+    hrs.forEach(function(x){h+='<option value="'+x[0]+'"'+(Number(e.minHours)===x[0]?" selected":"")+'>'+x[1]+'</option>'});
+    h+='</select></div></div>';
+    if(X112.rulesEdit)h+='<button data-x112="ruleSave" style="'+X112_PRI+';background:#7c3aed;width:100%;margin-top:10px">'+(X112.rulesBusy?"⏳ 保存しています…":"このルールで保存する")+'</button>';
+    if(R.board&&R.board.length){
+      h+='<div style="margin-top:10px;border-top:1px solid #ede9fe;padding-top:6px"><div style="font-size:11px;font-weight:800;color:#5b21b6;margin-bottom:3px">いまのリストで「不在」のままの先</div>';
+      R.board.forEach(function(b){
+        h+='<div style="display:flex;gap:8px;align-items:center;padding:4px 0;border-top:1px solid #f5f3ff;font-size:11.5px;flex-wrap:wrap"><b style="min-width:76px">'+htmlEsc(b.name)+'</b>';
+        if(!b.linked)h+='<span style="color:#94a3b8">元シートとつないだリストではありません</span>';
+        else h+='<span style="color:#334155">不在 '+b.absent+'件</span><span style="color:#047857;font-weight:800">いま掛け直せる '+b.ready+'</span><span style="color:#b45309">間隔待ち '+b.waiting+'</span><span style="color:#64748b">上限 '+b.capped+'</span>';
+        h+='</div>';
+      });
+      h+='</div>';
+    }
+  }
+  h+='</div>';
+  /* ── 🧹 設定シートの整理 ── */
+  var P=X112.pin;
+  if(P&&P.audit){
+    var tot=P.audit.total||0,ex=P.ext;
+    h+='<div id="x112PinCard" style="'+X112_CARD+(tot?'#f59e0b':'#e2e8f0')+'"><div style="display:flex;align-items:center;gap:6px;margin-bottom:4px"><div style="font-size:13px;font-weight:800;color:#0f172a;flex:1">🧹 設定シートの整理（1人に1行）</div><button data-x112="pinReload" style="'+B+'">'+(X112.pinBusy?"⏳":"🔄")+'</button></div>';
+    if(ex&&ex.moved)h+='<div id="x112ExtFixed" style="font-size:11.5px;color:#166534;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:9px;padding:7px 10px;margin-bottom:6px;line-height:1.7">✅ 連携設定（外部連携設定）の余分な行 <b>'+ex.moved+'行</b>を「外部連携設定_退避」へ移しました（'+htmlEsc(ex.atText||"")+'）'+((ex.pins||[]).length?'：'+htmlEsc(ex.pins.map(function(p){return (p.name||("PIN "+p.pin))+" "+p.extra+"行"}).join("・")):'')+'。取込は、設定の1リストだけになります。</div>';
+    if(!tot)h+='<div style="font-size:11.5px;color:#047857">✅ 余分な行はありません（連携設定・録音設定・KPI目標・暗証番号・架電位置）</div>';
+    else{
+      h+='<div style="font-size:11.5px;color:#92400e;line-height:1.7">PIN が 0 で始まる方（091 など）の行が、以前の版の保存で増えたままになっています。読むときは1人1行にまとめているので、このままでも動きます。整理すると、いま使っている行だけに中身が残ります。</div>';
+      (P.audit.sheets||[]).forEach(function(s){if(!s.extra)return;h+='<div style="font-size:11.5px;color:#334155;padding:3px 0;border-top:1px solid #f1f5f9"><b>'+htmlEsc(s.label)+'</b>　'+s.rows+'行のうち、余分な行 <b style="color:#b45309">'+s.extra+'行</b>'+((s.pins||[]).length?'<span style="color:#64748b">（'+htmlEsc(s.pins.slice(0,6).map(function(p){return (p.name||("PIN "+p.pin))+" "+p.extra}).join("・"))+(s.pins.length>6?"…":"")+'）</span>':'')+'</div>'});
+      h+='<button data-x112="pinFix" data-v="'+tot+'" style="'+B+';margin-top:6px;border-color:#f59e0b;color:#92400e">'+(X112.pinBusy?"⏳ 整理しています…":"余分な "+tot+"行を、退避シートへ移す")+'</button>';
+    }
+    h+='</div>';
+  }
+  return h;
+}
+document.addEventListener("click",function(e){
+  var el=e.target&&e.target.closest?e.target.closest("[data-x112]"):null;
+  if(!el)return;
+  var a=el.getAttribute("data-x112"),v=el.getAttribute("data-v")||"";
+  e.preventDefault();
+  if(a==="calReload"){x112AdmCal();render();return}
+  if(a==="newSv"){x112FormNew("SV不在");render();return}
+  if(a==="newDay"){x112FormNew("休業");render();return}
+  if(a==="kind"){if(X112.form){X112.form.kind=v;X112.form.lock=(v==="休業")}render();return}
+  if(a==="svPre"){x112SvPreset(v);render();return}
+  if(a==="formClose"){X112.form=null;render();return}
+  if(a==="save"){x112Save();return}
+  if(a==="edit"){x112FormEdit(v);render();setTimeout(function(){var f=document.getElementById("x112Form");if(f&&f.scrollIntoView)f.scrollIntoView({block:"center"})},60);return}
+  if(a==="cancel"){x112Cancel(v);return}
+  if(a==="fix"){x112Fix(v);return}
+  if(a==="tglOld"){X112.open.old=!X112.open.old;render();return}
+  if(a==="ruleReload"){X112.rulesBusy=true;render();directGasPost({type:"rules_get",board:true},90000).then(function(r){X112.rulesBusy=false;X112.rulesAdm=(r&&r.result)||X112.rulesAdm;X112.rulesEdit=null;render()}).catch(function(err){X112.rulesBusy=false;x112Err("⚠️ ",err);render()});return}
+  if(a==="ruleSave"){
+    if(!X112.rulesEdit||X112.rulesBusy)return;
+    X112.rulesBusy=true;render();
+    directGasPost({type:"rules_set",rules:{recall:X112.rulesEdit}},60000).then(function(r){
+      X112.rulesEdit=null;vib([40,30,40]);flash("✅ 架電ルールを保存しました。アポインターの画面には、2分以内に反映されます");
+      return directGasPost({type:"rules_get",board:true},90000).then(function(r2){X112.rulesBusy=false;X112.rulesAdm=(r2&&r2.result)||X112.rulesAdm;render()});
+    }).catch(function(err){X112.rulesBusy=false;x112Err("⚠️ 保存できませんでした：",err);render()});
+    return;
+  }
+  if(a==="pinReload"){X112.pinBusy=true;render();directGasPost({type:"pin_rows_audit"},60000).then(function(r){X112.pinBusy=false;X112.pin=(r&&r.result)||X112.pin;render()}).catch(function(err){X112.pinBusy=false;x112Err("⚠️ ",err);render()});return}
+  if(a==="pinFix"){
+    showConfirm={title:"余分な行を、退避シートへ移しますか？",msg:"設定シート（録音設定・KPI目標・暗証番号・架電位置 など）で、同じ人の行が複数あるものを、1人1行にします。\n\n余分な "+v+"行は消さずに、「◯◯_退避」という名前のシートへ移します（もとのシートでは、その行が空の行になります）。いま使っている行（設定・暗証番号・架電の位置）は、内容も行の位置も変わりません。",
+      yesLabel:"退避シートへ移す",noLabel:"やめる",
+      onYes:function(){showConfirm=null;X112.pinBusy=true;render();
+        directGasPost({type:"pin_rows_repair"},180000).then(function(r){X112.pinBusy=false;var res=r&&r.result;if(res){X112.pin={audit:res.audit,ext:res.ext}}
+          vib([40,30,40]);flash("✅ "+((res&&res.repaired&&res.repaired.total)||0)+"行を、退避シートへ移しました");render()})
+        .catch(function(err){X112.pinBusy=false;x112Err("⚠️ 整理できませんでした：",err);render()})},
+      onNo:function(){showConfirm=null;render()}};
+    render();return;
+  }
+});
+/* 入力欄の値は、変えた瞬間に控える（画面の描き直しで消えないように） */
+function x112Field(e){
+  var t=e.target;if(!t||!t.getAttribute)return;
+  var f=t.getAttribute("data-x112f");
+  if(f&&X112.form){
+    if(t.type==="checkbox")X112.form[f]=!!t.checked;else X112.form[f]=t.value;
+    if(f==="from"&&X112.form.to&&X112.form.to<X112.form.from){X112.form.to=X112.form.from;if(e.type==="change")render()}
+    return;
+  }
+  var r=t.getAttribute("data-x112r");
+  if(r&&X112.rulesAdm&&X112.rulesAdm.rules){
+    if(!X112.rulesEdit){var c=X112.rulesAdm.rules.recall;X112.rulesEdit={on:c.on!==false,max:c.max,minHours:c.minHours}}
+    if(r==="on")X112.rulesEdit.on=!!t.checked;else X112.rulesEdit[r]=Number(t.value);
+    if(e.type==="change")render();
+  }
+}
+document.addEventListener("change",x112Field);
+document.addEventListener("input",x112Field);
+
 var X111={apl:null,aplBusy:false,aplSyncBusy:false,rep:null,repBusy:false,opt:{preset:"month",from:"",to:"",project:"",showMemo:true,showCaller:false,detail:"all"},res:null,resBusy:false,pdf:null,pdfBusy:false,board:null,boardBusy:false,open:{},edit:{}};
 var X111_CARD='background:#fff;border-radius:14px;padding:12px;margin-bottom:12px;border:1.5px solid ';
 /* 知らせ（flash）は HTML として表示される。サーバー・台帳・入力欄から来た文字は、文字として出す */
@@ -11130,6 +11646,7 @@ else if(V==="home"&&!isA){
   var skC=Object.keys(skipped).filter(function(k){return skipped[k]}).length;
   var pendingCBcount=cbs.filter(function(c){return!c.done}).length;
   h+=verBanner(false);   /* v109 */
+  try{h+=x112HomeBanner()}catch(eX12){}   /* v112: SV不在（LINE の返事はすぐに来ません）・会社の休業・行事 */
   h+=raCard();   /* v109: 通話録音の自動送信 */
   h+=syncBanner();   /* v110: サーバーと同期できていないときの警告（リストが古い可能性） */
 
@@ -11509,6 +12026,7 @@ else if(V==="home"&&!isA){
 
 /* ========== 通話・チェックリスト ========== */
 else if(V==="call"){
+  try{h+=x112CallStrip()}catch(eX12c){}   /* v112: SV不在の間は、LINE の返事がすぐに来ないことを出す */
   /* v110: いまのリストに無い先（再架電のお知らせからの発信）は、固定した架電先を表示する（リストの行は表示しない） */
   var offCx=(callCtx&&callCtx.off&&ctxIndex(callCtx)<0)?callCtx:null;
   var phone=offCx?(offCx.ph||""):(cur?gf(cur,"ph"):"");var fmtP=fmtPhone(phone);
@@ -12073,6 +12591,7 @@ else if(V==="shift"){
   h+='<div style="flex:1;text-align:center;font-size:16px;font-weight:800;color:#1a237e">'+smp[0]+'年'+(+smp[1])+'月</div>';
   h+='<button id="shNext" aria-label="次の月" style="padding:10px 16px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;color:#64748b;font-size:14px">▶</button></div>';
   h+=verBanner(false);   /* v109: サーバーが古い版のときの警告 */
+  try{h+=x112ShiftNotice()}catch(eX12s){}   /* v112: この月にかかる会社の休業・行事 */
   /* v108: 登録状況（サーバー）＋直近の送信結果 */
   var shReg=shiftRegFor(shiftMonth);
   var shPend=shiftPendingCount(shiftMonth);
@@ -12111,6 +12630,7 @@ else if(V==="shift"){
   h+='<span style="display:inline-flex;align-items:center;gap:3px"><span style="width:14px;height:14px;border-radius:4px;background:#94a3b8;display:inline-block"></span>登録済み（休み）</span>';
   h+='<span style="display:inline-flex;align-items:center;gap:3px"><span style="width:14px;height:14px;border-radius:4px;background:#fff;border:2px dashed #f59e0b;display:inline-block"></span>未申請の変更</span>';
   h+='<span style="display:inline-flex;align-items:center;gap:3px"><span style="width:14px;height:14px;border-radius:4px;background:#fee2e2;border:2px dashed #ef4444;display:inline-block"></span>申請後に外した日</span>';
+  h+='<span style="display:inline-flex;align-items:center;gap:3px"><span style="width:14px;height:14px;border-radius:4px;background:repeating-linear-gradient(45deg,#f1f5f9,#f1f5f9 3px,#cbd5e1 3px,#cbd5e1 6px);border:1.5px solid #cbd5e1;display:inline-block"></span>会社の休業日（登録できません）</span>';   /* v112 */
   h+='<span style="width:100%;font-weight:700">日付をタップ → 時間を指定（8:00〜22:00・15分刻み）</span>';
   h+='</div>';
   /* カレンダー */
@@ -12888,7 +13408,7 @@ B("mup",function(){
   if(U!=="admin"){flash("⚠️ リスト読込は管理者のみ可能です");return}
   showImp=true;impErr="";render();
 });
-B("msh",function(){if(U&&U!=="admin"){shiftDays=ld("sft-"+U.id+"-"+shiftMonth)||{};shiftLoadRegistered(shiftMonth,false);fetchShiftStatus(function(){shiftLoadRegistered(shiftMonth,false)})}V="shift";render()});
+B("msh",function(){if(U&&U!=="admin"){shiftDays=ld("sft-"+U.id+"-"+shiftMonth)||{};shiftLoadRegistered(shiftMonth,false);x112ShiftClean(false);fetchShiftStatus(function(){shiftLoadRegistered(shiftMonth,false);x112ShiftClean(true)})}V="shift";render()});
 /* v34: 面談 - ホームカード & ビュー */
 B("mMore",function(){V="meeting";render()});
 B("mBook",function(){openMtgBooking()});
@@ -12902,9 +13422,9 @@ B("mRecDone",function(){var d=document.getElementById("mDate"),p=document.getEle
 Array.prototype.slice.call(document.querySelectorAll(".mDone")).forEach(function(b){b.addEventListener("click",function(){updateMtg(b.getAttribute("data-id"),{status:"実施済"})})});
 Array.prototype.slice.call(document.querySelectorAll(".mNote")).forEach(function(b){b.addEventListener("click",function(){var id=b.getAttribute("data-id");var cur="";mtgHist.forEach(function(m){if(m.mid===id)cur=m.postNote||""});var v=prompt("事後メモ（話した内容・次のアクション）:",cur);if(v!==null)updateMtg(id,{postNote:v,status:"実施済"})})});
 Array.prototype.slice.call(document.querySelectorAll(".mDel")).forEach(function(b){b.addEventListener("click",function(){deleteMtg(b.getAttribute("data-id"))})});
-B("shPrev",function(){var p=shiftMonth.split("-"),y=+p[0],m=+p[1];m--;if(m<1){m=12;y--}shiftMonth=y+"-"+pad(m);if(U&&U!=="admin"){shiftDays=ld("sft-"+U.id+"-"+shiftMonth)||{};shiftLoadRegistered(shiftMonth,false)}render()});
-B("shNext",function(){var p=shiftMonth.split("-"),y=+p[0],m=+p[1];m++;if(m>12){m=1;y++}shiftMonth=y+"-"+pad(m);if(U&&U!=="admin"){shiftDays=ld("sft-"+U.id+"-"+shiftMonth)||{};shiftLoadRegistered(shiftMonth,false)}render()});
-B("shLoadReg",function(){if(shiftLoadRegistered(shiftMonth,true)){vib(30);flash("⤵ 登録済みの内容を読み込みました")}render()});
+B("shPrev",function(){var p=shiftMonth.split("-"),y=+p[0],m=+p[1];m--;if(m<1){m=12;y--}shiftMonth=y+"-"+pad(m);if(U&&U!=="admin"){shiftDays=ld("sft-"+U.id+"-"+shiftMonth)||{};shiftLoadRegistered(shiftMonth,false);x112ShiftClean(true)}render()});
+B("shNext",function(){var p=shiftMonth.split("-"),y=+p[0],m=+p[1];m++;if(m>12){m=1;y++}shiftMonth=y+"-"+pad(m);if(U&&U!=="admin"){shiftDays=ld("sft-"+U.id+"-"+shiftMonth)||{};shiftLoadRegistered(shiftMonth,false);x112ShiftClean(true)}render()});
+B("shLoadReg",function(){if(shiftLoadRegistered(shiftMonth,true)){x112ShiftClean(true);vib(30);flash("⤵ 登録済みの内容を読み込みました")}render()});
 B("shMail",function(){mailShiftManually()});
 B("shApply",function(){submitShift("apply")});
 B("shModify",function(){submitShift("modify")});
@@ -12939,6 +13459,7 @@ if(sdS)sdS.addEventListener("change",sdSel);
 if(sdE)sdE.addEventListener("change",sdSel);
 B("sdSave",function(){
   syncShiftDay();
+  if(x112Closed(showShiftDay.dateKey)){flash("🏢 会社の休業日のため、登録できません");showShiftDay=null;render();return}   /* v112 */
   var obj={start:showShiftDay.start,end:showShiftDay.end,
     breaks:(showShiftDay.breaks||[]).filter(function(b){return b&&b.start&&b.end})};
   var err=validateBreaks(obj);
@@ -13429,10 +13950,14 @@ if(shCal){
     }else if(sState==="del"){
       sbg="#fee2e2";sfg="#991b1b";sborder="2px dashed #ef4444";smark="外";sdesc+="・申請後に外した";
     }
+    /* v112: 会社の休業日（シフトを登録できない日）。申請後に外した日（登録済みの出勤が残っている日）は、そのまま赤で出す */
+    var sClosed=x112Closed(skey);
+    if(sClosed&&sState!=="del"){sbg="repeating-linear-gradient(45deg,#f1f5f9,#f1f5f9 5px,#e2e8f0 5px,#e2e8f0 10px)";sfg="#64748b";sborder="1.5px solid #cbd5e1";slbl="休業";smark="";sdesc="会社の休業日（"+sClosed+"）・シフトは登録できません";sState="closed"}
     var sdow=new Date(syear,smonth-1,sd).getDay();
     var sdColor=sState?sfg:sdow===0?"#ef4444":sdow===6?"#3b82f6":"#1e293b";
     var sb=document.createElement("button");
     sb.setAttribute("data-shday",skey);
+    if(sClosed)sb.setAttribute("data-closed",sClosed);
     sb.setAttribute("aria-label",smonth+"月"+sd+"日"+(sdesc?"："+sdesc:"：未入力"));
     sb.style.cssText="position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;height:56px;border:"+sborder+";border-radius:8px;background:"+sbg+";color:"+sdColor+";font-family:inherit;cursor:pointer;font-size:12px;padding:2px";
     sb.innerHTML='<div style="font-weight:800;line-height:1;font-size:14px">'+sd+'</div>'+(slbl?'<div style="font-size:8.5px;line-height:1.1;margin-top:2px;font-weight:700;letter-spacing:-.02em'+(sState==="del"?';text-decoration:line-through':'')+'">'+slbl+'</div>':'')+
@@ -13443,6 +13968,8 @@ if(shCal){
 document.querySelectorAll("[data-shday]").forEach(function(el){
   el.addEventListener("click",function(){
     var k=el.getAttribute("data-shday");
+    var kClosed=el.getAttribute("data-closed");   /* v112 */
+    if(kClosed){vib([60,40,60]);flash("🏢 "+x112Md(k)+" は会社の休業日（"+htmlEsc(kClosed)+"）です。シフトは登録できません");return}
     var cur=shiftDays[k];
     var initStart="09:30",initEnd="18:00";
     if(cur&&typeof cur==="object"&&cur.start){initStart=cur.start;initEnd=cur.end||"18:00"}

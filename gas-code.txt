@@ -1,5 +1,11 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v110
+// 川嶋メソッド テレアポ管理 — GAS完全版 v111
+// v111: ⑴ 通話録音の自動保存先を変更（CONFIG.REC_AUTOSAVE_FOLDER）。以前の保存先の録音も、架電記録との紐づけに使う。
+//       ⑵ アポイント台帳：アポ取得報告を、指定のスプレッドシート（CONFIG.APPO_LEDGER）へ商談日の順に自動で登録する。
+//       ⑶ 架電リスト（元シート）の各社の行に「架電回数（自動）」「架電履歴（自動）」（かけた日時・結果）を自動で書く。
+//          案件・リストごと・会社ごとの「架電報告書」（画面で確認 → 印刷／PDF。ドライブへの PDF 保存・月初の自動作成）。リスト台帳（リスト → 案件名）。
+//       ⑷ アポ取得報告の確認項目（CONFIG.APPO_CHECKS：「外国人の採用も候補になるか？」→ YES）。商談への引き継ぎメモ。
+//       そのほか：案件・リスト別の進み具合（消化率・接続率・アポ率・残りの見込み）／時間帯別の接続率／今日・明日の商談／夜間のメールに「明日の商談」。
 // v110: ⑴ アカウントの削除（坂上順子 093・浜田敏幸 095）：名簿・暗証番号・各設定の行を自動で削除し、その PIN からの要求は断る。
 //       ⑵ 元スプレッドシート連携：架電位置と「架電済み」をサーバーで持ち、日付・退勤・端末が変わっても続きから。
 //          行がずれていても会社で探して反映。保存した瞬間にその1件を元シートへ書く。同じ行は最新の結果で上書き。
@@ -80,9 +86,11 @@ var CONFIG = {
   KANRI_DRIVE_ROOT: "1rR9JXEFWlJMwwb8RAoNqkxey5Wri0g0i",            // 経営管理システムを置くフォルダ
   KANRI_TARGET_DEFAULT: "1XmMisHhmUZOP2lEVO4lwFHwCU5fQfKg6",        // 経営管理システムの生成先（既定）
   REC_ROOT_DEFAULT: "1Hslq_b1D9S5kv2Jb5cTSFVbtmeTGc8CV",            // 録音の保存先（管理者ドライブ）
-  REC_ARCHIVE_FOLDER: "1P7MOlAg7gRR1X_imtjSjl81MmUUZFQ7V",          // 録音の全体保管庫
-  // v110: Galaxy A25 の通話録音の自動保存先（「A アポインター毎日の架電音声」）。端末からここへ直接保存する
-  REC_AUTOSAVE_FOLDER: "1P7MOlAg7gRR1X_imtjSjl81MmUUZFQ7V",
+  REC_ARCHIVE_FOLDER: "REC_AUTOSAVE_FOLDER_ID_HERE",          // 録音の全体保管庫（v111: 自動保存先と同じフォルダ）
+  // v111: Galaxy A25 の通話録音の自動保存先。端末からここへ直接保存する（「年-月」→「日」のフォルダに「氏名_日付_時刻_電話番号.m4a」）
+  REC_AUTOSAVE_FOLDER: "REC_AUTOSAVE_FOLDER_ID_HERE",
+  // v110 までの自動保存先（「A アポインター毎日の架電音声」）。ここにある録音も、架電記録との紐づけに使う（移動・削除はしない）
+  REC_AUTOSAVE_PREV: ["1P7MOlAg7gRR1X_imtjSjl81MmUUZFQ7V"],
 
   // ── このGASを実行するアカウント（共有の案内文・録音の送付先の既定に使う） ──
   GAS_OWNER_EMAIL: "hr.ashikaga@gmail.com",
@@ -171,21 +179,48 @@ var CONFIG = {
   EXT_ALLOW_SHARED_TAB: false,  // true にすると、同じタブを複数人の連携先にできる（結果が混ざるため非推奨）
   EXT_REALTIME: true,           // v110: 架電結果を保存した瞬間に、その1件を元シートへ書く（false＝退勤時・定期の反映だけ）
 
+  // v111: 元シートの各社の行に「架電回数（自動）」「架電履歴（自動）」（かけた日時・結果）を書く。列が無ければ、見出しの右端に足す（false＝足さない・書かない）
+  //       元シートにもともとある「架電回数」などの列は、使いません・書き換えません
+  EXT_HISTORY_COLS: true,
+  EXT_HISTORY_SEP: "\n",        // 履歴の区切り（"\n"＝セルの中で改行。" ／ " にすると1行で並べる）
+
   // ── リアルタイム集計 ──
-  LIVE_CLOCK_TOLERANCE_SEC: 120 // v110: 端末の時計とサーバーの時計の差がこれを超えたら、サーバーの時計に合わせて記録する
+  LIVE_CLOCK_TOLERANCE_SEC: 120, // v110: 端末の時計とサーバーの時計の差がこれを超えたら、サーバーの時計に合わせて記録する
+
+  // ── アポイント台帳（v111）：アポ取得報告を、このスプレッドシートへ商談日の順に自動で登録する ──
+  //   このスプレッドシートを、上の GAS_OWNER_EMAIL に「編集者」で共有してください
+  APPO_LEDGER: {
+    ENABLED: true,
+    SHEET_ID: "APPO_LEDGER_SHEET_ID_HERE",
+    GID: "0",              // 登録先のタブ（URL の末尾 #gid= の数字）
+    SORT: true,            // 新しいアポを、商談日（→商談時間）の順の位置に入れる（false＝いちばん下に足す）。表全体の並べ替えは、管理者が「台帳をそろえる」を押したときだけ
+    ORDER: "asc"           // asc＝商談日の早い順／desc＝遅い順
+  },
+  // ── アポ取得報告の確認項目（v111）：報告のときに YES／NO を必ず選ぶ。must と違う答えは、管理者の画面・台帳・報告書に出る ──
+  //   項目を増やすときは、ここと index.html の CONFIG.APPO_CHECKS の両方に、同じ key で足してください
+  APPO_CHECKS: [
+    { key: "gaikokuOk", label: "外国人の採用も候補になるか？", col: "外国人の採用も候補", must: "YES" }
+  ],
+  // ── 架電報告書（v111） ──
+  REPORT: {
+    ISSUER: "スキマグループ合同会社",   // 報告書の右上に出す作成者
+    FOLDER_ID: "",                      // PDF を置くドライブのフォルダ（空欄＝最初に「川嶋メソッド_架電報告書」を作ります）
+    MONTHLY_AUTO: true                  // 毎月はじめの夜間処理で、前の月の報告書を案件ごとに作る（管理者の画面でも止められます）
+  }
 };
 
 // ── 以下は CONFIG から作る（既存コードが参照する変数名はそのまま） ──
 var SHEET_ID = CONFIG.SHEET_ID;
 var ADMIN_SHEET_ID = CONFIG.ADMIN_SHEET_ID;
 // v95: この GAS がどの版で、どの機能に対応しているか
-var GAS_VERSION = "v110";
+var GAS_VERSION = "v111";
 var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
   "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run",
   "ext_prepare","pl_dashboard","pl_ledger","pl_projects","pl_bank","pl_quality","pl_bank_drive","jp_holidays",   // v105-107: 収支・損益・銀行明細
   "notify_log","notify_retry","shift_registered","shift_status","shift_admin_days","live_server","ext_list_id","ext_import_preview","roster_check",   // v108
   "adm_auth","shift_receipt","shift_pending","rec_auto","kanri_key_props",   // v109
-  "acct_delete","live_v110","live_diag","fetch_rank","list_meta","list_progress","pos_v110","ext_v110","ext_health","ext_realtime","rec_autosave"];   // v110
+  "acct_delete","live_v110","live_diag","fetch_rank","list_meta","list_progress","pos_v110","ext_v110","ext_health","ext_realtime","rec_autosave",   // v110
+  "appo_v111","appo_checks","apo_ledger","list_registry","ext_history","call_report","proj_board"];   // v111
 // 名簿（稼働中）→ PIN・氏名・姓・メール。起動時に「アポインター名簿」シートの内容で置き換わる（rosterApply_）
 var PIN_MAP = {}, FULL_NAME_MAP = {}, STAFF_EMAILS = {};
 (function () {
@@ -404,7 +439,8 @@ function doPost(e) {
     //       v107 までは処理前に印を付けていたため、1回目が途中で失敗すると再送が「処理済み」として捨てられていた。
     var READ_ONLY_TYPES = ["fetch_state", "fetch_live", "status_update", "fetch_all_shifts", "notify_log", "roster_get", "roster_check", "config_check", "shift_status",
       "shift_pending", "rec_auto_status", "adm_status", "adm_session", "adm_devices", "adm_kanri_keys", "adm_notify_get",   // v109
-      "list_meta", "fetch_rank", "live_diag", "ext_health", "rec_autosave_check", "acct_status"];   // v110
+      "list_meta", "fetch_rank", "live_diag", "ext_health", "rec_autosave_check", "acct_status",   // v110
+      "apl_status", "rep_lists", "rep_build", "proj_board"];   // v111
     var idemOn = !!(d.clientReqId && READ_ONLY_TYPES.indexOf(d.type) < 0);
     if (idemOn) {
       var idempSeen = idemSeen_(d.clientReqId);
@@ -444,6 +480,9 @@ function doPostRoute_(d) {
       if (delAcc) return jsonOut_({ status: "error", handled: true, code: "account_deleted", type: d.type,
         message: "このアカウント（" + delAcc.name + "）は削除されています。管理者にお問い合わせください" });
     }
+    // v111: アポ取得報告・アポイント台帳・架電報告書・案件別の進み具合
+    var v111Res = v111Handle_(d);
+    if (v111Res) return v111Res;
     // v110: 新しい要求（リストの版・順位・集計の点検・連携の点検・タブの選び直し など）
     var v110Res = v110Handle_(d);
     if (v110Res) return v110Res;
@@ -555,9 +594,16 @@ function doPostRoute_(d) {
         result.appos = [];
         if (apoSh && apoSh.getLastRow() > 1) {
           var apoRows = apoSh.getDataRange().getValues();
+          // v111: 見出しで探す列（アポID・引き継ぎメモ・確認項目）
+          var apoHd = apoRows[0].map(function (hx) { return String(hx == null ? "" : hx).trim(); });
+          var apoIdC = apoHd.indexOf(APO_X.id), apoHoC = apoHd.indexOf(APO_X.handoff), apoCk = apoChecks_().map(function (c) { return { key: c.key, i: apoHd.indexOf(c.col) }; });
           for (var i = 1; i < apoRows.length; i++) {
             if (nameMatches(apoRows[i][1])) {  // B列=報告者
+              var apoChk = {};
+              apoCk.forEach(function (c) { apoChk[c.key] = c.i >= 0 ? String(apoRows[i][c.i] || "") : ""; });
               result.appos.push({
+                apoId: apoIdC >= 0 ? String(apoRows[i][apoIdC] == null ? "" : apoRows[i][apoIdC]) : "",
+                handoff: apoHoC >= 0 ? String(apoRows[i][apoHoC] || "") : "", checks: apoChk,
                 date: formatDateKey(apoRows[i][0]),
                 reporter: apoRows[i][1] || "",
                 project: apoRows[i][2] || "",
@@ -2009,6 +2055,9 @@ function doPostRoute_(d) {
         Object.keys(crExtra).forEach(function (c) { crFull[Number(c) - 1] = crExtra[c]; });
         sh2.appendRow(crFull);   // 1回の追記で書く（同時保存で行がずれない）
       }
+      // v111: 同じ通話の前の記録を置き換えたとき（オートコールの自動の「不在」→ 正式な結果 など）、前の記録を控える
+      var crPrev = null;
+      try { if (dupIdx >= 0 && crDay && crDay.rows[dupIdx]) { var crP0 = crDay.rows[dupIdx]; crPrev = { date: kanriDateKey_(crP0[1]) || String(crP0[1] || ""), time: kanriHM_(crP0[2]) || String(crP0[2] || ""), result: String(crP0[6] || "") }; } } catch (ePv) { crPrev = null; }
       // いま書いた行を「その日の行」に足す（読み直さない）
       try {
         if (crDay) {
@@ -2028,7 +2077,7 @@ function doPostRoute_(d) {
       // v110: 進捗（架電済みの行）を更新し、その1件を元スプレッドシートへ書く（失敗しても保存は成功。退勤時・定期の反映が同じ内容を書く）
       var crProg = null, crExt = null;
       try { crProg = progOnCall_(d, crEv, crName); } catch (ePg) { crProg = null; }
-      try { crExt = extReflectNow_(d, crEv, crName, crDay ? crDay.rows : [], crDay ? crDay.cols : null); } catch (eEx) { crExt = { ok: false, why: String(eEx).slice(0, 120) }; }
+      try { crExt = extReflectNow_(d, crEv, crName, crDay ? crDay.rows : [], crDay ? crDay.cols : null, crPrev); } catch (eEx) { crExt = { ok: false, why: String(eEx).slice(0, 120) }; }
       // v43: 文字起こし本文は専用シートへ (CIDで架電結果と紐づけ)
       if (d.transcript) {
         try {
@@ -2116,6 +2165,7 @@ function doPostRoute_(d) {
     }
 
     // ===== アポイント詳細 (v11: 商談日付/時間 追加) =====
+    // v111: アポ取得報告は appoSave_（ファイル末尾の「v111 ⑷⑵」）が先に処理する。下は v110 までの処理（届かない）
     if (d.type === "appointment") {
       var sh4 = ensureSheet(ss, "アポイント",
         ["登録日", "報告者", "案件名", "商談日付", "商談時間",
@@ -5579,7 +5629,8 @@ function nightlyPlan_() {
     { key: "workbook", label: "経営管理システム（21シート）の更新" },
     { key: "kpi", label: "KPIの反映と低調アラート" },
     { key: "pnl", label: "収支・損益（日次）の記録" },
-    { key: "backup", label: "バックアップ" }
+    { key: "backup", label: "バックアップ" },
+    { key: "ledger", label: "アポイント台帳の整合（書けなかった報告の登録・録音のリンク）" }   // v111
   ];
 }
 // 実行結果から、通知メールの本文と成否を組み立てる（純粋関数＝検証しやすい）
@@ -5677,6 +5728,8 @@ function nightlyPipeline() {
   run("pnl", function () { return plNightly_(); });
   // ⑤ バックアップ
   run("backup", function () { kanriBackupDaily(); return "保存しました"; });
+  // ⑥ v111: アポイント台帳の整合（書けなかった報告の登録・録音のリンク）。ここまでに時間がかかりすぎていたら、次の夜に回す
+  run("ledger", function () { return v111NightlyLedger_(startedAt); });
 
   var endedAt = new Date().getTime();
   var sum = nightlySummarize_(results, startedAt, endedAt);
@@ -5698,10 +5751,12 @@ function nightlyPipeline() {
   if (sum.ok) { try { PropertiesService.getScriptProperties().setProperty("NIGHTLY_LAST_OK", String(endedAt)); } catch (e3) {} }
 
   // 結果を1通にまとめて通知（毎晩バラバラに届かないように）
-  try { notifyDispatch_("夜間処理", DAILY_REPORT_TO, sum.subject, sum.body + "\n\n川嶋メソッド テレアポ業務管理システム", "夜間自動処理"); }   // v108: 通知ログに記録
+  try { notifyDispatch_("夜間処理", DAILY_REPORT_TO, sum.subject, sum.body + v111NightlyExtra_() + "\n\n川嶋メソッド テレアポ業務管理システム", "夜間自動処理"); }   // v108: 通知ログに記録／v111: 明日の商談・前回の報告書の自動作成の結果を足す
   catch (eMail) { Logger.log("nightly mail failed: " + eMail); }
 
   logAudit("夜間自動処理", "trigger", sum.ok ? "成功" : "要確認", sum.failed.join("/"));
+  // v111: 架電報告書（月初の10日間に、前の月の分を案件ごとに作る）。記録とメールのあとで行う。結果は、次の夜のメールに載る
+  try { v111NightlyReportAfter_(startedAt); } catch (eRp) { Logger.log("nightly report failed: " + eRp); }
   return sum;
 }
 
@@ -11170,7 +11225,9 @@ var ADMIN_ONLY_TYPES = (function () {
    "roster_init_new roster_reassign roster_retire roster_upsert shift_approve shift_calendar shift_import " +
    "shift_pending system_diag system_diagnose upload_list " +
    // v110
-   "live_diag live_fix_times ext_health ext_tab_pick ext_progress_reset ext_progress_rebuild ext_progress_from_sheet rec_autosave_check acct_status acct_purge ").split(" ").forEach(function (t) { if (t) o[t] = true; });
+   "live_diag live_fix_times ext_health ext_tab_pick ext_progress_reset ext_progress_rebuild ext_progress_from_sheet rec_autosave_check acct_status acct_purge " +
+   // v111
+   "apl_status apl_sync apl_digest_set rep_lists rep_list_set rep_build rep_pdf rep_auto_set rep_monthly_now proj_board ").split(" ").forEach(function (t) { if (t) o[t] = true; });
   return o;
 })();
 
@@ -12259,6 +12316,7 @@ function listMeta_(pin, fresh) {
   try { cfg = extCfgFor_(p); } catch (e3) {}
   if (cfg && cfg.ssId) { out.stamp = Number(cfg.importedAt) || 0; out.cycle = Number(cfg.cycleStart) || out.stamp; }
   out.adj = progAdjGet_(p);       // 管理者が進捗を直した時刻（変わっていたら、端末は進捗を取り直す）
+  try { out.project = out.lid ? lregProjectOf_(out.lid) : ""; } catch (ePj) { out.project = ""; }   // v111: このリストの案件名（リスト台帳）
   if (cache) { try { cache.put(ck, JSON.stringify(out), 45); } catch (e4) {} }
   return out;
 }
@@ -12761,6 +12819,8 @@ function extCfgWriteImport_(cfg, o) {
     if (o.count !== undefined && o.count !== null) { csh.getRange(cfg.row, 29).setValue(Number(o.count) || 0); cfg.importedCount = Number(o.count) || 0; }
     extCfgCacheClear_();
   } catch (e) {}
+  // v111: リスト台帳（リストID → 案件名・元シート・タブ・担当）に控える。失敗しても取込は成功
+  try { if (o.srcTitle || o.importedAt) lregOnImport_(cfg, o); } catch (eReg) {}
 }
 // 最初からかけ直す（リストはそのまま、進捗だけ消す）
 function extProgressReset_(pin) {
@@ -13074,6 +13134,12 @@ function syncExternalFor_(cfg, dryRun) {
     changedRows.forEach(function (idx) { if (s < 0) { s = e = idx; } else if (idx === e + 1) { e = idx; } else { flush(); s = e = idx; } });
     flush();
   });
+  // v111: 「架電回数（自動）」「架電履歴（自動）」の列（その行にかけたすべての電話）。列が無ければ、見出しの右端に足す（確認だけのときは足さない）
+  try {
+    var hRep = extHistBulk_(tsh, hr, cfg, hist, startRow, nRows, sinceKey, dryRun);
+    cells += hRep.cells || 0; rep.histRows = hRep.rows || 0;
+    if (hRep.added && hRep.added.length) rep.addedCols = (rep.addedCols || []).concat(hRep.added);
+  } catch (eHist) { rep.histError = String(eHist).slice(0, 120); }
   rep.cells = cells; rep.skipped = skipped;
   rep.written = Object.keys(assign).length;
 
@@ -13112,7 +13178,7 @@ function extDriftNote_(rep) {
 
 // ── 即時反映：架電結果を保存した瞬間に、その1件を元シートへ書く ──
 //   失敗しても業務は止めない（退勤時・定期の反映が、あとで必ず同じ内容を書く）
-function extReflectNow_(d, ev, name, todayRows, cols) {
+function extReflectNow_(d, ev, name, todayRows, cols, replaced) {
   if (CONFIG.EXT_REALTIME === false) return null;
   var lidStr = String(d.listId || ""), row = Number(d.srcRow) || 0;
   if (lidStr.indexOf("ext:") !== 0 || !row) return null;
@@ -13145,6 +13211,9 @@ function extReflectNow_(d, ev, name, todayRows, cols) {
       history.push({ date: kanriDateKey_(rr[1]), time: kanriHM_(rr[2]), name: name, company: String(rr[3] || ""), phone: String(rr[4] || ""),
         result: String(rr[6] || ""), memo: String(rr[11] || ""), step: String(rr[12] || "") });
     });
+    // v111: 履歴の列（架電回数・架電履歴）。これまでの電話も「このシステムが書いた結果」として扱う（翌日以降のかけ直しでも、結果の列を最新にする）
+    var hc111 = null;
+    try { hc111 = extHistCols_(tsh, hr, true); extHistPast_(hc111, cells, lastCol, name).forEach(function (x) { history.push(x); }); } catch (eHc) { hc111 = null; }
     var wrote = 0, skipped = 0, wmap = {};
     extTargets_(cfg).forEach(function (tg) {
       if (!tg.col) return;
@@ -13152,6 +13221,8 @@ function extReflectNow_(d, ev, name, todayRows, cols) {
       if (dec.skipped) { skipped++; return; }
       if (dec.write) wmap[tg.col] = dec.val;
     });
+    // v111: 「架電回数（自動）」「架電履歴（自動）」に、この1件を足す（同じ通話の前の記録を置き換えたときは、前の記録を消す）
+    try { if (hc111) extHistRow_(tsh, hr, cfg, cells, lastCol, wmap, [res], replaced ? [replaced] : [], hc111); } catch (eHr) {}
     wrote = extWriteRowCells_(tsh, row, wmap);
     try { if (cache) cache.remove("ext_rt_fail_" + pin); } catch (e3) {}
     return { ok: true, cells: wrote, skipped: skipped };
@@ -13182,6 +13253,16 @@ function extRetractNow_(pin, name, undone, todayRows, cols) {
     });
     remain.sort(function (a, b) { return (a.date + " " + a.time).localeCompare(b.date + " " + b.time); });
     var latest = remain.length ? remain[remain.length - 1] : null, n = 0, rmap = {};
+    // v111: きょうの結果が残っていなければ、履歴の列にある、取り消した電話より前の電話（前の日の結果）に戻す
+    var hc111 = null;
+    try {
+      hc111 = extHistCols_(tsh, Number(cfg.headerRow) || 1, false);
+      if (!latest) {
+        var uKey = extHistItem_(cfg, undone), past = extHistPast_(hc111, cells, lastCol, name).filter(function (x) { return !(x.date === uKey.date && x.time === uKey.time && x.result === uKey.result); });
+        past.sort(function (a, b) { return (a.date + " " + a.time).localeCompare(b.date + " " + b.time); });
+        if (past.length) latest = past[past.length - 1];
+      }
+    } catch (eHc) { hc111 = null; }
     extTargets_(cfg).forEach(function (tg) {
       if (!tg.col || tg.col > lastCol) return;
       var cur = cells[tg.col - 1], uv = tg.get(undone);
@@ -13189,6 +13270,8 @@ function extRetractNow_(pin, name, undone, todayRows, cols) {
       var nv = latest ? tg.get(latest) : "";
       rmap[tg.col] = (nv === undefined || nv === null) ? "" : nv;
     });
+    // v111: 「架電回数（自動）」「架電履歴（自動）」から、取り消した1件を消す
+    try { if (hc111 && (hc111.hist || hc111.count)) extHistRow_(tsh, Number(cfg.headerRow) || 1, cfg, cells, lastCol, rmap, [], [undone], hc111); } catch (eHu) {}
     n = extWriteRowCells_(tsh, row, rmap);
     return { ok: true, cells: n };
   } catch (e) { return { ok: false }; }
@@ -13310,7 +13393,7 @@ function extHealth_(deep, pinFilter) {
 
 // ═══════════════════════════════════════════════════════════════════════
 // v110 ⑻: Galaxy A25 の通話録音を、指定のGoogleドライブのフォルダへ自動保存する
-//   保存先：CONFIG.REC_AUTOSAVE_FOLDER（「A アポインター毎日の架電音声」）の「年-月／日」フォルダ
+//   保存先：CONFIG.REC_AUTOSAVE_FOLDER の「年-月／日」フォルダ（v111 で保存先を変更。以前の保存先は CONFIG.REC_AUTOSAVE_PREV）
 //   ファイル名：氏名_年-月-日_時分秒_電話番号.m4a（例：藤田直美_2026-11-10_101530_0312345678.m4a）
 //   v109 までに起きていたこと：
 //     ・端末からは「担当者ごとのフォルダ」へ送り、指定フォルダへは複製していた。複製に失敗しても、どこにも出なかった
@@ -13326,6 +13409,12 @@ function extHealth_(deep, pinFilter) {
 // ═══════════════════════════════════════════════════════════════════════
 var REC_AUTOSAVE_FAIL_KEY = "REC_AUTOSAVE_FAIL_V110";
 function recAutosaveId_() { return extractFolderId_(CONFIG.REC_AUTOSAVE_FOLDER || CONFIG.REC_ARCHIVE_FOLDER || ""); }
+// v111: 以前の自動保存先（いまの保存先と同じものは除く）
+function recAutosavePrevIds_() {
+  var cur = recAutosaveId_(), out = [];
+  (CONFIG.REC_AUTOSAVE_PREV || []).forEach(function (x) { var id = extractFolderId_(x || ""); if (id && id !== cur && out.indexOf(id) < 0) out.push(id); });
+  return out;
+}
 function recAutosaveName_(pin, originalName, atMs) {
   var nm = FULL_NAME_MAP[String(pin)] || ("PIN" + pin);
   var d = new Date(Number(atMs) || new Date().getTime());
@@ -13425,7 +13514,8 @@ function recAutosaveCheck_(deep) {
 // 指定フォルダの、ある日のフォルダにある録音（1回の実行の中では読み直さない）
 var REC_AS_DAY_CACHE_ = {};
 function recAutosaveDayFiles_(root, dp) {
-  if (REC_AS_DAY_CACHE_[dp.key]) return REC_AS_DAY_CACHE_[dp.key];
+  var rk = root.getId() + "|" + dp.key;          // v111: 保存先ごとに控える（以前の保存先も読むため）
+  if (REC_AS_DAY_CACHE_[rk]) return REC_AS_DAY_CACHE_[rk];
   var out = [];
   var ymIt = root.getFoldersByName(dp.ym);
   while (ymIt.hasNext()) {
@@ -13440,28 +13530,34 @@ function recAutosaveDayFiles_(root, dp) {
       }
     }
   }
-  REC_AS_DAY_CACHE_[dp.key] = out;
+  REC_AS_DAY_CACHE_[rk] = out;
   return out;
 }
 // 指定フォルダにある、その人の録音（架電記録との紐づけに使う）
 function recAutosaveFilesFor_(pin, sinceMs) {
   var out = [], nm = FULL_NAME_MAP[String(pin)] || "";
   if (!nm) return out;
-  var root;
-  try { root = DriveApp.getFolderById(recAutosaveId_()); } catch (e) { return out; }
-  var now = new Date().getTime(), guard = 0, dayMs = 86400000, seenDay = {};
-  for (var t = now; t >= sinceMs - dayMs && guard < 40; t -= dayMs) {
-    guard++;
-    var dp = recDatePath_(t);
-    if (!dp || seenDay[dp.key]) continue;
-    seenDay[dp.key] = true;
-    recAutosaveDayFiles_(root, dp).forEach(function (f) {
-      if (f.name.indexOf(nm + "_") !== 0) return;
-      var atMs = recParseStamp_(f.name, 0) || Date.parse(dp.key + "T12:00:00+09:00");
-      if (atMs < sinceMs) return;
-      out.push({ id: f.id, name: f.name, atMs: atMs, phone: recPhoneIn_(f.name), url: f.url, created: atMs, autosave: true });
-    });
-  }
+  // v111: いまの保存先 → 以前の保存先（切り替える前の録音）の順に読む。同じ名前の録音は、先に見つけた方だけ
+  var roots = [], seenName = {};
+  [recAutosaveId_()].concat(recAutosavePrevIds_()).forEach(function (id) { try { if (id) roots.push(DriveApp.getFolderById(id)); } catch (e) {} });
+  if (!roots.length) return out;
+  var now = new Date().getTime(), dayMs = 86400000;
+  roots.forEach(function (root) {
+    var guard = 0, seenDay = {};
+    for (var t = now; t >= sinceMs - dayMs && guard < 40; t -= dayMs) {
+      guard++;
+      var dp = recDatePath_(t);
+      if (!dp || seenDay[dp.key]) continue;
+      seenDay[dp.key] = true;
+      recAutosaveDayFiles_(root, dp).forEach(function (f) {
+        if (f.name.indexOf(nm + "_") !== 0 || seenName[f.name]) return;
+        var atMs = recParseStamp_(f.name, 0) || Date.parse(dp.key + "T12:00:00+09:00");
+        if (atMs < sinceMs) return;
+        seenName[f.name] = true;
+        out.push({ id: f.id, name: f.name, atMs: atMs, phone: recPhoneIn_(f.name), url: f.url, created: atMs, autosave: true });
+      });
+    }
+  });
   return out;
 }
 // 保管庫（＝指定フォルダ）へ写す。すでに指定フォルダにあるファイルは写さない。失敗は控えて、管理者の画面に出す
@@ -13966,7 +14062,7 @@ function v110SelfTest() {
   ok("⑵ 自分が書いた古い結果は、最新の結果で書き換える", extCellDecide_(cfgT, tgR, "不在", latest, [older, latest]).write === true);
   ok("⑵ 手入力された値は書き換えない", extCellDecide_(cfgT, tgR, "担当者不在のため後日", latest, [older, latest]).skipped === true);
   // ⑻ 録音
-  ok("⑻ 保存先のフォルダID", recAutosaveId_() === "1P7MOlAg7gRR1X_imtjSjl81MmUUZFQ7V");
+  ok("⑻ 保存先のフォルダID", recAutosaveId_() === extractFolderId_(CONFIG.REC_AUTOSAVE_FOLDER) && recAutosaveId_().length > 20);   // v111: 保存先は設定の値
   ok("⑻ Galaxy のファイル名の日時を、日本時間として読む", recParseStamp_("通話記録 09012345678_261104_103015.m4a", 0) === Date.parse("2026-11-04T10:30:15+09:00"));
   ok("⑻ 日付フォルダは日本時間で決める（23:30 UTC → 翌日）", recDatePath_(Date.parse("2026-11-04T23:30:00Z")).key === "2026-11-05");
   if (somePin) {
@@ -14000,4 +14096,1738 @@ function v110SetupCheck() {
   });
   Logger.log("⑥ サーバーの版: " + GAS_VERSION + "（アプリの版と同じであること。違うときは「デプロイを管理」→ 編集 →「新バージョン」）");
   Logger.log("⑦ 自己点検: " + (v110SelfTest() ? "すべて合格" : "不合格の項目があります（上のログ）"));
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// v111（2026-11-15）
+//   ⑴ 通話録音の自動保存先を変更（CONFIG.REC_AUTOSAVE_FOLDER）。以前の保存先（CONFIG.REC_AUTOSAVE_PREV）の録音も、架電記録との紐づけに使う
+//   ⑵ アポイント台帳：アポ取得報告を、指定のスプレッドシート（CONFIG.APPO_LEDGER）へ、商談日の順に自動で登録する
+//   ⑶ 架電リスト（元シート）の各社の行に「架電回数（自動）」「架電履歴（自動）」（かけた日時・結果）を自動で書く
+//      案件・リストごと・会社ごとにまとめた「架電報告書」を作る（画面で確認 → 印刷／PDF。ドライブへの PDF 保存・月初の自動作成）
+//   ⑷ アポ取得報告の確認項目（CONFIG.APPO_CHECKS：「外国人の採用も候補になるか？」→ YES）を記録・台帳・報告書に出す
+//   そのほか（BPO 各社の架電システムの使い方を調べて追加）：
+//      リスト台帳（リストごとの案件名）／案件・リスト別の進み具合（消化率・接続率・アポ率・残りの見込み）／時間帯別の接続率／
+//      今日・明日の商談（前日確認用）／商談への引き継ぎメモ・録音のリンク
+// ═══════════════════════════════════════════════════════════════════════
+var V111_PROP = { aplLast: "APL_LAST_V111", aplCols: "APL_COLS_V111", repFolder: "REPORT_FOLDER_V111", repMonth: "REPORT_MONTH_DONE_V111", repAuto: "REPORT_AUTO_V111",
+  repMsg: "REPORT_AUTO_MSG_V111", digest: "APL_DIGEST_V111" };
+function v111Props_() { return PropertiesService.getScriptProperties(); }
+function v111Prop_(k) { try { return v111Props_().getProperty(k); } catch (e) { return null; } }
+function v111PropSet_(k, v) { try { v111Props_().setProperty(k, String(v)); } catch (e) {} }
+function v111PropDel_(k) { try { v111Props_().deleteProperty(k); } catch (e) {} }
+// 排他（スクリプト全体で1つのロック）。
+//   ・この実行がすでにロックを持っているとき（ほかの処理の中から呼ばれたとき）は、取り直さない・解放しない（外側のロックを先に外してしまわないため）
+//   ・strict＝true：ロックを取れなかったら、fn を実行せずに V111_NOLOCK を返す（人が使う台帳に、同時に2つの処理が書かないため）
+//   ・strict でないとき：取れなくても fn は実行する（アポ取得報告そのものは、必ず保存するため）
+var V111_NOLOCK = { noLock: true };
+function v111Lock_(fn, ms, strict) {
+  var lock = null, got = false, had = false;
+  try { lock = LockService.getScriptLock(); had = lock.hasLock(); if (!had) got = lock.tryLock(ms || 15000); } catch (e) { got = false; }
+  if (strict && !had && !got) return V111_NOLOCK;
+  try { return fn(); } finally { if (got) { try { lock.releaseLock(); } catch (e2) {} } }
+}
+function v111Esc_(s) {
+  return String(s === null || s === undefined ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+// シートに文字として書く値（自由入力の文字が、数式として動かないように）。= + - @ で始まる文字は、先頭に ' を付けて文字にする
+function v111Txt_(v) {
+  if (v === null || v === undefined) return "";
+  var s = String(v);
+  return /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
+}
+// 見出しの比較用（空白・全角英数・（必須）や ※必須 などの注記を除く）
+function v111HeadKey_(s) {
+  var t = String(s === null || s === undefined ? "" : s);
+  t = t.replace(/[Ａ-Ｚａ-ｚ０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); });
+  t = t.replace(/[（(][^）)]*[）)]/g, "").replace(/^[\s　※＊*]+/, "").replace(/[※＊*].*$/, "").replace(/[\s　:：]/g, "");
+  return t.toLowerCase();
+}
+// 日付（Date／"2026/11/20"／"2026年11月20日"）→ "yyyy-MM-dd"。tz は、その値が入っているスプレッドシートのタイムゾーン
+function v111DateKey_(v, tz) {
+  if (v === null || v === undefined || v === "") return "";
+  if (isDate_(v)) return Utilities.formatDate(v, tz || "Asia/Tokyo", "yyyy-MM-dd");
+  var s = zen2han_(v).trim();
+  var m = s.match(/^(\d{4})\s*[\/\-年.]\s*(\d{1,2})\s*[\/\-月.]\s*(\d{1,2})/);
+  if (!m) return "";
+  var mo = Number(m[2]), d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return "";
+  return m[1] + "-" + ("0" + mo).slice(-2) + "-" + ("0" + d).slice(-2);
+}
+function v111Hm_(v, tz) {
+  if (v === null || v === undefined || v === "") return "";
+  if (isDate_(v)) return Utilities.formatDate(v, tz || "Asia/Tokyo", "HH:mm");
+  var m = zen2han_(v).trim().match(/(\d{1,2})\s*[:：時]\s*(\d{1,2})?/);
+  if (!m) return "";
+  var h = Number(m[1]), mi = Number(m[2] || 0);
+  if (h > 23 || mi > 59) return "";
+  return ("0" + h).slice(-2) + ":" + ("0" + mi).slice(-2);
+}
+var V111_DOW = ["日", "月", "火", "水", "木", "金", "土"];
+function v111Dow_(dateKey) {
+  var t = Date.parse(String(dateKey || "") + "T12:00:00+09:00");     // 日本時間の正午＝UTC の同じ日付の 3:00
+  return isNaN(t) ? "" : V111_DOW[new Date(t).getUTCDay()];
+}
+function v111AddDays_(dateKey, n) {
+  var t = Date.parse(String(dateKey) + "T12:00:00+09:00");
+  return isNaN(t) ? "" : jstKey_(t + n * 86400000);
+}
+function v111JP_(dateKey) {
+  var p = String(dateKey || "").split("-");
+  return p.length === 3 ? Number(p[0]) + "年" + Number(p[1]) + "月" + Number(p[2]) + "日" : String(dateKey || "");
+}
+function v111Hash_(s) {
+  var b = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(s), Utilities.Charset.UTF_8), out = "";
+  for (var i = 0; i < 6; i++) { var x = (b[i] + 256) % 256; out += (x < 16 ? "0" : "") + x.toString(16); }
+  return out;
+}
+function v111ColLetter_(n) {
+  var s = "";
+  n = Number(n) || 0;
+  while (n > 0) { var m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// v111 ⑷⑵: アポ取得報告の保存（「アポイント」シート）
+//   v110 までとの違い：
+//     ・報告の確認項目（CONFIG.APPO_CHECKS。「外国人の採用も候補になるか？」）と、商談への引き継ぎメモを記録する
+//     ・アポID を付け、同じ報告が再送されても行を増やさない（すでにある行は書き換えない＝管理者が直した案件名・取消を消さない）
+//     ・登録日はサーバーが日本時間で決める（端末のタイムゾーン・時計に左右されない。架電結果と同じ考え方）
+//     ・保存したら、その1件をアポイント台帳（CONFIG.APPO_LEDGER）へ登録する。台帳に書けなくても、報告の保存は成功させる
+// ───────────────────────────────────────────────────────────────────────
+var APO_SHEET = "アポイント";
+var APO_BASE_HEADER = ["登録日", "報告者", "案件名", "商談日付", "商談時間", "法人名", "電話番号", "担当者", "性別", "役職",
+  "メール", "住所", "アポ日時", "人柄", "特定技能案件", "外国人雇用", "特定技能", "技人国", "面接・採用決定者", "録音送付"];
+var APO_X = { id: "アポID", pin: "PIN", recv: "受信日時", lid: "リストID", cid: "架電CID", handoff: "引き継ぎメモ", ledger: "台帳" };
+// 「台帳」列の印：済＝台帳に登録した／未＝台帳に書けなかった（夜間の処理が登録する）／保留＝自動では登録しない（名簿にない PIN からの報告。管理者が確かめてから入れる）
+var APO_MARK = { done: "済", todo: "未", hold: "保留" };
+function apoChecks_() {
+  return ((CONFIG.APPO_CHECKS || []).filter(function (c) { return c && c.key && c.label; })).map(function (c) {
+    return { key: String(c.key), label: String(c.label), col: String(c.col || c.label), must: String(c.must || "YES") };
+  });
+}
+function apoYn_(v) {
+  var s = String(v === null || v === undefined ? "" : v).trim().toUpperCase();
+  if (s === "YES" || s === "Y" || s === "TRUE" || s === "はい" || s === "○" || s === "〇") return "YES";
+  if (s === "NO" || s === "N" || s === "FALSE" || s === "いいえ" || s === "×") return "NO";
+  if (s === "未確認" || s === "UNKNOWN" || s === "?" || s === "？") return "未確認";
+  return "";
+}
+function apoExtraNames_() {
+  return [APO_X.id, APO_X.pin, APO_X.recv, APO_X.lid, APO_X.cid, APO_X.handoff].concat(apoChecks_().map(function (c) { return c.col; })).concat([APO_X.ledger]);
+}
+// 端末から届いた報告 → 記録する形にそろえる
+function apoNormalize_(d, now) {
+  var pin = rosterNormPin_(d.pin);
+  var idNum = epochOk_(d.apoId) || epochOk_(d.cid);
+  var ev = evtTime_({ cid: idNum, sentAt: d.sentAt, tzo: d.tzo }, now, epochOk_(d.sentAt) ? 0 : skewGetMs_(pin));
+  if (now - ev.ms > 31 * 86400000) ev = evtTime_({}, now, 0);      // 1か月より前の時刻は、端末の値を使わない（サーバーの時刻で記録）
+  var checks = {};
+  apoChecks_().forEach(function (c) {
+    var raw = (d.checks && d.checks[c.key] !== undefined) ? d.checks[c.key] : d[c.key];
+    checks[c.key] = apoYn_(raw);
+  });
+  var md = v111DateKey_(d.meetingDate) || v111DateKey_(String(d.datetime || "").slice(0, 10));
+  var mt = v111Hm_(d.meetingTime) || v111Hm_(String(d.datetime || "").slice(11));
+  return {
+    apoId: String(d.apoId === null || d.apoId === undefined ? "" : d.apoId).trim() || (idNum ? String(idNum) : "S" + now),
+    pin: FULL_NAME_MAP[pin] ? pin : "", reporter: canonName_(pin, d.reporter || d.name),
+    date: ev.dateKey, dateJP: ev.dateJP,
+    project: String(d.project || "").trim(), meetingDate: md, meetingTime: mt,
+    company: String(d.company || "").trim(), phone: String(d.phone || "").trim(), person: String(d.person || "").trim(),
+    gender: String(d.gender || ""), role: String(d.role || ""), email: String(d.email || "").trim(), address: String(d.address || ""),
+    datetime: String(d.datetime || (md ? md + (mt ? "T" + mt : "") : "")), personality: String(d.personality || ""),
+    isTokutei: String(d.isTokutei || ""), gaikokujin: String(d.gaikokujin || ""), tokutei: String(d.tokutei || ""),
+    gijinkoku: String(d.gijinkoku || ""), decider: String(d.decider || ""), recSent: String(d.recSent || ""),
+    listId: String(d.listId || "").slice(0, 200), callCid: String(d.callCid === null || d.callCid === undefined ? "" : d.callCid),
+    handoff: String(d.handoff || "").slice(0, 2000), checks: checks, recUrl: "", cancelled: false
+  };
+}
+function apoRowValues_(rec) {
+  return [rec.dateJP || rec.date, v111Txt_(rec.reporter), v111Txt_(rec.project), rec.meetingDate, rec.meetingTime,
+    v111Txt_(rec.company), asText_(rec.phone), v111Txt_(rec.person), v111Txt_(rec.gender), v111Txt_(rec.role),
+    v111Txt_(rec.email), v111Txt_(rec.address), rec.datetime, v111Txt_(rec.personality),
+    v111Txt_(rec.isTokutei), v111Txt_(rec.gaikokujin), v111Txt_(rec.tokutei), v111Txt_(rec.gijinkoku), v111Txt_(rec.decider), v111Txt_(rec.recSent)];
+}
+// 「アポイント」シートの「取消」列（管理者の「アポの修正」が作る列。見出しに 取消／キャンセル を含む列）。無ければ 0
+function apoCancelCol_(hdr) {
+  for (var c = 0; c < (hdr || []).length; c++) { if (/取消|キャンセル/.test(String(hdr[c] === null || hdr[c] === undefined ? "" : hdr[c]))) return c + 1; }
+  return 0;
+}
+function apoIsCancelled_(v) {
+  var cx = String(v === null || v === undefined ? "" : v).trim();
+  return !!cx && !/^(no|いいえ|なし|false|0)$/i.test(cx);
+}
+// 「アポイント」シートの1行 → 記録（列は見出しで探す。v110 までの行には、アポID などが無い）
+function apoFromRow_(r, cols, tz, cancelCol) {
+  function x(name) { var c = cols[name]; return c ? r[c - 1] : ""; }
+  var checks = {};
+  apoChecks_().forEach(function (c) { checks[c.key] = apoYn_(x(c.col)); });
+  var rec = {
+    apoId: String(x(APO_X.id) === null || x(APO_X.id) === undefined ? "" : x(APO_X.id)).trim(),
+    pin: rosterNormPin_(x(APO_X.pin)), reporter: String(r[1] || "").trim(),
+    date: v111DateKey_(r[0], tz), project: String(r[2] || "").trim(),
+    meetingDate: v111DateKey_(r[3], tz), meetingTime: v111Hm_(r[4], tz),
+    company: String(r[5] || "").trim(), phone: String(r[6] === null || r[6] === undefined ? "" : r[6]).trim(), person: String(r[7] || "").trim(),
+    gender: String(r[8] || ""), role: String(r[9] || ""), email: String(r[10] || "").trim(), address: String(r[11] || ""),
+    datetime: "", personality: String(r[13] || ""), isTokutei: String(r[14] || ""), gaikokujin: String(r[15] || ""), tokutei: String(r[16] || ""),
+    gijinkoku: String(r[17] || ""), decider: String(r[18] || ""), recSent: String(r[19] || ""),
+    listId: String(x(APO_X.lid) || ""), callCid: String(x(APO_X.cid) === null || x(APO_X.cid) === undefined ? "" : x(APO_X.cid)).trim(),
+    handoff: String(x(APO_X.handoff) || ""), checks: checks, recUrl: "", ledger: String(x(APO_X.ledger) || "").trim(),
+    cancelled: cancelCol ? apoIsCancelled_(r[cancelCol - 1]) : false
+  };
+  if (!rec.meetingDate) rec.meetingDate = v111DateKey_(String(r[12] || "").slice(0, 10), tz);
+  if (!rec.meetingTime) rec.meetingTime = v111Hm_(String(r[12] || "").slice(11), tz);
+  rec.dateJP = rec.date ? v111JP_(rec.date) : "";
+  return rec;
+}
+// アポID の無い（v110 までの）行に付ける ID。内容から作るので、何度作っても同じ値になる
+function apoLegacyId_(rec) {
+  return "L" + v111Hash_([rec.date, normName_(rec.reporter), normCompany_(rec.company), rec.meetingDate, rec.meetingTime].join("|"));
+}
+function appoSave_(d) {
+  var now = new Date().getTime();
+  var rec = apoNormalize_(d, now);
+  if (!rec.company && !rec.person) return { status: "error", handled: true, type: "appointment", message: "法人名・担当者名がありません" };
+  var info = v111Lock_(function () {
+    var ss = SpreadsheetApp.openById(SHEET_ID);
+    var sh = ensureSheet(ss, APO_SHEET, APO_BASE_HEADER);
+    var cols = ensureCols_(sh, apoExtraNames_());
+    var width = Math.max(sh.getLastColumn(), APO_BASE_HEADER.length);
+    Object.keys(cols).forEach(function (k) { if (cols[k] > width) width = cols[k]; });
+    // アポID の行を、末尾から探す
+    function findId(depth) {
+      var last = sh.getLastRow();
+      if (last < 2) return 0;
+      var n = Math.min(depth, last - 1), ids = sh.getRange(last - n + 1, cols[APO_X.id], n, 1).getValues();
+      for (var i = ids.length - 1; i >= 0; i--) { if (String(ids[i][0] === null || ids[i][0] === undefined ? "" : ids[i][0]).trim() === rec.apoId) return last - n + 1 + i; }
+      return 0;
+    }
+    // 同じアポID の行があれば、もう書かない（再送で行を増やさない。すでにある行は、管理者が案件名を直したり取消を付けたりしているかもしれないので、書き換えない）
+    var found = findId(400);
+    if (found) return { row: found, ledgerCol: cols[APO_X.ledger], duplicate: true, sheet: sh };
+    var row = apoRowValues_(rec);
+    while (row.length < width) row.push("");
+    row[cols[APO_X.id] - 1] = asText_(rec.apoId);
+    row[cols[APO_X.pin] - 1] = rec.pin ? asText_(rec.pin) : "";
+    row[cols[APO_X.recv] - 1] = new Date(now);
+    row[cols[APO_X.lid] - 1] = v111Txt_(rec.listId);
+    row[cols[APO_X.cid] - 1] = rec.callCid ? asText_(rec.callCid) : "";
+    row[cols[APO_X.handoff] - 1] = v111Txt_(rec.handoff);
+    apoChecks_().forEach(function (c) { row[cols[c.col] - 1] = rec.checks[c.key] || ""; });
+    row[cols[APO_X.ledger] - 1] = "";
+    gridEnsure_(sh, 0, width);
+    sh.appendRow(row);
+    // いま足した行を、アポID で確かめる（同時に別の報告が足されても、印を別の行に付けないため）
+    return { row: findId(30), ledgerCol: cols[APO_X.ledger], duplicate: false, sheet: sh };
+  }, 20000);
+  // 経営管理システムへ反映（v108 と同じ。失敗しても保存は成功）。再送のときは、もう数えない
+  if (!info.duplicate) {
+    try { kanriPushOnAppointment_({ reporter: rec.reporter, name: rec.reporter, date: rec.date }); } catch (eK) {}
+    try { kanriFlushDirty_(5); } catch (eF) {}
+  }
+  // アポイント台帳へ（失敗しても保存は成功。あとで夜間の処理・管理者の操作が、同じ内容を書く）
+  var led = null;
+  try { led = aplUpsertOne_(rec); } catch (eL) { led = { ok: false, message: String(eL && eL.message || eL).slice(0, 200) }; }
+  var mark = led && led.ok ? APO_MARK.done + " " + fmtJst_(new Date(now), "MM/dd HH:mm") : (led && led.off ? "" : (led && led.held ? APO_MARK.hold : APO_MARK.todo));
+  try {
+    // 再送で台帳に書けなかったときは、前の印（済 など）を消さない
+    if (info.row && !(info.duplicate && !(led && led.ok))) info.sheet.getRange(info.row, info.ledgerCol).setValue(mark);
+  } catch (eM) {}
+  // 確認項目が YES でない報告は、管理者が気づけるように監査ログへ残す
+  var notYes = apoChecks_().filter(function (c) { return c.must && rec.checks[c.key] !== c.must; });
+  if (notYes.length && !info.duplicate) { try { logAudit("アポ報告の確認項目", rec.reporter, rec.company, notYes.map(function (c) { return c.label + "＝" + (rec.checks[c.key] || "未回答"); }).join("／")); } catch (eA) {} }
+  return { status: "ok", handled: true, type: "appointment", saved: true, apoId: rec.apoId, duplicate: !!info.duplicate, date: rec.date,
+    ledger: led ? { ok: !!led.ok, off: !!led.off, held: !!led.held, busy: !!led.busy, action: led.action || "", message: led.message || "" } : null,
+    checks: rec.checks, notYes: notYes.map(function (c) { return c.key; }), gasVersion: GAS_VERSION };
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// v111 ⑵: アポイント台帳（CONFIG.APPO_LEDGER のスプレッドシート）
+//   台帳は、人が見て・直して使う表。こちらが書くのは、次のことだけにする。
+//   ・アポ取得報告を保存した瞬間に、その1件を「商談日（→商談時間）の順の位置」へ1行足す（表全体の並べ替えはしない）
+//   ・台帳の1〜10行目に「商談日」と「法人名（会社名）」の見出しがあれば、その並びに合わせて書く。
+//     空のシートには見出しを作る。別の内容が入っているシートには書かず、同じスプレッドシートに「アポイント台帳」タブを作る
+//   ・足りない列は、最初の1回だけ右端に足す。人が消した列は、足し直さない（アポID の列だけは、同じアポを見分けるために必ず置く）
+//   ・同じアポ（アポID。無ければ 法人名＋商談日＋商談時間）は1行
+//   ・すでにある行は、録音のリンクだけを埋める（人が直した・消した内容を、書き戻さない）。手で入力済みの行を最初に引き当てたときだけ、空のセルを埋める
+//   ・表全体の並べ替えは、管理者が「台帳をそろえる」を押したときと、過去の分をまとめて入れたときだけ
+//   ・書くときは、スクリプトのロックを取る。取れなかったら書かない（「台帳」列を「未」にして、あとで登録する）
+//   ・管理者の画面に状態を出すだけのときは、何も書かない
+// ───────────────────────────────────────────────────────────────────────
+var APL_TAB_FALLBACK = "アポイント台帳";
+// 見出しの言い方は、先に書いたものを優先する（同じ項目に当たる列が2つあるときは、先の言い方の列を使う）
+function aplFields_() {
+  var f = [
+    { k: "meetingDate", h: "商談日", syn: ["商談日", "商談日付", "商談予定日", "訪問日", "訪問予定日", "面談日", "面談予定日"] },
+    { k: "meetingTime", h: "商談時間", syn: ["商談時間", "商談時刻", "訪問時間", "面談時間", "開始時間", "開始時刻", "時間", "時刻"] },
+    { k: "dow", h: "曜日", syn: ["曜日"] },
+    { k: "project", h: "案件名", syn: ["案件名", "案件", "クライアント", "依頼元"] },
+    { k: "company", h: "法人名", syn: ["法人名", "会社名", "企業名", "施設名", "社名", "法人名・施設名"] },
+    { k: "person", h: "担当者", syn: ["先方担当者", "ご担当者名", "ご担当者", "担当者名", "担当者"] },
+    { k: "role", h: "役職", syn: ["役職", "担当者の役職"] },
+    { k: "phone", h: "電話番号", syn: ["電話番号", "電話", "tel"] },
+    { k: "email", h: "メール", syn: ["メール", "メールアドレス", "email", "e-mail"] },
+    { k: "address", h: "住所", syn: ["住所", "所在地"] }
+  ];
+  apoChecks_().forEach(function (c) { f.push({ k: "chk:" + c.key, h: c.col, syn: [c.col, c.label] }); });
+  return f.concat([
+    { k: "isTokutei", h: "特定技能案件", syn: ["特定技能案件"] },
+    { k: "gaikokujin", h: "外国人雇用", syn: ["外国人雇用"] },
+    { k: "tokutei", h: "特定技能", syn: ["特定技能"] },
+    { k: "gijinkoku", h: "技人国", syn: ["技人国"] },
+    { k: "decider", h: "面接・採用決定者", syn: ["面接・採用決定者", "採用決定者"] },
+    { k: "personality", h: "人柄", syn: ["人柄"] },
+    { k: "handoff", h: "引き継ぎメモ", syn: ["引き継ぎメモ", "引継ぎメモ", "引継メモ", "申し送り"] },
+    { k: "reporter", h: "アポ取得者", syn: ["アポ取得者", "アポインター", "報告者", "取得者"] },
+    { k: "date", h: "アポ取得日", syn: ["アポ取得日", "取得日", "登録日", "獲得日"] },
+    { k: "rec", h: "録音", syn: ["録音", "録音url", "録音リンク"] },
+    { k: "status", h: "状態", syn: ["状態", "ステータス"] },
+    { k: "apoId", h: "アポID", syn: ["アポid"] }
+  ]);
+}
+function aplCfg_() {
+  var c = CONFIG.APPO_LEDGER || {};
+  return { on: c.ENABLED !== false && !!c.SHEET_ID, id: extractSsId_(c.SHEET_ID || ""), gid: String(c.GID === undefined || c.GID === null ? "0" : c.GID),
+    sort: c.SORT !== false, desc: String(c.ORDER || "asc").toLowerCase() === "desc" };
+}
+// 見出しの行 → 項目キー → 列番号（1始まり）。言い方の優先順に探し、1つの列を2つの項目には使わない
+function aplMapHeader_(hdr, fields) {
+  var keys = (hdr || []).map(v111HeadKey_), map = {}, used = {};
+  fields.forEach(function (f) {
+    var syn = (f.syn || [f.h]).map(v111HeadKey_);
+    for (var s = 0; s < syn.length && !map[f.k]; s++) {
+      for (var i = 0; i < keys.length; i++) { if (keys[i] && keys[i] === syn[s] && !used[i]) { map[f.k] = i + 1; used[i] = true; break; } }
+    }
+  });
+  return map;
+}
+// 足したことのある列の控え（人が消した列を、足し直さないため）。{ "スプレッドシートID#タブID": [項目キー…] }
+function aplSeenCols_(key) {
+  try { var all = JSON.parse(v111Prop_(V111_PROP.aplCols) || "{}"); return (all && all[key]) || []; } catch (e) { return []; }
+}
+function aplSeenColsSave_(key, list) {
+  try {
+    var all = {};
+    try { all = JSON.parse(v111Prop_(V111_PROP.aplCols) || "{}") || {}; } catch (e0) { all = {}; }
+    all[key] = list;
+    var ks = Object.keys(all);
+    if (ks.length > 12) ks.slice(0, ks.length - 12).forEach(function (k) { if (k !== key) delete all[k]; });
+    v111PropSet_(V111_PROP.aplCols, JSON.stringify(all));
+  } catch (e) {}
+}
+var APL_CTX_ = null;     // 1回の実行の中では、書き込み用に開いた台帳を開き直さない
+// 台帳を開く。readOnly＝true のときは、何も書かない（管理者の画面の表示用。見出し・列・タブを作るのは、登録のときだけ）
+function aplOpen_(fresh, readOnly) {
+  if (APL_CTX_ && !fresh && !readOnly) return APL_CTX_;
+  var cfg = aplCfg_(), out = { ok: false, off: !cfg.on, id: cfg.id, gid: cfg.gid, message: "", readOnly: !!readOnly };
+  if (!cfg.on) { out.message = "アポイント台帳は使わない設定です（CONFIG.APPO_LEDGER）"; return out; }
+  var ss;
+  try { ss = SpreadsheetApp.openById(cfg.id); }
+  catch (e) {
+    out.code = "open";
+    out.message = "アポイント台帳のスプレッドシートを開けません。" + CONFIG.GAS_OWNER_EMAIL + " を「編集者」として共有してください";
+    return out;
+  }
+  out.ss = ss; out.url = ss.getUrl(); out.title = ss.getName();
+  try { out.tz = ss.getSpreadsheetTimeZone() || "Asia/Tokyo"; } catch (eTz) { out.tz = "Asia/Tokyo"; }
+  var sheets = ss.getSheets(), sh = null, fields = aplFields_();
+  sheets.forEach(function (s) { if (!sh && String(s.getSheetId()) === cfg.gid) sh = s; });
+  function detect(s) {
+    var lr = s.getLastRow(), lc = s.getLastColumn();
+    if (lr < 1 || lc < 1) return { empty: true };
+    var top = s.getRange(1, 1, Math.min(10, lr), lc).getValues();
+    for (var r = 0; r < top.length; r++) {
+      var m = aplMapHeader_(top[r], fields);
+      if (m.meetingDate && m.company) return { hr: r + 1, map: m, hdr: top[r] };
+    }
+    return { foreign: true };
+  }
+  var det = sh ? detect(sh) : null;
+  out.fields = fields; out.sort = cfg.sort; out.desc = cfg.desc;
+  if (!sh || det.foreign) {
+    // 指定のタブが無い／別の内容が入っている → 「アポイント台帳」タブを使う。元のタブには書かない
+    out.fallback = true;
+    out.fallbackWhy = !sh ? "指定のタブ（gid " + cfg.gid + "）が見つかりません" : "指定のタブ「" + sh.getName() + "」には、台帳として読める見出し（商談日・法人名）がありません";
+    sh = ss.getSheetByName(APL_TAB_FALLBACK);
+    if (!sh) {
+      if (readOnly) {          // まだ無い：最初の登録のときに作る
+        out.ok = true; out.pendingTab = true; out.tab = APL_TAB_FALLBACK; out.tabGid = ""; out.empty = true; out.hr = 1; out.map = {}; out.missing = fields.map(function (f) { return f.h; });
+        return out;
+      }
+      sh = ss.insertSheet(APL_TAB_FALLBACK);
+    }
+    det = detect(sh);
+    if (det.foreign) { out.code = "foreign"; out.message = "「" + APL_TAB_FALLBACK + "」タブに、台帳として読める見出しがありません。タブの名前を変えるか、1行目を空にしてください"; return out; }
+  }
+  out.sh = sh; out.tab = sh.getName(); out.tabGid = String(sh.getSheetId());
+  var seenKey = cfg.id + "#" + out.tabGid;
+  if (det.empty) {
+    var head = fields.map(function (f) { return f.h; });
+    if (readOnly) { out.ok = true; out.empty = true; out.hr = 1; out.map = {}; out.missing = head; return out; }
+    gridEnsure_(sh, 0, head.length);
+    sh.getRange(1, 1, 1, head.length).setValues([head]).setFontWeight("bold").setBackground("#e8eaf6");
+    try { sh.setFrozenRows(1); } catch (eFz) {}
+    det = { hr: 1, map: aplMapHeader_(head, fields), hdr: head, created: true };
+    aplSeenColsSave_(seenKey, fields.map(function (f) { return f.k; }));
+  }
+  // 足りない列：まだ足したことのない項目だけを、見出しの右端に足す。人が消した列は足し直さない（アポID だけは必ず置く）
+  var seen = aplSeenCols_(seenKey), missing = [], added = [], dropped = [];
+  fields.forEach(function (f) {
+    if (det.map[f.k]) return;
+    if (f.k !== "apoId" && seen.indexOf(f.k) >= 0) { dropped.push(f.h); return; }
+    missing.push(f);
+  });
+  if (readOnly) {
+    out.missing = missing.map(function (f) { return f.h; });
+  } else {
+    if (missing.length) {
+      var lastCol = Math.max(sh.getLastColumn(), det.hdr.length);
+      missing.forEach(function (f) {
+        lastCol++;
+        gridEnsure_(sh, 0, lastCol);
+        sh.getRange(det.hr, lastCol).setValue(f.h).setFontWeight("bold").setBackground("#e8eaf6");
+        det.map[f.k] = lastCol; added.push(f.h);
+      });
+    }
+    var union = seen.slice();
+    fields.forEach(function (f) { if (det.map[f.k] && union.indexOf(f.k) < 0) union.push(f.k); });
+    if (union.length !== seen.length) aplSeenColsSave_(seenKey, union);
+  }
+  out.ok = true; out.hr = det.hr; out.map = det.map; out.hdr = det.hdr;
+  out.created = !!det.created; out.addedCols = added; out.droppedCols = dropped;
+  if (!readOnly) APL_CTX_ = out;
+  return out;
+}
+// 記録 → 台帳の「項目キー → 値」。文字の項目は、数式として動かないようにして書く
+function aplValues_(rec) {
+  var v = {
+    meetingDate: rec.meetingDate ? rec.meetingDate.replace(/-/g, "/") : "", meetingTime: rec.meetingTime || "", dow: rec.meetingDate ? v111Dow_(rec.meetingDate) : "",
+    project: v111Txt_(rec.project), company: v111Txt_(rec.company), person: v111Txt_(rec.person), role: v111Txt_(rec.role), phone: rec.phone ? asText_(rec.phone) : "",
+    email: v111Txt_(rec.email), address: v111Txt_(rec.address),
+    isTokutei: v111Txt_(rec.isTokutei), gaikokujin: v111Txt_(rec.gaikokujin), tokutei: v111Txt_(rec.tokutei), gijinkoku: v111Txt_(rec.gijinkoku), decider: v111Txt_(rec.decider),
+    personality: v111Txt_(rec.personality), handoff: v111Txt_(rec.handoff), reporter: v111Txt_(rec.reporter), date: rec.date ? rec.date.replace(/-/g, "/") : "", rec: rec.recUrl || "", apoId: asText_(rec.apoId)
+  };
+  apoChecks_().forEach(function (c) { v["chk:" + c.key] = rec.checks ? (rec.checks[c.key] || "") : ""; });
+  return v;
+}
+function aplRowKey_(company, dateKey, hm) { return normCompany_(company) + "|" + (dateKey || "") + "|" + (hm || ""); }
+function aplCell_(r, col) { return (col && col <= r.length) ? r[col - 1] : ""; }
+function aplStr_(v) { return String(v === null || v === undefined ? "" : v).trim(); }
+// 台帳のいまの内容。rows＝行ごとの要点／byId＝アポID → 行／byKey＝会社＋商談日時 → 行（どちらも、同じものが2行あるときは上の行）／lastData＝内容のある最後の行
+function aplIndex_(L) {
+  var sh = L.sh, n = sh.getLastRow() - L.hr, lastCol = Math.max(sh.getLastColumn(), 1);
+  var vals = n > 0 ? sh.getRange(L.hr + 1, 1, n, lastCol).getValues() : [];
+  var byId = {}, byKey = {}, rows = [], lastData = -1;
+  for (var i = 0; i < vals.length; i++) {
+    var r = vals[i];
+    var id = aplStr_(aplCell_(r, L.map.apoId)), co = aplStr_(aplCell_(r, L.map.company));
+    var rawD = aplCell_(r, L.map.meetingDate);
+    var dk = v111DateKey_(rawD, L.tz), hm = v111Hm_(aplCell_(r, L.map.meetingTime), L.tz);
+    var has = !!(id || co || aplStr_(rawD));
+    rows.push({ id: id, co: co, dk: dk, hm: hm, has: has });
+    if (!has) continue;
+    lastData = i;
+    if (id && byId[id] === undefined) byId[id] = i;
+    if (co) { var k = aplRowKey_(co, dk, hm); if (byKey[k] === undefined) byKey[k] = i; }
+  }
+  return { vals: vals, rows: rows, byId: byId, byKey: byKey, lastCol: lastCol, n: vals.length, lastData: lastData };
+}
+// その報告に当たる台帳の行（アポID → 無ければ 会社＋商談日時）。無ければ -1
+function aplFind_(ix, rec) {
+  var at = ix.byId[rec.apoId];
+  if (at === undefined) at = ix.byKey[aplRowKey_(rec.company, rec.meetingDate, rec.meetingTime)];
+  return at === undefined ? -1 : at;
+}
+// 新しい行に書くセル（列番号 → 値）。「状態」は別に書く（入力規則などで書けなくても、行は登録するため）
+function aplDiffNew_(L, rec) {
+  var want = aplValues_(rec), out = {};
+  L.fields.forEach(function (f) {
+    var col = L.map[f.k];
+    if (!col || f.k === "status") return;
+    var w = want[f.k];
+    if (w === undefined || w === null || w === "") return;
+    out[col] = w;
+  });
+  return out;
+}
+// 新しい行の「状態」：これからの商談は「予定」。過ぎた商談（過去の分を入れたとき）は、空のまま（結果は人が入れる）
+function aplNewStatus_(rec, todayKey) {
+  if (rec.cancelled) return "取消";
+  return (rec.meetingDate && rec.meetingDate >= todayKey) ? "予定" : "";
+}
+// すでにある行に書くセル。
+//   adopt＝true（手で入力済みの行を、はじめて引き当てたとき。その行に アポID が無い）：空のセルを埋める
+//   それ以外：録音のリンクだけ（人が直した・空にした内容を、書き戻さない）
+//   取消：アプリで取消にしたアポは、「状態」が空か「予定」のときだけ「取消」にする
+function aplDiffExisting_(L, cur, rec, adopt) {
+  var want = aplValues_(rec), out = {};
+  L.fields.forEach(function (f) {
+    var col = L.map[f.k];
+    if (!col || f.k === "status") return;
+    if (!adopt && f.k !== "rec") return;
+    var w = want[f.k];
+    if (w === undefined || w === null || w === "") return;
+    if (aplStr_(aplCell_(cur, col)) === "") out[col] = w;
+  });
+  if (rec.cancelled && L.map.status) {
+    var st = aplStr_(aplCell_(cur, L.map.status));
+    if (st === "" || st === "予定") out[L.map.status] = "取消";
+  }
+  return out;
+}
+// 新しい行を入れる位置（商談日 → 商談時間の順）。
+//   ・それより後の商談の行があるとき：その手前の「商談日のある行」のすぐ下（手前に無ければ、その行の上）。
+//     区切りの行（「―― 12月 ――」）や合計の行のように、商談日の無い行があっても、新しい行は、前の商談の行に続けて入る
+//   ・それより後の商談の行が無いとき：最後の「商談日のある行」のすぐ下（その下に合計の行などがあれば、その上に行を足す）
+//   ・商談日のある行が1つも無いとき：内容のある最後の行の次
+//   insert＝true のときは、row の位置に行を足してから書く。false のときは、row の行（空の行）にそのまま書く
+function aplFindPos_(L, ix, rec) {
+  var appendRow = L.hr + ix.lastData + 2;
+  if (!L.sort || !rec.meetingDate) return { insert: false, row: appendRow };
+  var key = rec.meetingDate + " " + (rec.meetingTime || ""), prev = -1, greater = -1;
+  for (var i = 0; i <= ix.lastData; i++) {
+    var r = ix.rows[i];
+    if (!r.has || !r.dk) continue;
+    var k = r.dk + " " + r.hm;
+    if (L.desc ? k < key : k > key) { greater = i; break; }
+    prev = i;
+  }
+  if (greater >= 0) return { insert: true, row: prev >= 0 ? L.hr + prev + 2 : L.hr + greater + 1 };
+  if (prev >= 0 && prev < ix.lastData) return { insert: true, row: L.hr + prev + 2 };      // 最後の商談の行の下に、合計の行などがある
+  return { insert: false, row: appendRow };
+}
+// 1行のセルを書く（列番号 → 値）。隣り合う列はまとめて書く。入力規則や保護で書けない列があるときは、その列だけを飛ばして、ほかの列は書く
+//   戻り値：{ written: 書けたセルの数, rejected: [書けなかった列番号…], error: 最初の理由 }
+function aplWriteCells_(sh, row, map) {
+  var cols = Object.keys(map).map(Number).sort(function (a, b) { return a - b; }), i = 0, out = { written: 0, rejected: [], error: "" };
+  if (!cols.length) return out;
+  gridEnsure_(sh, row, cols[cols.length - 1]);
+  while (i < cols.length) {
+    var j = i;
+    while (j + 1 < cols.length && cols[j + 1] === cols[j] + 1) j++;
+    var vals = [];
+    for (var k = i; k <= j; k++) vals.push(map[cols[k]]);
+    try { sh.getRange(row, cols[i], 1, vals.length).setValues([vals]); out.written += vals.length; }
+    catch (eBlock) {
+      for (var k2 = i; k2 <= j; k2++) {          // まとめて書けなかったときは、1セルずつ
+        try { sh.getRange(row, cols[k2]).setValue(map[cols[k2]]); out.written++; }
+        catch (eCell) { out.rejected.push(cols[k2]); if (!out.error) out.error = String(eCell && eCell.message || eCell).slice(0, 100); }
+      }
+    }
+    i = j + 1;
+  }
+  return out;
+}
+function aplRejectedNames_(L, cols) {
+  return (cols || []).map(function (c) { var f = L.fields.filter(function (x) { return L.map[x.k] === c; })[0]; return f ? f.h : v111ColLetter_(c) + "列"; });
+}
+// 新しい1行を書く（rowNo の行は、空の行）。1セルも書けなかったときは、エラーにする
+function aplWriteNew_(L, rowNo, rec, todayKey) {
+  var diff = aplDiffNew_(L, rec);
+  var w = aplWriteCells_(L.sh, rowNo, diff);
+  if (!w.written) throw new Error("台帳に書き込めませんでした" + (w.error ? "（" + w.error + "）" : ""));
+  var st = aplNewStatus_(rec, todayKey);
+  if (st && L.map.status) { try { L.sh.getRange(rowNo, L.map.status).setValue(st); } catch (eSt) {} }      // 「状態」に入力規則があって書けなくても、行は登録する
+  return { cells: w.written, rejected: aplRejectedNames_(L, w.rejected) };
+}
+// 行を足して、新しい1行を書く。書けなかったときは、足した空の行を消す
+function aplInsertNew_(L, pos, rec, todayKey) {
+  if (pos.insert) L.sh.insertRowBefore(pos.row);
+  try { return aplWriteNew_(L, pos.row, rec, todayKey); }
+  catch (eW) { if (pos.insert) { try { L.sh.deleteRow(pos.row); } catch (eD) {} } throw eW; }
+}
+// 台帳を商談日（→商談時間）の順に並べる（表全体。管理者が「台帳をそろえる」を押したとき・過去の分をまとめて入れたとき）
+function aplSort_(L) {
+  if (!L.sort) return { sorted: false, why: "商談日の順に並べない設定です" };
+  var sh = L.sh, n = sh.getLastRow() - L.hr;
+  if (n < 2) return { sorted: true };
+  try {
+    var spec = [{ column: L.map.meetingDate, ascending: !L.desc }];
+    if (L.map.meetingTime) spec.push({ column: L.map.meetingTime, ascending: !L.desc });
+    sh.getRange(L.hr + 1, 1, n, Math.max(sh.getLastColumn(), 1)).sort(spec);
+    return { sorted: true };
+  } catch (e) { return { sorted: false, why: String(e && e.message || e).slice(0, 120) }; }
+}
+// 1件を登録（アポ取得報告を保存した瞬間）
+function aplUpsertOne_(rec) {
+  if (!aplCfg_().on) return { ok: false, off: true, message: "アポイント台帳は使わない設定です" };
+  if (!rec.pin) return { ok: false, held: true, message: "名簿にない PIN からの報告のため、台帳には入れていません（管理者の画面から入れられます）" };
+  var res = v111Lock_(function () {
+    var L = aplOpen_(true, false);
+    if (!L.ok) return { ok: false, off: !!L.off, message: L.message };
+    var ix = aplIndex_(L), at = aplFind_(ix, rec), today = jstKey_(new Date().getTime()), cells = 0, isNew = at < 0, rejected = [];
+    if (isNew) {
+      var wn = aplInsertNew_(L, aplFindPos_(L, ix, rec), rec, today);
+      cells = wn.cells; rejected = wn.rejected;
+    } else {
+      var we = aplWriteCells_(L.sh, L.hr + 1 + at, aplDiffExisting_(L, ix.vals[at], rec, !ix.rows[at].id));
+      cells = we.written; rejected = aplRejectedNames_(L, we.rejected);
+    }
+    v111PropSet_(V111_PROP.aplLast, JSON.stringify({ at: new Date().getTime(), ok: true, company: rec.company, action: isNew ? "追加" : (cells ? "更新" : "変更なし") }));
+    return { ok: true, action: isNew ? "added" : (cells ? "updated" : "same"), cells: cells, total: ix.lastData + 1 + (isNew ? 1 : 0), rejected: rejected,
+      message: (isNew ? "台帳に登録しました" : (cells ? "台帳の空欄を埋めました" : "台帳に登録済みです")) + (rejected.length ? "（書けなかった列：" + rejected.join("・") + "）" : "") };
+  }, 20000, true);
+  if (res === V111_NOLOCK) return { ok: false, busy: true, message: "ほかの処理が書き込み中のため、台帳にはあとで登録します" };
+  return res;
+}
+// 「アポイント」シートの全件を読む
+function apoReadAll_() {
+  var ss = SpreadsheetApp.openById(SHEET_ID), sh = ss.getSheetByName(APO_SHEET);
+  if (!sh || sh.getLastRow() < 2) return { sheet: sh, recs: [], cols: {}, tz: "Asia/Tokyo" };
+  var tz = mainTz_(), cols = ensureCols_(sh, apoExtraNames_());
+  var width = Math.max(sh.getLastColumn(), APO_BASE_HEADER.length);
+  var hdr = sh.getRange(1, 1, 1, width).getValues()[0], cancelCol = apoCancelCol_(hdr);
+  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, width).getValues(), recs = [];
+  for (var i = 0; i < vals.length; i++) {
+    var r = vals[i];
+    if (!String(r[5] || "").trim() && !String(r[1] || "").trim()) continue;
+    var rec = apoFromRow_(r, cols, tz, cancelCol);
+    rec.row = i + 2;
+    recs.push(rec);
+  }
+  return { sheet: sh, recs: recs, cols: cols, tz: tz };
+}
+// 録音のリンクを探す（架電結果の「録音URL」。架電CID → なければ、同じ人・同じ電話番号・同じ日のアポ獲得の行）
+//   maxDays：何日前のアポまで探すか（夜間の処理は 14日。架電結果を毎晩さかのぼって読みすぎないため。管理者が押したときは 120日）
+function apoAttachRec_(recs, maxDays) {
+  var floor = jstKey_(new Date().getTime() - (Number(maxDays) || 120) * 86400000);
+  var need = recs.filter(function (r) { return !r.recUrl && !r.recSkip && r.date && r.date >= floor; });
+  if (!need.length) return 0;
+  var minKey = "9999-12-31";
+  need.forEach(function (r) { if (r.date < minKey) minKey = r.date; });
+  var byCid = {}, byKey = {}, resolve = liveResolver_();
+  try {
+    crScanSince_(minKey, function (r, rowNo, cols) {
+      if (cols.recUrl < 0) return false;
+      var url = String(r[cols.recUrl] || "");
+      if (!url) return true;
+      var cid = String(r[13] === null || r[13] === undefined ? "" : r[13]);
+      if (cid) byCid[cid] = url;
+      if (mapResultLabelToId(r[6]) === "appo") {
+        var who = resolve(String(r[0] || "").trim(), cols.pin >= 0 ? r[cols.pin] : "");
+        byKey[who + "|" + phKey_(r[4]) + "|" + (kanriDateKey_(r[1]) || "")] = url;
+      }
+      return true;
+    }, { max: 120000, grace: 600 });
+  } catch (e) { return 0; }
+  var n = 0;
+  need.forEach(function (r) {
+    var u = (r.callCid && byCid[r.callCid]) || byKey[(r.pin || pinForName(r.reporter)) + "|" + phKey_(r.phone) + "|" + r.date] || "";
+    if (u) { r.recUrl = u; n++; }
+  });
+  return n;
+}
+// 「アポイント」シートの記録を、台帳に入れる対象かどうかで分ける
+//   auto＝自動で入れる（v111 で届いた報告）／legacy＝v110 までの報告（アポID が無い）／hold＝名簿にない PIN からの報告（「台帳」列が「保留」）
+function aplClass_(rec) {
+  if (rec.legacy) return "legacy";
+  if (String(rec.ledger || "").indexOf(APO_MARK.hold) === 0) return "hold";
+  return "auto";
+}
+function aplIsDone_(rec) { return String(rec.ledger || "").indexOf(APO_MARK.done) === 0; }
+// 「アポイント」シートと台帳をそろえる（夜間の処理・管理者の「台帳をそろえる」「台帳に入れる」）
+//   ・v111 で届いたのに台帳に入っていないアポ（「台帳」列が「未」）を登録する
+//   ・v110 までのアポ（アポID の無い行）と、名簿にない PIN からの報告（「保留」）は、自動では入れない。opts.legacy=true（管理者が「台帳に入れる」を押した）のときだけ入れる
+//   ・取消にしたアポは、入れない。すでに台帳にあるときは、「状態」が空か「予定」なら「取消」にする
+//   ・登録済みのアポは、録音のリンクだけを埋める。台帳で人が消した行（「済」なのに台帳に無い）は、戻さない（opts.all=true のときだけ戻す）
+//   ・opts.resort=true（管理者が押したとき）：表全体を商談日の順に並べ直す。夜間の処理（opts.nightly）は、足りない行を商談日の位置に足すだけで、並べ替えない
+//   遅い読み取り（架電結果から録音のリンクを探す）は、ロックの外で先に済ませる。台帳に書くあいだだけロックを取り、その中で台帳を読み直す
+function aplSync_(opts) {
+  opts = opts || {};
+  APL_CTX_ = null;
+  var withLegacy = opts.legacy === true;
+  // ── 読み取り（ロックなし） ──
+  var Lr = aplOpen_(true, true);
+  if (!Lr.ok) return { ok: false, off: !!Lr.off, code: Lr.code || "", message: Lr.message };
+  var all = apoReadAll_(), cands = [];
+  all.recs.forEach(function (r) {
+    if (!r.apoId) { r.apoId = apoLegacyId_(r); r.legacy = true; }
+    r.cls = aplClass_(r);
+    if (r.cls === "auto" || withLegacy) cands.push(r);
+  });
+  var linked = 0;
+  try {
+    var ixr = (Lr.empty || !Lr.sh) ? null : aplIndex_(Lr);
+    cands.forEach(function (rec) {
+      var at0 = ixr ? aplFind_(ixr, rec) : -1;
+      if (at0 < 0) { if (rec.cancelled || (aplIsDone_(rec) && opts.all !== true)) rec.recSkip = true; return; }      // 台帳に入れない行のためには、探さない
+      if (aplStr_(aplCell_(ixr.vals[at0], Lr.map.rec)) !== "") rec.recSkip = true;                                     // 録音のリンクが入っている行のためにも、探さない
+    });
+    linked = apoAttachRec_(cands, opts.nightly ? 14 : 120);
+  } catch (eR) { linked = 0; }
+  // ── 書き込み（ロックを取って、台帳を読み直してから書く） ──
+  var res = v111Lock_(function () {
+    // 入れる対象のアポが1件も無いときは、台帳を読むだけで開く（見出しや列を作らない。空のシート・人の表に、用もなく書かない）
+    var L = cands.length ? aplOpen_(true, false) : aplOpen_(true, true);
+    if (!L.ok) return { ok: false, off: !!L.off, code: L.code || "", message: L.message };
+    var ix = (L.empty || !L.sh) ? { vals: [], rows: [], byId: {}, byKey: {}, lastCol: 0, n: 0, lastData: -1 } : aplIndex_(L), today = jstKey_(new Date().getTime());
+    var added = [], filled = 0, same = 0, removed = 0, cancelled = 0, failed = 0, firstErr = "", seen = {}, seenKey = {}, mark = [], idFix = [];
+    var left = { legacy: 0, hold: 0 };
+    function fail(e) { failed++; if (!firstErr) firstErr = String(e && e.message || e).slice(0, 100); }
+    all.recs.forEach(function (rec) {
+      if (seen[rec.apoId]) return;          // 同じ報告が2行あるとき（v110 までの再送）は、最初の1行だけ
+      seen[rec.apoId] = true;
+      var at = aplFind_(ix, rec), done = aplIsDone_(rec);
+      if (rec.cls !== "auto" && !withLegacy) {          // 自動では入れないもの：台帳に無ければ、件数だけ数える
+        if (at < 0 && !rec.cancelled && !done) left[rec.cls]++;
+        return;
+      }
+      if (at < 0) {
+        if (rec.cancelled) { cancelled++; return; }                    // 取消にしたアポは、入れない
+        if (done && opts.all !== true) { removed++; return; }          // 台帳で消した行は、戻さない
+        var k = aplRowKey_(rec.company, rec.meetingDate, rec.meetingTime);
+        if (seenKey[k]) { mark.push(rec); if (rec.legacy) idFix.push(rec); return; }      // 同じ会社・同じ商談日時の報告が、もう1件ある（2行にしない）
+        seenKey[k] = true;
+        added.push(rec);
+        return;
+      }
+      try {
+        var diff = aplDiffExisting_(L, ix.vals[at], rec, !ix.rows[at].id);
+        if (Object.keys(diff).length) { if (aplWriteCells_(L.sh, L.hr + 1 + at, diff).written) filled++; else same++; } else same++;
+        if (!done) mark.push(rec);
+        if (rec.legacy) idFix.push(rec);
+      } catch (eRow) { fail(eRow); }
+    });
+    // 曜日：台帳で商談日を直した行（リスケ）は、曜日が前の日付のままになる。1文字の曜日（こちらが書く形）が入っているセルだけを、いまの商談日に合わせて直す
+    var dowFixed = 0;
+    try {
+      if (L.map.dow && !L.readOnly) {
+        ix.vals.forEach(function (r, i) {
+          var curD = aplStr_(aplCell_(r, L.map.dow));
+          if (curD.length !== 1 || V111_DOW.indexOf(curD) < 0) return;
+          var wantD = ix.rows[i].dk ? v111Dow_(ix.rows[i].dk) : "";
+          if (wantD && wantD !== curD) { L.sh.getRange(L.hr + 1 + i, L.map.dow).setValue(wantD); dowFixed++; }
+        });
+      }
+    } catch (eDw) {}
+    // 足りない行を足す
+    var addedN = 0, later = 0;
+    function okRec(rec) { addedN++; mark.push(rec); if (rec.legacy) idFix.push(rec); }
+    if (added.length && opts.resort) {
+      // まとめて：内容のある最後の行の次から書き、あとで表全体を並べ直す
+      try {
+        var start = L.hr + ix.lastData + 2;
+        gridEnsure_(L.sh, start + added.length - 1, 0);
+        var colSet = {}, mats = added.map(function (rec) { return aplDiffNew_(L, rec); });
+        mats.forEach(function (m) { Object.keys(m).forEach(function (c) { colSet[c] = true; }); });
+        var colList = Object.keys(colSet).map(Number).sort(function (a, b) { return a - b; }), i = 0;
+        if (colList.length) gridEnsure_(L.sh, 0, colList[colList.length - 1]);
+        // 列ごと（隣り合う列はまとめて）に書く。台帳にある、こちらが書かない列（人が入力する列・数式）は触らない
+        while (i < colList.length) {
+          var j = i;
+          while (j + 1 < colList.length && colList[j + 1] === colList[j] + 1) j++;
+          var block = mats.map(function (m) { var a = []; for (var k2 = i; k2 <= j; k2++) { var v = m[colList[k2]]; a.push(v === undefined ? "" : v); } return a; });
+          L.sh.getRange(start, colList[i], added.length, j - i + 1).setValues(block);
+          i = j + 1;
+        }
+        if (L.map.status) {
+          try { L.sh.getRange(start, L.map.status, added.length, 1).setValues(added.map(function (rec) { return [aplNewStatus_(rec, today)]; })); } catch (eSt) {}
+        }
+        added.forEach(okRec);
+      } catch (eBulk) {
+        // まとめて書けなかったとき（入力規則のある列など）は、1件ずつ書く（書けない列だけを飛ばす）
+        var start2 = L.hr + ix.lastData + 2;
+        added.forEach(function (rec, n2) { try { aplWriteNew_(L, start2 + n2, rec, today); okRec(rec); } catch (eOne) { fail(eOne); } });
+      }
+    } else if (added.length) {
+      // 1件ずつ、商談日の順の位置に行を足す（表全体は並べ替えない）。下の位置から足すので、先に決めた位置がずれない
+      var cap = opts.nightly ? 40 : 200, plan = [];
+      function cmpKey(a, b) { return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0); }
+      added.forEach(function (rec) { plan.push({ rec: rec, pos: aplFindPos_(L, ix, rec), key: (rec.meetingDate || "") + " " + (rec.meetingTime || "") }); });
+      var appends = plan.filter(function (p) { return !p.pos.insert; }).sort(cmpKey);
+      if (L.desc) appends.reverse();
+      // 同じ位置に足すものは、あとから足したものが上になる。商談日の早い順（desc のときは遅い順）に並ぶように、逆の順で足す
+      var inserts = plan.filter(function (p) { return p.pos.insert; }).sort(function (a, b) {
+        if (a.pos.row !== b.pos.row) return b.pos.row - a.pos.row;
+        return L.desc ? cmpKey(a, b) : cmpKey(b, a);
+      });
+      var nextRow = L.hr + ix.lastData + 2;
+      appends.forEach(function (p) {
+        if (addedN >= cap) { later++; return; }
+        try { aplWriteNew_(L, nextRow, p.rec, today); nextRow++; okRec(p.rec); } catch (eA) { fail(eA); }
+      });
+      inserts.forEach(function (p) {
+        if (addedN >= cap) { later++; return; }
+        try { aplInsertNew_(L, p.pos, p.rec, today); okRec(p.rec); } catch (eI) { fail(eI); }
+      });
+    }
+    var st = (opts.resort && L.sh && !L.empty) ? aplSort_(L) : { sorted: null };
+    // 「アポイント」シートへ、アポID と「台帳」の印を書き戻す
+    try {
+      var stamp = APO_MARK.done + " " + fmtJst_(new Date(), "MM/dd HH:mm");
+      idFix.forEach(function (r) { all.sheet.getRange(r.row, all.cols[APO_X.id]).setValue(asText_(r.apoId)); });
+      mark.forEach(function (r) { all.sheet.getRange(r.row, all.cols[APO_X.ledger]).setValue(stamp); });
+    } catch (eW) {}
+    var leftN = left.legacy + left.hold;
+    var msg = "台帳「" + L.title + "／" + (L.tab || "") + "」：追加 " + addedN + "件・空欄を埋めた行 " + filled + "件・変更なし " + same + "件" +
+      (removed ? "・台帳で消した行 " + removed + "件（戻していません）" : "") + (cancelled ? "・取消のアポ " + cancelled + "件（入れていません）" : "") +
+      (leftN ? "・自動では入れないアポ " + leftN + "件（入れていません）" : "") + (linked ? "・録音のリンク " + linked + "件" : "") + (dowFixed ? "・曜日を直した行 " + dowFixed + "件" : "") +
+      (later ? "・残り " + later + "件は次の回" : "") + (failed ? "・⚠ 書けなかった行 " + failed + "件（" + firstErr + "）" : "") +
+      (st.sorted === true ? "・商談日順に並べました" : (st.sorted === false ? "・⚠ 並べ替えできませんでした（" + (st.why || "") + "）" : ""));
+    v111PropSet_(V111_PROP.aplLast, JSON.stringify({ at: new Date().getTime(), ok: true, action: "同期", message: msg }));
+    try { logAudit("アポイント台帳の同期", opts.by || "管理者", L.title, msg); } catch (eA2) {}
+    return { ok: true, added: addedN, filled: filled, same: same, removed: removed, cancelled: cancelled, legacy: left.legacy, held: left.hold, linked: linked, dowFixed: dowFixed,
+      later: later, failed: failed, total: all.recs.length, sorted: st.sorted, sortWhy: st.why || "",
+      fallback: !!L.fallback, fallbackWhy: L.fallbackWhy || "", tab: L.tab, url: L.url, message: msg };
+  }, 25000, true);
+  if (res === V111_NOLOCK) return { ok: false, busy: true, code: "busy", message: "ほかの処理が書き込み中です。少し待ってから、もう一度お試しください" };
+  return res;
+}
+// 台帳の状態（管理者の画面）。何も書かない。deep=true のときは、台帳にまだ入っていないアポも数える
+function aplStatus_(deep) {
+  var cfg = aplCfg_(), out = { on: cfg.on, id: cfg.id, gid: cfg.gid, ok: false, url: cfg.id ? "https://docs.google.com/spreadsheets/d/" + cfg.id + "/edit#gid=" + cfg.gid : "",
+    owner: CONFIG.GAS_OWNER_EMAIL, checks: apoChecks_().map(function (c) { return { key: c.key, label: c.label, must: c.must }; }), last: null, digest: v111Prop_(V111_PROP.digest) !== "off" };
+  try { out.last = JSON.parse(v111Prop_(V111_PROP.aplLast) || "null"); if (out.last && out.last.at) out.last.atText = fmtJst_(new Date(out.last.at), "MM/dd HH:mm"); } catch (e0) {}
+  if (!cfg.on) { out.message = "アポイント台帳は使わない設定です"; return out; }
+  var L = aplOpen_(true, true);
+  if (!L.ok) { out.code = L.code || ""; out.message = L.message; return out; }
+  out.ok = true; out.title = L.title; out.tab = L.tab; out.fallback = !!L.fallback; out.fallbackWhy = L.fallbackWhy || "";
+  if (L.tabGid !== "") out.url = "https://docs.google.com/spreadsheets/d/" + cfg.id + "/edit#gid=" + L.tabGid;
+  out.pendingTab = !!L.pendingTab; out.empty = !!L.empty; out.missingCols = L.missing || []; out.droppedCols = L.droppedCols || [];
+  out.rows = 0; out.upcoming = []; out.todayCount = 0; out.tomorrowCount = 0; out.weekCount = 0; out.unsorted = 0; out.mapInfo = [];
+  var today = jstKey_(new Date().getTime()), tomorrow = v111AddDays_(today, 1), week = v111AddDays_(today, 7);
+  var ix = null, chkCols = apoChecks_();
+  if (!L.empty && L.sh) {
+    // どの列を何として読んでいるか（管理者が、最初に確かめられるように）
+    [["meetingDate", "商談日"], ["meetingTime", "商談時間"], ["company", "法人名"], ["person", "担当者"], ["phone", "電話番号"]].forEach(function (x) {
+      var col = L.map[x[0]];
+      if (col) out.mapInfo.push({ field: x[1], col: v111ColLetter_(col), header: String(L.hdr[col - 1] === null || L.hdr[col - 1] === undefined ? "" : L.hdr[col - 1]).slice(0, 30) });
+    });
+    out.headerRow = L.hr;
+    ix = aplIndex_(L);
+    var prev = "";
+    ix.vals.forEach(function (r, i) {
+      var row = ix.rows[i];
+      if (!row.co) return;
+      out.rows++;
+      var dk = row.dk, hm = row.hm, key = dk + " " + hm;
+      if (dk && prev && (L.desc ? key > prev : key < prev)) out.unsorted++;
+      if (dk) prev = key;
+      if (!dk || dk < today || dk > week) return;
+      var status = aplStr_(aplCell_(r, L.map.status));
+      if (/取消|キャンセル/.test(status)) return;          // 取消の商談は、数えない
+      out.weekCount++;
+      if (dk === today) out.todayCount++;
+      if (dk === tomorrow) out.tomorrowCount++;
+      if (dk <= tomorrow || deep) {
+        var chk = {};
+        chkCols.forEach(function (c) { chk[c.key] = apoYn_(aplCell_(r, L.map["chk:" + c.key])); });
+        out.upcoming.push({ date: dk, time: hm, dow: v111Dow_(dk), company: row.co, person: aplStr_(aplCell_(r, L.map.person)), project: aplStr_(aplCell_(r, L.map.project)),
+          reporter: aplStr_(aplCell_(r, L.map.reporter)), status: status, phone: aplStr_(aplCell_(r, L.map.phone)), checks: chk,
+          rec: aplStr_(aplCell_(r, L.map.rec)), when: dk === today ? "今日" : (dk === tomorrow ? "明日" : "") });
+      }
+    });
+    if (!L.sort) out.unsorted = 0;       // 商談日の位置に入れない設定のときは、知らせない
+    out.upcoming.sort(function (a, b) { return (a.date + " " + a.time).localeCompare(b.date + " " + b.time); });
+    out.upcoming = out.upcoming.slice(0, 60);
+  }
+  if (deep) {
+    try {
+      // pending＝v111 で届いたのに台帳に入っていないアポ（今夜の処理で入る）／legacy＝v110 までのアポ／held＝名簿にない PIN からの報告（どちらも、管理者が「台帳に入れる」を押すまで入れない）
+      var all = apoReadAll_(), pending = 0, legacy = 0, held = 0, removed = 0, notYes = 0, monthKey = today.slice(0, 7), seenId = {};
+      all.recs.forEach(function (r) {
+        var isLegacy = !r.apoId, id = r.apoId || apoLegacyId_(r);
+        // 確認項目：答えのある報告（NO・未確認）だけを数える。v110 までの報告（答えの欄が無かった）は数えない
+        if (!r.cancelled && r.date.slice(0, 7) === monthKey && chkCols.some(function (c) { return c.must && r.checks[c.key] && r.checks[c.key] !== c.must; })) notYes++;
+        if (seenId[id]) return;               // 同じ報告が2行あるとき（v110 までの再送）は、1件として数える
+        seenId[id] = true;
+        if (r.cancelled) return;
+        var inLedger = ix ? (ix.byId[id] !== undefined || ix.byKey[aplRowKey_(r.company, r.meetingDate, r.meetingTime)] !== undefined) : false;
+        if (inLedger) return;
+        if (aplIsDone_(r)) removed++;
+        else if (isLegacy) legacy++;
+        else if (String(r.ledger || "").indexOf(APO_MARK.hold) === 0) held++;
+        else pending++;
+      });
+      out.apoRows = all.recs.length; out.pending = pending; out.legacy = legacy; out.held = held; out.removed = removed; out.notYesThisMonth = notYes;
+    } catch (eD) {}
+  }
+  out.message = L.pendingTab ? "最初の登録のときに、「" + APL_TAB_FALLBACK + "」タブを作って登録します"
+    : (L.empty ? "台帳「" + L.title + "／" + L.tab + "」は空です。最初の登録のときに、見出しを作ります" : "台帳「" + L.title + "／" + L.tab + "」に登録します（" + out.rows + "件）");
+  return out;
+}
+// 夜間のメールに足す「明日の商談」（前日確認用）。台帳を使わない・開けないときは空
+function aplDigestText_() {
+  if (v111Prop_(V111_PROP.digest) === "off") return "";
+  var st = aplStatus_(false);
+  if (!st.ok) return st.on ? "\n\n■ アポイント台帳\n⚠ " + (st.message || "開けません") : "";
+  var today = jstKey_(new Date().getTime()), tomorrow = v111AddDays_(today, 1);
+  var list = st.upcoming.filter(function (u) { return u.date === tomorrow; });
+  var lines = ["", "", "■ 明日（" + Number(tomorrow.slice(5, 7)) + "/" + Number(tomorrow.slice(8)) + "・" + v111Dow_(tomorrow) + "）の商談 " + list.length + "件"];
+  list.forEach(function (u) {
+    lines.push("・" + (u.time || "時間未定") + "　" + u.company + (u.person ? "　" + u.person + "様" : "") + (u.project ? "（" + u.project + "）" : "") + (u.reporter ? "　取得：" + u.reporter : "") + (u.status && u.status !== "予定" ? "　［" + u.status + "］" : ""));
+  });
+  if (!list.length) lines.push("（予定はありません）");
+  lines.push("今後7日間の商談 " + st.weekCount + "件　台帳：" + st.url);
+  return lines.join("\n");
+}
+
+
+// ───────────────────────────────────────────────────────────────────────
+// v111 ⑶: リスト台帳（リストID → 案件名・元スプレッドシート・タブ・担当）
+//   架電結果には「どのリストからかけた電話か（リストID）」が残っている（v108）。ただし、連携設定は「いまのリスト」しか持たないため、
+//   月末に報告書を作るときには、前のリストの名前も案件も分からなくなる。取込のたびにリストを台帳へ控え、案件名を付けておく
+//   案件名は、取込のときに自動で付ける（案件マスタの名前・別名が元スプレッドシートの名前に含まれていれば、その案件。無ければ元スプレッドシートの名前）。
+//   管理者の画面（📄 架電報告書）で直せる
+// ───────────────────────────────────────────────────────────────────────
+var LREG_SHEET = "リスト台帳";
+var LREG_HEADER = ["リストID", "案件名", "元スプレッドシート", "タブ", "担当PIN", "担当者", "件数", "初回取込", "最終取込", "URL", "メモ"];
+var LREG_CACHE_KEY = "lreg_v111";
+var LREG_NONE = "（案件名なし）";
+function lregSheet_() { return ensureSheet(SpreadsheetApp.openById(SHEET_ID), LREG_SHEET, LREG_HEADER); }
+function lregCacheClear_() { try { CacheService.getScriptCache().remove(LREG_CACHE_KEY); } catch (e) {} }
+function lregUrl_(lid) {
+  var m = String(lid || "").match(/^ext:([A-Za-z0-9\-_]+)#(.*)$/);
+  return m ? "https://docs.google.com/spreadsheets/d/" + m[1] + "/edit" + (m[2] !== "" ? "#gid=" + m[2] : "") : "";
+}
+// 台帳の全件（リストID → 内容）。2分だけ控える（架電結果の保存のたびに読まないため）
+function lregAll_(fresh) {
+  var cache = null;
+  try { cache = CacheService.getScriptCache(); } catch (e) {}
+  if (!fresh && cache) { try { var c = cache.get(LREG_CACHE_KEY); if (c) return JSON.parse(c); } catch (e2) {} }
+  var out = {}, sh = SpreadsheetApp.openById(SHEET_ID).getSheetByName(LREG_SHEET);
+  if (sh && sh.getLastRow() > 1) {
+    var v = sh.getRange(2, 1, sh.getLastRow() - 1, LREG_HEADER.length).getValues();
+    for (var i = 0; i < v.length; i++) {
+      var lid = String(v[i][0] || "").trim();
+      if (!lid) continue;
+      out[lid] = { lid: lid, project: String(v[i][1] || "").trim(), book: String(v[i][2] || ""), tab: String(v[i][3] || ""), pin: rosterNormPin_(v[i][4]),
+        name: String(v[i][5] || ""), count: Number(v[i][6]) || 0, first: isDate_(v[i][7]) ? v[i][7].getTime() : 0, last: isDate_(v[i][8]) ? v[i][8].getTime() : 0,
+        url: String(v[i][9] || ""), note: String(v[i][10] || ""), row: i + 2 };
+    }
+  }
+  try { if (cache) cache.put(LREG_CACHE_KEY, JSON.stringify(out), 120); } catch (e3) {}
+  return out;
+}
+// 案件名を決める（取込のとき）。案件マスタの名前・別名が、元スプレッドシートの名前（→タブ名）に含まれていれば、その案件
+function lregGuessProject_(book, tab, useMaster) {
+  var raw = String(book || "").trim();
+  if (useMaster !== false) {
+    try {
+      var projects = plReadProjects_(plEnsure_());
+      var p = plMatchProject_(raw, projects) || plMatchProject_(String(tab || ""), projects);
+      if (p) return p.name;
+    } catch (e) {}
+  }
+  var t = raw.replace(/[\s　_\-－]*(架電|テレアポ|コール|営業)?(用)?リスト.*$/, "").replace(/[\s　_\-－]+$/, "").trim();
+  return t || raw || LREG_NONE;
+}
+// 1件を登録・更新する。案件名は、空のとき・o.project が指定されたときだけ書く（管理者が付けた名前を、取込で消さない）
+//   ここではロックを取らない（取込の処理の中から呼ばれるため。その処理が持っているロックを、先に外してしまわないように）
+function lregUpsert_(lid, o) {
+  lid = String(lid || "").trim();
+  if (!lid) return null;
+  o = o || {};
+  return (function () {
+    var sh = lregSheet_(), all = lregAll_(true), cur = all[lid], now = new Date(Number(o.at) || new Date().getTime());
+    var pin = rosterNormPin_(o.pin || (cur && cur.pin) || "");
+    var book = String(o.book || (cur && cur.book) || ""), tab = String(o.tab || (cur && cur.tab) || "");
+    var project = o.project !== undefined && o.project !== null && String(o.project).trim() !== "" ? String(o.project).trim()
+      : ((cur && cur.project) || lregGuessProject_(book, tab, o.useMaster));
+    // 文字の項目は、文字として書く（タブ名「11/15」「001」や、「=」で始まる名前が、日付・数・数式に変わらないように）
+    var line = [asText_(lid), asText_(project), asText_(book), asText_(tab), pin ? asText_(pin) : "", asText_(FULL_NAME_MAP[pin] || (cur && cur.name) || ""),
+      o.count !== undefined && o.count !== null ? (Number(o.count) || 0) : ((cur && cur.count) || 0),
+      cur && cur.first ? new Date(cur.first) : now, o.touch === false && cur && cur.last ? new Date(cur.last) : now,
+      (cur && cur.url) || lregUrl_(lid), asText_(o.note !== undefined ? String(o.note) : ((cur && cur.note) || ""))];
+    if (cur) sh.getRange(cur.row, 1, 1, line.length).setValues([line]); else sh.appendRow(line);
+    lregCacheClear_();
+    return { lid: lid, project: project, book: book, tab: tab, pin: pin, isNew: !cur };
+  })();
+}
+function lregSetProject_(lid, name) {
+  var all = lregAll_(true), cur = all[String(lid || "")];
+  if (!cur) return { ok: false, message: "このリストは、リスト台帳にありません" };
+  var nm = String(name || "").trim();
+  if (!nm) return { ok: false, message: "案件名を入力してください" };
+  lregUpsert_(lid, { project: nm, touch: false });
+  try { Object.keys(FULL_NAME_MAP).forEach(function (p) { listMetaClear_(p); }); } catch (e) {}
+  try { logAudit("リストの案件名", "管理者", cur.book + "／" + cur.tab, cur.project + " → " + nm); } catch (e2) {}
+  return { ok: true, lid: lid, project: nm };
+}
+// いまの連携設定にあるリストを、台帳に登録する（v110 までに取り込んだリスト）。登録済みのものは変えない
+function lregEnsureFromCfgs_() {
+  var all = lregAll_(true), n = 0;
+  readExtConfigs_().forEach(function (c) {
+    if (!c.ssId) return;
+    var lid = "";
+    try { lid = c.gid ? extListId_(c.ssId, c.gid) : extCfgLid_(c); } catch (e) { lid = ""; }
+    if (!lid || all[lid]) return;
+    var book = c.srcTitle || "";
+    if (!book) { try { book = SpreadsheetApp.openById(c.ssId).getName(); } catch (e2) { book = ""; } }
+    lregUpsert_(lid, { book: book, tab: c.sheetName, pin: c.pin, count: c.importedCount, at: c.importedAt || undefined });
+    n++;
+  });
+  return n;
+}
+function lregProjectOf_(lid) {
+  if (!lid) return "";
+  var e = lregAll_(false)[String(lid)];
+  return e ? e.project : "";
+}
+// 取込のとき（extCfgWriteImport_ から呼ぶ）
+function lregOnImport_(cfg, o) {
+  var lid = extCfgLid_(cfg);
+  if (!lid) return;
+  lregUpsert_(lid, { book: o.srcTitle || cfg.srcTitle || "", tab: cfg.sheetName, pin: cfg.pin, count: o.count, at: o.importedAt || new Date().getTime() });
+  try { listMetaClear_(cfg.pin); } catch (e) {}
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// v111 ⑶: 架電リスト（元シート）の各社の行に、「架電回数（自動）」と「架電履歴（自動）」（かけた日時・結果）を書く
+//   v110 までは、その行の「最新の結果」だけを書いていた（2回目にかけると、1回目の日時と結果は元シートから消える）
+//   v111：専用の列に、その会社にかけたすべての電話を残す（例：1回目 2026/11/05 10:15 不在 ⏎ 2回目 2026/11/07 14:02 アポ獲得）
+//     ・列は、見出しの名前「架電回数（自動）」「架電履歴（自動）」で探す（列の位置は覚えない。元シートに列を足したり入れ替えたりしても、別の列に書かない）。
+//       元シートにもともとある「架電回数」「架電履歴」などの列（お客様や担当者が手で付けている列）は、使わない・書き換えない
+//     ・列が無ければ、見出しの右端に足す（CONFIG.EXT_HISTORY_COLS を false にすると、足さない・書かない）
+//     ・保存した瞬間・退勤時と定期の反映・取消のどれでも、同じ内容になる（何度書いても増えない）
+//     ・「N回目 日付 時刻 結果」の形の行だけを、こちらが書いた行として扱う。人が同じセルに書き足した行は、そのまま残す
+// ───────────────────────────────────────────────────────────────────────
+var EXT_HIST_COUNT = "架電回数（自動）", EXT_HIST_LOG = "架電履歴（自動）";
+function extHistOn_() { return CONFIG.EXT_HISTORY_COLS !== false; }
+function extHistSep_() { var s = CONFIG.EXT_HISTORY_SEP; return (s === undefined || s === null || s === "") ? "\n" : String(s); }
+// 見出しの比較（空白を除き、かっこを全角にそろえるだけ。「（自動）」まで同じ見出しだけを、こちらの列として扱う）
+function extHistHeadKey_(v) {
+  return String(v === null || v === undefined ? "" : v).replace(/[\s　]/g, "").replace(/\(/g, "（").replace(/\)/g, "）");
+}
+// 架電結果 → 履歴の1件（結果の言い換えは、「結果」の列と同じ設定を使う）
+function extHistItem_(cfg, r) {
+  var dk = kanriDateKey_(r.date) || String(r.date || ""), hm = kanriHM_(r.time) || String(r.time || "");
+  var res = String(r.result || "").trim();
+  if (cfg && cfg.resultMap && cfg.resultMap[res]) res = cfg.resultMap[res];
+  return { key: dk + " " + hm, date: dk, time: hm, result: res.replace(/[\r\n]+/g, " ") };
+}
+// セルの文字 → 履歴。「N回目 2026/11/05 10:15 結果」の形の行だけを、こちらが書いた行として読む。ほかの行（人が書き足したメモ）は other に残す
+function extHistParse_(cell) {
+  var items = [], other = [], sep = extHistSep_();
+  var text = String(cell === null || cell === undefined ? "" : cell), parts = text.split(/\r?\n/);
+  if (sep !== "\n" && sep.replace(/\s/g, "") !== "") {          // 区切りを改行以外にしているとき（" ／ " など）は、その区切りでも分ける
+    var more = [];
+    parts.forEach(function (p) { p.split(sep).forEach(function (q) { more.push(q); }); });
+    parts = more;
+  }
+  parts.forEach(function (line) {
+    var t = String(line || "").trim();
+    if (!t) return;
+    var m = t.match(/^\d+\s*回目\s+(\d{4})\/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})(?:\s+(.*))?$/);
+    if (!m) { other.push(t); return; }
+    var dk = m[1] + "-" + ("0" + m[2]).slice(-2) + "-" + ("0" + m[3]).slice(-2), hm = ("0" + m[4]).slice(-2) + ":" + m[5];
+    items.push({ key: dk + " " + hm, date: dk, time: hm, result: String(m[6] || "").trim() });
+  });
+  return { items: items, other: other };
+}
+function extHistFormat_(items, other) {
+  var lines = items.map(function (it, i) { return (i + 1) + "回目 " + it.date.replace(/-/g, "/") + " " + it.time + (it.result ? " " + it.result : ""); });
+  return lines.concat(other || []).join(extHistSep_());
+}
+// いまのセルに、足す履歴・消す履歴を反映する。sinceKey を渡すと、その日以降の履歴は add だけにする（＝まとめての反映。古い履歴は残す）
+function extHistMerge_(cell, add, remove, sinceKey) {
+  var cur = extHistParse_(cell), map = {}, order = [];
+  function put(it) {
+    var k = it.key + " " + it.result;
+    if (!map[k]) { map[k] = it; if (order.indexOf(k) < 0) order.push(k); }      // 消してから同じものを足しても、2件にしない
+  }
+  cur.items.forEach(function (it) { if (!(sinceKey && it.date >= sinceKey)) put(it); });
+  (remove || []).forEach(function (it) { var k = it.key + " " + it.result; if (map[k]) delete map[k]; });
+  (add || []).forEach(function (it) { if (it && it.date) put(it); });
+  var items = order.filter(function (k) { return !!map[k]; }).map(function (k) { return map[k]; });
+  items.sort(function (a, b) { return a.key < b.key ? -1 : (a.key > b.key ? 1 : 0); });
+  return { text: extHistFormat_(items, cur.other), count: items.length, items: items };
+}
+// 元シートの見出しから「架電回数（自動）」「架電履歴（自動）」の列を探す。ensure=true のときは、無ければ右端に足す
+function extHistCols_(tsh, hr, ensure) {
+  var out = { count: 0, hist: 0, added: [] };
+  if (!extHistOn_()) return out;
+  var lastCol = Math.max(tsh.getLastColumn(), 1);
+  var hdr = tsh.getRange(Number(hr) || 1, 1, 1, lastCol).getValues()[0].map(extHistHeadKey_);
+  out.count = hdr.indexOf(extHistHeadKey_(EXT_HIST_COUNT)) + 1;
+  out.hist = hdr.indexOf(extHistHeadKey_(EXT_HIST_LOG)) + 1;
+  if (ensure && (!out.count || !out.hist)) {
+    [[EXT_HIST_COUNT, "count"], [EXT_HIST_LOG, "hist"]].forEach(function (x) {
+      if (out[x[1]]) return;
+      lastCol++;
+      gridEnsure_(tsh, 0, lastCol);
+      tsh.getRange(Number(hr) || 1, lastCol).setValue(x[0]).setFontWeight("bold").setBackground("#fef3c7");
+      out[x[1]] = lastCol; out.added.push(x[0]);
+    });
+  }
+  return out;
+}
+// 保存した瞬間：その行の履歴に1件を足す（replaced＝同じ通話の前の記録を置き換えたとき、その前の記録）。wmap に書くセルを足す
+function extHistRow_(tsh, hr, cfg, cells, lastCol, wmap, add, remove, hcIn) {
+  if (!extHistOn_()) return;
+  var hc = hcIn || extHistCols_(tsh, hr, true);
+  if (!hc.hist && !hc.count) return;
+  var curH = hc.hist && hc.hist <= lastCol ? cells[hc.hist - 1] : "";
+  var mg = extHistMerge_(curH, (add || []).map(function (r) { return extHistItem_(cfg, r); }), (remove || []).map(function (r) { return extHistItem_(cfg, r); }));
+  if (hc.hist && mg.text !== String(curH === null || curH === undefined ? "" : curH)) wmap[hc.hist] = mg.text;
+  if (hc.count) {
+    var curC = hc.count <= lastCol ? cells[hc.count - 1] : "";
+    var want = mg.count || "";
+    if (String(curC === null || curC === undefined ? "" : curC) !== String(want)) wmap[hc.count] = want;
+  }
+}
+// その行の履歴のセルにある、これまでの電話（＝このシステムが書いた結果）。保存した瞬間の反映で、前の日に書いた結果を最新の結果に書き換えるために使う
+//   v110 までは「きょうの結果」しか見ていなかったため、翌日以降にかけ直すと、結果の列は退勤時の反映まで古いままだった
+function extHistPast_(hc, cells, lastCol, name) {
+  if (!hc || !hc.hist || hc.hist > lastCol) return [];
+  return extHistParse_(cells[hc.hist - 1]).items.map(function (it) { return { date: it.date, time: it.time, name: name, company: "", phone: "", result: it.result, memo: "", step: "" }; });
+}
+// まとめての反映：行ごとの結果（hist[行] ＝ その行にかけた電話。古い順）から、履歴の列を書く。戻り値：書いた（書く）セルの数
+function extHistBulk_(tsh, hr, cfg, hist, startRow, nRows, sinceKey, dryRun) {
+  if (!extHistOn_() || nRows < 1) return { cells: 0, rows: 0 };
+  var hc = extHistCols_(tsh, hr, !dryRun);
+  if (!hc.hist && !hc.count) return { cells: 0, rows: 0, missing: true };
+  var gridCols = tsh.getMaxColumns();
+  function read(col) {
+    if (col && col <= gridCols) return tsh.getRange(startRow, col, nRows, 1).getValues();
+    var a = []; for (var i = 0; i < nRows; i++) a.push([""]); return a;
+  }
+  var hv = read(hc.hist), cv = read(hc.count), chH = [], chC = [], cells = 0, rows = 0;
+  Object.keys(hist).forEach(function (rk) {
+    var idx = Number(rk) - startRow;
+    if (idx < 0 || idx >= nRows) return;
+    var curH = hv[idx][0];
+    var mg = extHistMerge_(curH, hist[rk].map(function (r) { return extHistItem_(cfg, r); }), [], sinceKey);
+    var touched = false;
+    if (hc.hist && mg.text !== String(curH === null || curH === undefined ? "" : curH)) { hv[idx][0] = mg.text; chH.push(idx); cells++; touched = true; }
+    if (hc.count && String(cv[idx][0] === null || cv[idx][0] === undefined ? "" : cv[idx][0]) !== String(mg.count || "")) { cv[idx][0] = mg.count || ""; chC.push(idx); cells++; touched = true; }
+    if (touched) rows++;
+  });
+  if (dryRun) return { cells: cells, rows: rows };
+  function flushCol(col, vals, changed) {
+    if (!col || !changed.length) return;
+    changed.sort(function (a, b) { return a - b; });
+    var s = -1, e = -1;
+    function flush() { if (s < 0) return; tsh.getRange(startRow + s, col, e - s + 1, 1).setValues(vals.slice(s, e + 1)); s = e = -1; }
+    changed.forEach(function (idx) { if (s < 0) { s = e = idx; } else if (idx === e + 1) { e = idx; } else { flush(); s = e = idx; } });
+    flush();
+  }
+  flushCol(hc.hist, hv, chH);
+  flushCol(hc.count, cv, chC);
+  return { cells: cells, rows: rows, added: hc.added };
+}
+
+
+// ───────────────────────────────────────────────────────────────────────
+// v111 ⑶: 架電報告書（案件ごと・リストごと・会社ごと）
+//   ・「架電結果」から、期間と案件を指定して作る（架電結果にはリストIDが残っているので、どのリストの電話かで分けられる）
+//   ・内容：サマリー（架電数・接続・アポ）／結果の内訳／リスト別／日別／時間帯別の接続率／獲得アポイント／会社ごとの架電履歴（かけた日時・結果）
+//   ・画面には HTML を返す（そのまま印刷 → PDF に保存できる。A4・縦）。同じ HTML から、ドライブへ PDF を保存できる
+//   用語：接続＝「不在」「不通」以外（相手と話せた電話）。アポ率＝アポ獲得÷架電数
+// ───────────────────────────────────────────────────────────────────────
+var REP_RES = [["appo", "アポ獲得"], ["cb", "再架電"], ["absent", "不在"], ["refused", "断り"], ["wrong", "不通"], ["other", "その他"]];
+var REP_LOG_SHEET = "報告書ログ";
+var REP_LOG_HEADER = ["作成日時", "案件名", "期間", "架電数", "アポ", "ファイル名", "URL", "作成", "形式"];
+var REP_FOLDER_NAME = "川嶋メソッド_架電報告書";
+function repResId_(label) {
+  var id = mapResultLabelToId(label);
+  return (id === "appo" || id === "cb" || id === "absent" || id === "refused" || id === "wrong") ? id : "other";
+}
+function repDurSec_(sec, dur) {
+  var n = Number(sec) || 0;
+  if (n > 0) return Math.round(n);
+  if (isDate_(dur)) { var p = Utilities.formatDate(dur, "Asia/Tokyo", "HH:mm:ss").split(":"); return Number(p[0]) * 60 + Number(p[1]); }   // "1:23" がシートで時刻になったもの
+  return parseDurToSec(dur);
+}
+function repMinSec_(sec) { sec = Math.max(0, Math.round(Number(sec) || 0)); return Math.floor(sec / 60) + ":" + ("0" + (sec % 60)).slice(-2); }
+function repHourMin_(sec) { sec = Math.max(0, Math.round(Number(sec) || 0)); var h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60); return (h ? h + "時間" : "") + m + "分"; }
+function repPct_(a, b) { return b > 0 ? Math.round(a / b * 1000) / 10 : 0; }
+function repStats_() { return { calls: 0, companies: 0, reached: 0, reachedCo: 0, appo: 0, cb: 0, absent: 0, refused: 0, wrong: 0, other: 0, sec: 0 }; }
+function repAddCall_(st, c) { st.calls++; st[c.rid]++; if (c.rid !== "absent" && c.rid !== "wrong") st.reached++; st.sec += c.sec; }
+// 期間の架電結果を読む（末尾から。期間より前の行に入ったら打ち切る）
+function repCollect_(fromKey, toKey) {
+  var resolve = liveResolver_(), out = [];
+  var scan = crScanSince_(fromKey, function (r, rowNo, cols) {
+    var dk = kanriDateKey_(r[1]) || normalizeYMD(r[1]);
+    if (!dk || dk < fromKey || dk > toKey) return true;
+    var raw = String(r[0] || "").trim();
+    if (!raw && !String(r[3] || "").trim()) return true;
+    var pin = resolve(raw, cols.pin >= 0 ? r[cols.pin] : "");
+    out.push({ date: dk, time: kanriHM_(r[2]) || String(r[2] || ""), name: (pin && FULL_NAME_MAP[pin]) || raw, pin: pin,
+      company: String(r[3] || "").trim(), phone: String(r[4] === null || r[4] === undefined ? "" : r[4]).trim(), person: String(r[5] || "").trim(),
+      result: String(r[6] || "").trim(), rid: repResId_(r[6]), sec: repDurSec_(r[14], r[7]),
+      memo: String(r[11] || "").trim(), cid: String(r[13] === null || r[13] === undefined ? "" : r[13]), srcRow: Number(r[15]) || 0,
+      lid: cols.lid >= 0 ? String(r[cols.lid] || "") : "", seq: rowNo });
+    return true;
+  }, { max: 300000, grace: 1500 });
+  out.sort(function (a, b) { var d = (a.date + " " + a.time).localeCompare(b.date + " " + b.time); return d !== 0 ? d : a.seq - b.seq; });
+  return { calls: out, scanned: scan.scanned, capped: !!scan.capped };
+}
+// リスト台帳に無いリストID（v110 までに使い終えたリスト）を、元スプレッドシートを開いて登録する。開けなければ、IDだけで登録する
+function lregDiscover_(lid) {
+  var m = String(lid || "").match(/^ext:([A-Za-z0-9\-_]+)#(.*)$/);
+  if (!m) return null;
+  var book = "", tab = "";
+  try {
+    var ss = SpreadsheetApp.openById(m[1]);
+    book = ss.getName();
+    ss.getSheets().forEach(function (s) { if (String(s.getSheetId()) === m[2]) tab = s.getName(); });
+  } catch (e) { book = "（開けないスプレッドシート " + m[1].slice(0, 6) + "…）"; }
+  return lregUpsert_(lid, { book: book, tab: tab, useMaster: true, touch: false, note: "報告書の作成時に登録" });
+}
+function repOpts_(o) {
+  o = o || {};
+  var today = jstKey_(new Date().getTime());
+  var from = v111DateKey_(o.from) || (today.slice(0, 8) + "01"), to = v111DateKey_(o.to) || today;
+  if (from > to) { var t = from; from = to; to = t; }
+  return { from: from, to: to, project: String(o.project || "").trim(), lids: (o.lids || []).map(String).filter(function (x) { return x; }),
+    pins: (o.pins || []).map(rosterNormPin_).filter(function (x) { return x; }), showCaller: o.showCaller === true, showMemo: o.showMemo !== false,
+    showPhone: o.showPhone !== false, detail: (o.detail === "reached" || o.detail === "none") ? o.detail : "all",
+    maxCompanies: Math.max(100, Math.min(20000, Number(o.maxCompanies) || 4000)), title: String(o.title || "").trim() || "架電報告書" };
+}
+// 報告書のデータを作る。pre＝すでに読んだ架電結果（月初の自動作成で、案件ごとに読み直さないため）
+function repBuild_(optsIn, pre) {
+  var o = repOpts_(optsIn);
+  try { lregEnsureFromCfgs_(); } catch (e0) {}
+  var reg = lregAll_(true);
+  var col = pre || repCollect_(o.from, o.to);
+  var notes = [], unknown = {}, discovered = 0;
+  var want = o.project ? plNormName_(o.project) : "";
+  var lidSet = {}; o.lids.forEach(function (l) { lidSet[l] = true; });
+  var pinSet = {}; o.pins.forEach(function (p) { pinSet[p] = true; });
+  var lists = {}, order = [], total = repStats_(), daily = {}, hourly = {}, projects = {};
+  col.calls.forEach(function (c) {
+    if (c.date < o.from || c.date > o.to) return;
+    var e = c.lid ? reg[c.lid] : null;
+    if (c.lid && !e && c.lid.indexOf("ext:") === 0 && !unknown[c.lid] && discovered < 12) {
+      discovered++; unknown[c.lid] = true;
+      try { lregDiscover_(c.lid); reg = lregAll_(true); e = reg[c.lid]; } catch (eD) { e = null; }
+    }
+    var project = e ? (e.project || LREG_NONE) : LREG_NONE;
+    projects[project] = (projects[project] || 0) + 1;
+    if (want && plNormName_(project) !== want) return;
+    if (o.lids.length && !lidSet[c.lid]) return;
+    if (o.pins.length && !pinSet[c.pin]) return;
+    var lk = c.lid || ("none:" + (c.pin || c.name));
+    var L = lists[lk];
+    if (!L) {
+      L = lists[lk] = { lid: c.lid, key: lk, project: project, book: e ? e.book : "", tab: e ? e.tab : "",
+        label: e ? ((e.book || "リスト") + (e.tab ? "／" + e.tab : "")) : (c.lid ? "リスト（" + c.lid.slice(0, 24) + "…）" : "アプリに直接登録したリスト（" + c.name + "）"),
+        count: e ? e.count : 0, url: e ? e.url : "", owners: {}, stats: repStats_(), co: {}, coOrder: [] };
+      order.push(lk);
+    }
+    L.owners[c.name] = true;
+    var ck = phKey_(c.phone) + "|" + normCompany_(c.company);
+    var C = L.co[ck];
+    if (!C) { C = L.co[ck] = { company: c.company, phone: c.phone, person: "", calls: [], src: 0, reached: false, appo: false }; L.coOrder.push(ck); }
+    if (c.company) C.company = c.company;
+    if (c.phone && !C.phone) C.phone = c.phone;
+    if (c.person) C.person = c.person;
+    if (c.srcRow && (!C.src || c.srcRow < C.src)) C.src = c.srcRow;
+    C.calls.push(c);
+    if (c.rid !== "absent" && c.rid !== "wrong") C.reached = true;
+    if (c.rid === "appo") C.appo = true;
+    repAddCall_(L.stats, c); repAddCall_(total, c);
+    var d = daily[c.date] = daily[c.date] || { date: c.date, calls: 0, reached: 0, appo: 0 };
+    d.calls++; if (c.rid !== "absent" && c.rid !== "wrong") d.reached++; if (c.rid === "appo") d.appo++;
+    var hh = Number(String(c.time).slice(0, 2));
+    if (!isNaN(hh)) { var h = hourly[hh] = hourly[hh] || { hour: hh, calls: 0, reached: 0, appo: 0 }; h.calls++; if (c.rid !== "absent" && c.rid !== "wrong") h.reached++; if (c.rid === "appo") h.appo++; }
+  });
+  // リストごと・会社ごとにまとめる（会社は、元シートの行の順。行が無ければ、最初にかけた順）
+  var outLists = [], attempts = { 1: 0, 2: 0, 3: 0, 4: 0 }, wrong = [], appos = [], coTotal = 0;
+  order.forEach(function (lk) {
+    var L = lists[lk], cos = L.coOrder.map(function (k) { return L.co[k]; });
+    cos.sort(function (a, b) { if (a.src && b.src && a.src !== b.src) return a.src - b.src; if (a.src && !b.src) return -1; if (!a.src && b.src) return 1; return 0; });
+    cos.forEach(function (C) {
+      C.n = C.calls.length; C.last = C.calls[C.n - 1];
+      attempts[Math.min(4, C.n)]++;
+      if (C.reached) L.stats.reachedCo++;
+      if (C.last.rid === "wrong") wrong.push({ company: C.company, phone: C.phone, n: C.n, list: L.label });
+      C.calls.forEach(function (c) { if (c.rid === "appo") appos.push({ date: c.date, time: c.time, company: C.company, phone: C.phone, person: C.person, name: c.name, cid: c.cid, pin: c.pin, list: L.label }); });
+    });
+    L.stats.companies = cos.length; coTotal += cos.length; total.reachedCo += L.stats.reachedCo;
+    outLists.push({ lid: L.lid, key: L.key, project: L.project, label: L.label, book: L.book, tab: L.tab, url: L.url, count: L.count,
+      owners: Object.keys(L.owners), stats: L.stats, coverage: L.count > 0 ? Math.min(100, repPct_(cos.length, L.count)) : null, companies: cos });
+  });
+  total.companies = coTotal;
+  appos.sort(function (a, b) { return (a.date + " " + a.time).localeCompare(b.date + " " + b.time); });     // 取得した日時の順
+  // 獲得アポイントに、アポ取得報告の内容（商談日時・確認項目）を足す
+  var apoRows = 0;
+  if (appos.length) {
+    try {
+      var all = apoReadAll_().recs, byCid = {}, byKey = {};
+      all.forEach(function (r) {
+        if (r.date < v111AddDays_(o.from, -1) || r.date > v111AddDays_(o.to, 1)) return;
+        apoRows++;
+        if (r.callCid) byCid[r.callCid] = r;
+        byKey[phKey_(r.phone) + "|" + r.date] = r; byKey["c:" + normCompany_(r.company) + "|" + r.date] = r;
+      });
+      appos.forEach(function (a) {
+        var r = (a.cid && byCid[a.cid]) || (phKey_(a.phone) ? byKey[phKey_(a.phone) + "|" + a.date] : null) || byKey["c:" + normCompany_(a.company) + "|" + a.date];
+        if (!r) return;
+        a.meetingDate = r.meetingDate; a.meetingTime = r.meetingTime; a.person = r.person || a.person; a.role = r.role; a.checks = r.checks; a.reported = true;
+        a.cancelled = !!r.cancelled;          // 管理者が「取消」にしたアポ
+      });
+    } catch (eA) {}
+  }
+  if (col.capped) notes.push("架電結果が多いため、期間の途中までしか読めていません。期間を短くして作り直してください");
+  if (!total.calls) notes.push("この条件に当てはまる架電結果はありません");
+  var dayList = Object.keys(daily).sort().map(function (k) { return daily[k]; });
+  var hourList = Object.keys(hourly).map(Number).sort(function (a, b) { return a - b; }).map(function (k) { return hourly[k]; });
+  var projNames = Object.keys(projects).sort(function (a, b) { return projects[b] - projects[a]; }).map(function (k) { return { name: k, calls: projects[k] }; });
+  return { ok: true, opts: o, title: o.title, project: o.project || (projNames.length === 1 ? projNames[0].name : "すべての案件"),
+    period: { from: o.from, to: o.to, fromJP: v111JP_(o.from), toJP: v111JP_(o.to) }, generatedAt: fmtJst_(new Date(), "yyyy-MM-dd HH:mm"),
+    generatedJP: v111JP_(jstKey_(new Date().getTime())), issuer: (CONFIG.REPORT && CONFIG.REPORT.ISSUER) || "",
+    total: total, lists: outLists, daily: dayList, hourly: hourList, attempts: attempts, appos: appos, apoRows: apoRows, wrong: wrong.slice(0, 500),
+    days: dayList.length, projects: projNames, notes: notes, checks: apoChecks_() };
+}
+// 画面に返す要約（会社ごとの明細は HTML にだけ入れる）
+function repSummary_(R) {
+  return { title: R.title, project: R.project, period: R.period, generatedAt: R.generatedAt, total: R.total, days: R.days,
+    lists: R.lists.map(function (L) { return { lid: L.lid, key: L.key, project: L.project, label: L.label, count: L.count, owners: L.owners, stats: L.stats, coverage: L.coverage, url: L.url }; }),
+    daily: R.daily, hourly: R.hourly, attempts: R.attempts, appos: R.appos.slice(0, 200), apoRows: R.apoRows, wrongCount: R.wrong.length, projects: R.projects, notes: R.notes,
+    rates: { reach: repPct_(R.total.reached, R.total.calls), appo: repPct_(R.total.appo, R.total.calls), appoPerReach: repPct_(R.total.appo, R.total.reached) } };
+}
+function repTag_(rid, label) { return '<span class="tag t-' + rid + '">' + v111Esc_(label) + '</span>'; }
+function repMD_(dateKey) { return Number(String(dateKey).slice(5, 7)) + "/" + Number(String(dateKey).slice(8, 10)) + "(" + v111Dow_(dateKey) + ")"; }
+// 報告書の HTML（1つのファイルで完結。外部のファイルは読まない）
+function repHtml_(R, o) {
+  o = o || {};
+  var T = R.total, opt = R.opts, h = [];
+  var fileTitle = R.title + " " + R.project + " " + R.period.from + "〜" + R.period.to;
+  h.push('<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + v111Esc_(fileTitle) + '</title><style>');
+  h.push('@page{size:A4;margin:12mm 10mm 13mm}*{box-sizing:border-box}');
+  h.push('body{font-family:"Noto Sans JP","Hiragino Kaku Gothic ProN","Hiragino Sans","Yu Gothic","Meiryo",sans-serif;font-size:10pt;color:#111;margin:0;background:#fff;line-height:1.5;-webkit-print-color-adjust:exact;print-color-adjust:exact}');
+  h.push('.page{max-width:190mm;margin:0 auto}h1{font-size:19pt;margin:0;letter-spacing:.12em}');
+  h.push('h2{font-size:11.5pt;margin:6mm 0 2mm;padding:1.2mm 2.5mm;background:#1a237e;color:#fff;page-break-after:avoid}');
+  h.push('h3{font-size:10pt;margin:4.5mm 0 1.5mm;padding-left:2mm;border-left:1.2mm solid #1a237e;page-break-after:avoid}');
+  h.push('table{border-collapse:collapse;width:100%}th,td{border:.2mm solid #8a94a6;padding:.9mm 1.5mm;vertical-align:top;font-size:8.5pt;word-break:break-all}');
+  h.push('th{background:#e9edf7;font-weight:700;text-align:center;white-space:nowrap}thead{display:table-header-group}tr{page-break-inside:avoid}');
+  h.push('.r{text-align:right;white-space:nowrap}.c{text-align:center;white-space:nowrap}.nw{white-space:nowrap}.s{font-size:7.5pt;color:#4b5563}');
+  h.push('.plain td{border:none;padding:.5mm 3mm .5mm 0;font-size:10pt;word-break:normal}.kpi td{width:20%;text-align:center;padding:2.2mm 1mm;background:#f6f8fc}');
+  h.push('.kpi b{font-size:15pt;display:block;line-height:1.25}.kpi span{font-size:8pt;color:#374151}');
+  h.push('.bar{display:inline-block;height:2.6mm;background:#3f51b5;vertical-align:middle}');
+  h.push('.tag{display:inline-block;padding:0 1.3mm;border:.2mm solid #6b7280;border-radius:1mm;font-size:7.5pt;font-weight:700;white-space:nowrap;line-height:1.45}');
+  h.push('.t-appo{color:#0a6b3d;border-color:#0a6b3d;background:#e3f6ea}.t-cb{color:#92400e;border-color:#b45309;background:#fef3c7}.t-absent{color:#4b5563;border-color:#9ca3af;background:#f3f4f6}');
+  h.push('.t-refused{color:#b91c1c;border-color:#b91c1c;background:#fee2e2}.t-wrong{color:#6b7280;border-color:#9ca3af;background:#fff}.t-other{color:#374151;border-color:#6b7280;background:#fff}');
+  h.push('.hist div{margin:0 0 .4mm}.memo{color:#374151}.two td{border:none;padding:0;vertical-align:top}.two>tbody>tr{page-break-inside:auto}.two table td,.two table th{border:.2mm solid #8a94a6;padding:.9mm 1.5mm}.note{font-size:8pt;color:#374151;margin-top:3mm;line-height:1.7}.pb{page-break-before:always}');
+  h.push('.toolbar{position:sticky;top:0;background:#1a237e;color:#fff;padding:9px 12px;font-size:13px;z-index:5}.toolbar button{font:inherit;font-weight:700;padding:8px 16px;border:0;border-radius:8px;background:#fff;color:#1a237e;margin-right:10px;cursor:pointer}');
+  h.push('@media print{.noprint{display:none!important}}@media screen{body{background:#e5e9f2}.page{background:#fff;padding:10mm;margin:10px auto;box-shadow:0 1px 6px rgba(0,0,0,.18)}}');
+  h.push('</style></head><body>');
+  // 印刷ボタンの帯（印刷には出ない）。アプリの画面の中（枠の中）で開いたときは、アプリ側のボタンを使うので隠す
+  if (o.toolbar !== false) h.push('<div class="toolbar noprint"><button onclick="window.print()">🖨 印刷／PDFに保存</button>印刷の画面で「送信先：PDF に保存」「用紙：A4」を選びます（「ヘッダーとフッター」はオフがおすすめ）' +
+    '<script>try{if(window.self!==window.top)document.currentScript.parentNode.style.display="none"}catch(e){}<\/script></div>');
+  h.push('<div class="page">');
+  // 表題
+  h.push('<table class="plain"><tr><td><h1>' + v111Esc_(R.title) + '</h1></td><td class="r" style="font-size:9pt;line-height:1.6">作成日　' + v111Esc_(R.generatedJP) + (R.issuer ? '<br><b>' + v111Esc_(R.issuer) + '</b>' : '') + '</td></tr></table>');
+  h.push('<table class="plain" style="margin-top:3mm;width:auto"><tr><td class="nw">案件名</td><td><b style="font-size:12pt">' + v111Esc_(R.project) + '</b></td></tr>');
+  h.push('<tr><td class="nw">対象期間</td><td>' + v111Esc_(R.period.fromJP) + ' 〜 ' + v111Esc_(R.period.toJP) + '（稼働 ' + R.days + '日）</td></tr>');
+  h.push('<tr><td class="nw">対象リスト</td><td>' + R.lists.length + '件' + (R.lists.length && R.lists.length <= 4 ? '（' + v111Esc_(R.lists.map(function (L) { return L.label; }).join("、")) + '）' : '') + '</td></tr></table>');
+  (R.notes || []).forEach(function (n) { h.push('<div class="note" style="color:#b91c1c">※ ' + v111Esc_(n) + '</div>'); });
+  // 1. サマリー
+  h.push('<h2>1. サマリー</h2><table class="kpi"><tr>');
+  h.push('<td><b>' + T.calls + '</b><span>架電数（コール）</span></td><td><b>' + T.companies + '</b><span>架電した会社数</span></td>');
+  h.push('<td><b>' + T.reached + '</b><span>接続数（接続率 ' + repPct_(T.reached, T.calls) + '%）</span></td>');
+  h.push('<td><b>' + T.appo + '</b><span>アポ獲得（アポ率 ' + repPct_(T.appo, T.calls) + '%）</span></td>');
+  h.push('<td><b>' + v111Esc_(repHourMin_(T.sec)) + '</b><span>通話時間の合計</span></td></tr></table>');
+  // 結果の内訳・架電回数の分布（横に並べる）
+  h.push('<table class="two" style="margin-top:3mm"><tr><td style="width:56%;padding-right:3mm"><h3>結果の内訳</h3><table><thead><tr><th>結果</th><th>件数</th><th>割合</th><th style="width:38%"></th></tr></thead><tbody>');
+  var maxRes = 1; REP_RES.forEach(function (x) { if (T[x[0]] > maxRes) maxRes = T[x[0]]; });
+  REP_RES.forEach(function (x) {
+    h.push('<tr><td>' + repTag_(x[0], x[1]) + '</td><td class="r">' + T[x[0]] + '</td><td class="r">' + repPct_(T[x[0]], T.calls) + '%</td><td><span class="bar" style="width:' + Math.round(T[x[0]] / maxRes * 100) + '%"></span></td></tr>');
+  });
+  h.push('<tr><th>合計</th><th class="r">' + T.calls + '</th><th class="r">100%</th><th></th></tr></tbody></table></td>');
+  h.push('<td><h3>1社あたりの架電回数</h3><table><thead><tr><th>回数</th><th>会社数</th><th>割合</th></tr></thead><tbody>');
+  [[1, "1回"], [2, "2回"], [3, "3回"], [4, "4回以上"]].forEach(function (x) { h.push('<tr><td class="c">' + x[1] + '</td><td class="r">' + R.attempts[x[0]] + '</td><td class="r">' + repPct_(R.attempts[x[0]], T.companies) + '%</td></tr>'); });
+  h.push('<tr><th>接続できた会社</th><th class="r">' + T.reachedCo + '</th><th class="r">' + repPct_(T.reachedCo, T.companies) + '%</th></tr></tbody></table></td></tr></table>');
+  // 2. リスト別
+  h.push('<h2>2. リスト別</h2><table><thead><tr><th>リスト</th><th>リスト件数</th><th>架電した会社</th><th>消化率</th><th>架電数</th><th>接続</th><th>接続率</th><th>アポ</th><th>アポ率</th></tr></thead><tbody>');
+  R.lists.forEach(function (L) {
+    h.push('<tr><td>' + v111Esc_(L.label) + (opt.showCaller && L.owners.length ? '<div class="s">担当：' + v111Esc_(L.owners.join("・")) + '</div>' : '') + '</td><td class="r">' + (L.count || "—") + '</td><td class="r">' + L.stats.companies + '</td><td class="r">' + (L.coverage === null ? "—" : L.coverage + "%") +
+      '</td><td class="r">' + L.stats.calls + '</td><td class="r">' + L.stats.reached + '</td><td class="r">' + repPct_(L.stats.reached, L.stats.calls) + '%</td><td class="r">' + L.stats.appo + '</td><td class="r">' + repPct_(L.stats.appo, L.stats.calls) + '%</td></tr>');
+  });
+  if (!R.lists.length) h.push('<tr><td colspan="9" class="c">（該当なし）</td></tr>');
+  h.push('</tbody></table><div class="s" style="margin-top:1mm">消化率＝この期間に架電した会社数 ÷ リスト件数（取込時の件数）。</div>');
+  // 3. 日別・時間帯別（横に並べる）
+  h.push('<table class="two" style="margin-top:1mm"><tr><td style="width:50%;padding-right:3mm"><h2>3. 日別の架電</h2><table><thead><tr><th>日付</th><th>架電数</th><th>接続</th><th>アポ</th></tr></thead><tbody>');
+  R.daily.forEach(function (d) { h.push('<tr><td class="c">' + repMD_(d.date) + '</td><td class="r">' + d.calls + '</td><td class="r">' + d.reached + '</td><td class="r">' + (d.appo || "") + '</td></tr>'); });
+  if (!R.daily.length) h.push('<tr><td colspan="4" class="c">（該当なし）</td></tr>');
+  h.push('</tbody></table></td><td><h2>4. 時間帯別の接続率</h2><table><thead><tr><th>時間帯</th><th>架電数</th><th>接続</th><th>接続率</th><th>アポ</th></tr></thead><tbody>');
+  R.hourly.forEach(function (x) { h.push('<tr><td class="c">' + x.hour + '時台</td><td class="r">' + x.calls + '</td><td class="r">' + x.reached + '</td><td class="r">' + repPct_(x.reached, x.calls) + '%</td><td class="r">' + (x.appo || "") + '</td></tr>'); });
+  if (!R.hourly.length) h.push('<tr><td colspan="5" class="c">（該当なし）</td></tr>');
+  h.push('</tbody></table></td></tr></table>');
+  // 5. 獲得アポイント
+  var cancelN = R.appos.filter(function (a) { return a.cancelled; }).length;
+  h.push('<h2>5. 獲得アポイント（' + R.appos.length + '件' + (cancelN ? '・うち取消 ' + cancelN + '件' : '') + '）</h2><table><thead><tr><th>取得日</th><th>法人名</th><th>ご担当者</th><th>商談日時</th>');
+  R.checks.forEach(function (c) { h.push('<th>' + v111Esc_(c.col) + '</th>'); });
+  if (opt.showCaller) h.push('<th>取得者</th>');
+  h.push('</tr></thead><tbody>');
+  R.appos.forEach(function (a) {
+    h.push('<tr><td class="c">' + repMD_(a.date) + ' ' + v111Esc_(a.time) + '</td><td>' + v111Esc_(a.company) + '</td><td>' + v111Esc_(a.person || "") + (a.role ? '<span class="s">（' + v111Esc_(a.role) + '）</span>' : '') +
+      '</td><td class="c">' + (a.meetingDate ? repMD_(a.meetingDate) + ' ' + v111Esc_(a.meetingTime || "") : '<span class="s">（報告待ち）</span>') + (a.cancelled ? ' <span class="tag t-refused">取消</span>' : '') + '</td>');
+    R.checks.forEach(function (c) { var v = a.checks ? (a.checks[c.key] || "") : ""; h.push('<td class="c">' + (v === "YES" ? '<b>YES</b>' : v111Esc_(v || "—")) + '</td>'); });
+    if (opt.showCaller) h.push('<td class="c">' + v111Esc_(a.name) + '</td>');
+    h.push('</tr>');
+  });
+  if (!R.appos.length) h.push('<tr><td colspan="' + (4 + R.checks.length + (opt.showCaller ? 1 : 0)) + '" class="c">（この期間のアポ獲得はありません）</td></tr>');
+  h.push('</tbody></table>');
+  // 6. 会社ごとの架電履歴（リストごと）
+  if (opt.detail !== "none") {
+    var shown = 0, cut = false;
+    h.push('<h2 class="pb">6. 会社ごとの架電履歴' + (opt.detail === "reached" ? '（接続のあった会社）' : '') + '</h2>');
+    R.lists.forEach(function (L) {
+      var cos = L.companies.filter(function (C) { return opt.detail !== "reached" || C.reached; });
+      if (!cos.length) return;
+      h.push('<h3>' + v111Esc_(L.label) + '　<span class="s">架電した会社 ' + L.stats.companies + '社・架電 ' + L.stats.calls + '件・アポ ' + L.stats.appo + '件' + (opt.showCaller && L.owners.length ? '・担当 ' + v111Esc_(L.owners.join("・")) : '') + '</span></h3>');
+      h.push('<table><thead><tr><th style="width:7mm">№</th><th style="width:27%">会社名</th>' + (opt.showPhone ? '<th style="width:25mm">電話番号</th>' : '') + '<th style="width:9mm">回数</th><th>架電履歴（かけた日時・結果・通話時間' + (opt.showMemo ? '・メモ' : '') + '）</th><th style="width:15mm">最終結果</th></tr></thead><tbody>');
+      cos.forEach(function (C, i) {
+        if (shown >= opt.maxCompanies) { cut = true; return; }
+        shown++;
+        var lines = C.calls.map(function (c) {
+          return '<div><span class="nw">' + repMD_(c.date) + ' ' + v111Esc_(c.time) + '</span> ' + repTag_(c.rid, c.result || "—") + ' <span class="s nw">' + repMinSec_(c.sec) + '</span>' +
+            (opt.showCaller ? ' <span class="s nw">' + v111Esc_(c.name) + '</span>' : '') + (opt.showMemo && c.memo ? ' <span class="memo">' + v111Esc_(c.memo.slice(0, 160)) + '</span>' : '') + '</div>';
+        }).join("");
+        h.push('<tr><td class="r">' + (i + 1) + '</td><td>' + v111Esc_(C.company || "（会社名なし）") + (C.person ? '<div class="s">' + v111Esc_(C.person) + '</div>' : '') + '</td>' +
+          (opt.showPhone ? '<td class="nw">' + v111Esc_(C.phone) + '</td>' : '') + '<td class="c">' + C.n + '</td><td class="hist">' + lines + '</td><td class="c">' + repTag_(C.last.rid, C.last.result || "—") + '</td></tr>');
+      });
+      h.push('</tbody></table>');
+    });
+    if (cut) h.push('<div class="note" style="color:#b91c1c">※ 会社数が多いため、' + opt.maxCompanies + '社までを載せています。期間・リストを分けて作ると、すべて載せられます。</div>');
+    if (!shown) h.push('<div class="note">（該当する会社はありません）</div>');
+  }
+  h.push('<div class="note">【用語】接続＝「不在」「不通」以外の電話（相手と話せたもの）。接続率＝接続数÷架電数。アポ率＝アポ獲得÷架電数。' +
+    '架電した会社数は、電話番号と会社名が同じものを1社として数えています。<br>この報告書は、川嶋メソッド テレアポ業務管理システムの架電記録（発信のたびに自動で記録）から作成しました。' + v111Esc_(R.generatedAt) + ' 作成</div>');
+  h.push('</div></body></html>');
+  return h.join("");
+}
+function repFileBase_(R) {
+  var p = String(R.project || "案件").replace(/[\\\/:*?"<>|\s]+/g, "_").slice(0, 40);
+  return R.title + "_" + p + "_" + R.period.from + "_" + R.period.to;
+}
+// 報告書を置くフォルダ（CONFIG.REPORT.FOLDER_ID。空なら、最初に「川嶋メソッド_架電報告書」を作って覚える）
+function repFolder_() {
+  var id = extractFolderId_((CONFIG.REPORT && CONFIG.REPORT.FOLDER_ID) || "") || v111Prop_(V111_PROP.repFolder) || "";
+  if (id) { try { return DriveApp.getFolderById(id); } catch (e) { if (CONFIG.REPORT && CONFIG.REPORT.FOLDER_ID) throw new Error("報告書のフォルダ（CONFIG.REPORT.FOLDER_ID）を開けません。" + CONFIG.GAS_OWNER_EMAIL + " に「編集者」で共有してください"); } }
+  var f = DriveApp.createFolder(REP_FOLDER_NAME);
+  v111PropSet_(V111_PROP.repFolder, f.getId());
+  return f;
+}
+function repLog_(R, name, url, by, kind) {
+  try {
+    var sh = ensureSheet(SpreadsheetApp.openById(SHEET_ID), REP_LOG_SHEET, REP_LOG_HEADER);
+    sh.appendRow([new Date(), R.project, R.period.from + "〜" + R.period.to, R.total.calls, R.total.appo, name, url, by || "管理者", kind]);
+    var last = sh.getLastRow();
+    if (last > 420) sh.deleteRows(2, last - 400);
+  } catch (e) {}
+}
+function repLogList_(limit) {
+  var out = [];
+  try {
+    var sh = SpreadsheetApp.openById(SHEET_ID).getSheetByName(REP_LOG_SHEET);
+    if (sh && sh.getLastRow() > 1) {
+      var n = Math.min(Number(limit) || 12, sh.getLastRow() - 1);
+      var v = sh.getRange(sh.getLastRow() - n + 1, 1, n, REP_LOG_HEADER.length).getValues();
+      for (var i = v.length - 1; i >= 0; i--) out.push({ at: fmtJst_(v[i][0], "MM/dd HH:mm"), project: String(v[i][1] || ""), period: String(v[i][2] || ""), calls: Number(v[i][3]) || 0,
+        appo: Number(v[i][4]) || 0, name: String(v[i][5] || ""), url: String(v[i][6] || ""), by: String(v[i][7] || ""), kind: String(v[i][8] || "") });
+    }
+  } catch (e) {}
+  return out;
+}
+// ドライブへ PDF を保存する。PDF に変換できないときは、HTML のまま保存する（開いて印刷すれば PDF にできる）
+function repSave_(R, by) {
+  var html = repHtml_(R, { toolbar: false }), base = repFileBase_(R);
+  var root = repFolder_(), month = recChildFolder_(root, R.period.to.slice(0, 7));
+  var file = null, kind = "PDF", warn = "";
+  try {
+    var pdf = Utilities.newBlob(html, "text/html", base + ".html").getAs("application/pdf");
+    pdf.setName(base + ".pdf");
+    file = month.createFile(pdf);
+  } catch (e) {
+    kind = "HTML"; warn = "PDF に変換できなかったため、HTML で保存しました（開いて「印刷 → PDF に保存」ができます）：" + String(e && e.message || e).slice(0, 120);
+    file = month.createFile(Utilities.newBlob(repHtml_(R, { toolbar: true }), "text/html", base + ".html"));
+  }
+  repLog_(R, file.getName(), file.getUrl(), by, kind);
+  try { logAudit("架電報告書の保存", by || "管理者", R.project, file.getName()); } catch (eA) {}
+  return { ok: true, kind: kind, name: file.getName(), url: file.getUrl(), folderUrl: month.getUrl(), rootUrl: root.getUrl(), warn: warn,
+    calls: R.total.calls, appo: R.total.appo, project: R.project, period: R.period };
+}
+// 月初の自動作成（夜間の処理のあとで呼ぶ）：前の月の報告書を、案件ごとに作る。1回の実行で終わらなければ、次の夜に続きを作る
+//   deadlineMs：この時刻を過ぎそうなら、次の案件を始めない（Apps Script の実行時間の上限を超えないため）
+//   案件を1つ作るたびに、済みの印を保存する（途中で止まっても、同じ報告書を2つ作らない）
+function repMonthlyAuto_(force, deadlineMs) {
+  if (!force && v111Prop_(V111_PROP.repAuto) === "off") return "自動作成は OFF";
+  if (!force && CONFIG.REPORT && CONFIG.REPORT.MONTHLY_AUTO === false) return "自動作成は OFF（設定）";
+  var today = jstKey_(new Date().getTime());
+  var prevEnd = v111AddDays_(today.slice(0, 8) + "01", -1), ym = prevEnd.slice(0, 7), from = ym + "-01";
+  var st = {};
+  try { st = JSON.parse(v111Prop_(V111_PROP.repMonth) || "{}"); } catch (e) { st = {}; }
+  if (!st || st.ym !== ym || !st.done) st = { ym: ym, done: [], finished: false };
+  if (st.finished) return ym + " 分は作成済み";
+  if (!force && Number(today.slice(8)) > 10) return "";          // 月初の10日間だけ試みる
+  var started = new Date().getTime(), limit = Number(deadlineMs) || (started + 240000);
+  if (started + 45000 > limit) return "時間が足りないため、次の夜に作ります";
+  function save() { v111PropSet_(V111_PROP.repMonth, JSON.stringify(st)); }
+  var pre = repCollect_(from, prevEnd), made = [], left = 0, longest = 20000;
+  var all = repBuild_({ from: from, to: prevEnd, detail: "none" }, pre);
+  all.projects.forEach(function (p) {
+    if (st.done.indexOf(p.name) >= 0) return;
+    var t0 = new Date().getTime();
+    if (t0 + longest * 1.5 > limit) { left++; return; }          // いちばん時間のかかった案件の 1.5倍の時間が残っていなければ、始めない
+    var R = repBuild_({ from: from, to: prevEnd, project: p.name }, pre);
+    if (R.total.calls) {
+      var sv = repSave_(R, "自動（月初）");
+      made.push(p.name + "（架電 " + R.total.calls + "・アポ " + R.total.appo + "）" + (sv.kind === "HTML" ? "［HTML］" : ""));
+      st.folder = sv.folderUrl;
+    }
+    st.done.push(p.name);
+    save();
+    longest = Math.max(longest, new Date().getTime() - t0);
+  });
+  st.finished = left === 0;
+  save();
+  if (!made.length) return left ? "続きは次の夜に作ります" : ym + " 分：対象の架電なし";
+  return ym + " 分の報告書 " + made.length + "件を作成：" + made.join("、") + (left ? "（残り " + left + "件は次の夜）" : "") + "　" + (st.folder || "");
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// v111: 案件・リスト別の進み具合（管理者）
+//   リストごとに：リスト件数・架電済み（これまで）・残り・この期間の架電数／接続率／アポ率・1日あたりの架電数・残りを終えるまでの見込み
+//   全体：時間帯別の接続率（つながりやすい時間帯）
+// ───────────────────────────────────────────────────────────────────────
+function projBoard_(o) {
+  o = o || {};
+  var today = jstKey_(new Date().getTime());
+  var from = v111DateKey_(o.from) || v111AddDays_(today, -29), to = v111DateKey_(o.to) || today;
+  var R = repBuild_({ from: from, to: to, detail: "none" });
+  var reg = lregAll_(true), cur = {};
+  // いま使っているリスト（連携設定）と、その進捗（これまでに架電した行の数）
+  try {
+    readExtConfigs_().forEach(function (c) {
+      if (!c.ssId || !c.enabled) return;
+      var lid = c.gid ? extListId_(c.ssId, c.gid) : "";
+      if (!lid) return;
+      var g = null;
+      try { g = progGet_(c.pin); } catch (e) { g = null; }
+      cur[lid] = { pin: c.pin, name: FULL_NAME_MAP[c.pin] || c.name, count: Number(c.importedCount) || 0, done: g && g.lid === lid ? rangesCount_(g.done) : 0 };
+    });
+  } catch (e0) {}
+  var byProject = {}, order = [];
+  function proj(name) { if (!byProject[name]) { byProject[name] = { project: name, lists: [], stats: repStats_(), count: 0, done: 0, remain: 0 }; order.push(name); } return byProject[name]; }
+  var seen = {};
+  R.lists.forEach(function (L) {
+    var P = proj(L.project || LREG_NONE), c = L.lid ? cur[L.lid] : null;
+    var days = {}; L.companies.forEach(function (C) { C.calls.forEach(function (x) { days[x.date] = true; }); });
+    var nDays = Object.keys(days).length, perDay = nDays ? Math.round(L.stats.calls / nDays) : 0;
+    var count = c ? c.count : L.count, done = c ? c.done : null, remain = (c && count) ? Math.max(0, count - c.done) : null;
+    var item = { lid: L.lid, label: L.label, owners: L.owners, active: !!c, count: count, done: done, remain: remain, calls: L.stats.calls, companies: L.stats.companies,
+      reached: L.stats.reached, appo: L.stats.appo, reachRate: repPct_(L.stats.reached, L.stats.calls), appoRate: repPct_(L.stats.appo, L.stats.calls),
+      days: nDays, perDay: perDay, daysLeft: (remain !== null && perDay > 0) ? Math.ceil(remain / perDay) : null, url: L.url };
+    P.lists.push(item); seen[L.lid] = true;
+    ["calls", "reached", "appo", "cb", "absent", "refused", "wrong", "other", "sec"].forEach(function (k) { P.stats[k] += L.stats[k]; });
+    if (c) { P.count += count; P.done += c.done; P.remain += remain || 0; }
+  });
+  // この期間に架電が無い、いまのリストも出す（止まっているリストに気づけるように）
+  Object.keys(cur).forEach(function (lid) {
+    if (seen[lid]) return;
+    var e = reg[lid], c = cur[lid], P = proj((e && e.project) || LREG_NONE);
+    P.lists.push({ lid: lid, label: e ? ((e.book || "リスト") + (e.tab ? "／" + e.tab : "")) : "リスト", owners: [c.name], active: true, count: c.count, done: c.done, remain: Math.max(0, c.count - c.done),
+      calls: 0, companies: 0, reached: 0, appo: 0, reachRate: 0, appoRate: 0, days: 0, perDay: 0, daysLeft: null, url: e ? e.url : lregUrl_(lid) });
+    P.count += c.count; P.done += c.done; P.remain += Math.max(0, c.count - c.done);
+  });
+  var projects = order.map(function (k) {
+    var P = byProject[k];
+    P.reachRate = repPct_(P.stats.reached, P.stats.calls); P.appoRate = repPct_(P.stats.appo, P.stats.calls);
+    return P;
+  });
+  projects.sort(function (a, b) { return b.stats.calls - a.stats.calls; });
+  var best = R.hourly.filter(function (x) { return x.calls >= 20; }).slice().sort(function (a, b) { return (b.reached / b.calls) - (a.reached / a.calls); }).slice(0, 3)
+    .map(function (x) { return { hour: x.hour, rate: repPct_(x.reached, x.calls), calls: x.calls }; });
+  return { period: { from: from, to: to }, at: fmtJst_(new Date(), "MM/dd HH:mm"), total: R.total, days: R.days, projects: projects, hourly: R.hourly, bestHours: best,
+    rates: { reach: repPct_(R.total.reached, R.total.calls), appo: repPct_(R.total.appo, R.total.calls) } };
+}
+
+
+// ───────────────────────────────────────────────────────────────────────
+// v111: 新しい要求の入口（doPostRoute_ から呼ぶ。該当しなければ null）
+//   アポインター：appointment（アポ取得報告）
+//   管理者だけ　：apl_status・apl_sync・apl_digest_set（アポイント台帳）／rep_lists・rep_list_set・rep_build・rep_pdf・rep_auto_set・rep_monthly_now（架電報告書）／
+//                 proj_board（案件・リスト別の進み具合）（ADMIN_ONLY_TYPES に登録済み）
+// ───────────────────────────────────────────────────────────────────────
+function v111Handle_(d) {
+  APL_CTX_ = null; REC_AS_DAY_CACHE_ = {};      // 1回の実行の中だけの控え（台帳・録音フォルダの一覧）を、要求ごとに空にする
+  switch (d.type) {
+    case "appointment":
+      return jsonOut_(appoSave_(d));
+    case "apl_status":
+      return jsonOut_({ status: "ok", handled: true, result: aplStatus_(d.deep === true) });
+    case "apl_sync":
+      // 管理者が押したとき：録音のリンク・足りない行の登録に加えて、表全体を商談日の順に並べ直す（noSort＝書けなかった報告を入れるだけのときは、並べ替えない）
+      var sy = aplSync_({ all: d.all === true, legacy: d.legacy === true, resort: d.noSort !== true, by: "管理者" });
+      return jsonOut_(sy.ok ? { status: "ok", handled: true, result: sy } : { status: "error", handled: true, code: sy.code || "", message: sy.message });
+    case "apl_digest_set":
+      v111PropSet_(V111_PROP.digest, d.on === false ? "off" : "on");
+      return jsonOut_({ status: "ok", handled: true, result: { digest: d.on !== false } });
+    case "rep_lists":
+      return jsonOut_({ status: "ok", handled: true, result: repListsInfo_() });
+    case "rep_list_set":
+      var ls = lregSetProject_(d.lid, d.project);
+      return jsonOut_(ls.ok ? { status: "ok", handled: true, result: ls } : { status: "error", handled: true, message: ls.message });
+    case "rep_build":
+      var R = repBuild_(d.opts || {});
+      return jsonOut_({ status: "ok", handled: true, result: { summary: repSummary_(R), html: repHtml_(R, { toolbar: true }), file: repFileBase_(R) } });
+    case "rep_pdf":
+      var R2 = repBuild_(d.opts || {});
+      if (!R2.total.calls) return jsonOut_({ status: "error", handled: true, message: "この条件に当てはまる架電結果がありません" });
+      return jsonOut_({ status: "ok", handled: true, result: repSave_(R2, "管理者") });
+    case "rep_auto_set":
+      v111PropSet_(V111_PROP.repAuto, d.on === false ? "off" : "on");
+      return jsonOut_({ status: "ok", handled: true, result: { auto: d.on !== false } });
+    case "rep_monthly_now":
+      return jsonOut_({ status: "ok", handled: true, result: { message: repMonthlyAuto_(true), log: repLogList_(12) } });
+    case "proj_board":
+      return jsonOut_({ status: "ok", handled: true, result: projBoard_(d) });
+  }
+  return null;
+}
+// 報告書の画面に出す選択肢（リスト・案件名・これまでに作った報告書）
+function repListsInfo_() {
+  try { lregEnsureFromCfgs_(); } catch (e) {}
+  var reg = lregAll_(true), lists = Object.keys(reg).map(function (k) { return reg[k]; });
+  lists.sort(function (a, b) { return (b.last || 0) - (a.last || 0); });
+  var seen = {}, projects = [];
+  lists.forEach(function (l) { var n = l.project || LREG_NONE; if (!seen[n]) { seen[n] = true; projects.push(n); } });
+  var masters = [];
+  try { masters = plProjectNames().map(function (p) { return p.name; }); } catch (e2) { masters = []; }
+  var folderUrl = "";
+  try { var fid = extractFolderId_((CONFIG.REPORT && CONFIG.REPORT.FOLDER_ID) || "") || v111Prop_(V111_PROP.repFolder) || ""; if (fid) folderUrl = "https://drive.google.com/drive/folders/" + fid; } catch (e3) {}
+  var today = jstKey_(new Date().getTime()), prevEnd = v111AddDays_(today.slice(0, 8) + "01", -1);
+  return { lists: lists.map(function (l) { return { lid: l.lid, project: l.project || LREG_NONE, book: l.book, tab: l.tab, pin: l.pin, name: FULL_NAME_MAP[l.pin] || l.name, count: l.count,
+      last: l.last ? fmtJst_(new Date(l.last), "yyyy-MM-dd") : "", url: l.url }; }),
+    projects: projects, masters: masters, auto: v111Prop_(V111_PROP.repAuto) !== "off" && !(CONFIG.REPORT && CONFIG.REPORT.MONTHLY_AUTO === false),
+    folderUrl: folderUrl, log: repLogList_(12), today: today, monthStart: today.slice(0, 8) + "01", prevStart: prevEnd.slice(0, 8) + "01", prevEnd: prevEnd,
+    histCols: extHistOn_(), issuer: (CONFIG.REPORT && CONFIG.REPORT.ISSUER) || "" };
+}
+// 夜間の処理に足す分（nightlyPipeline から呼ぶ）
+//   startedAt＝夜間の処理を始めた時刻。Apps Script の実行時間の上限（6分）を超えると、記録もメールも残らずに止まるため、時間が足りないときは次の夜に回す
+var V111_NIGHT_LEDGER_BY_MS = 240000;      // 始めてから4分を過ぎていたら、台帳の整合は次の夜に回す
+var V111_NIGHT_REPORT_END_MS = 300000;     // 報告書の自動作成は、始めてから5分までに次の案件を始める（それ以降は次の夜）
+function v111NightlyLedger_(startedAt) {
+  if (!aplCfg_().on) return "使わない設定";
+  if (startedAt && new Date().getTime() - Number(startedAt) > V111_NIGHT_LEDGER_BY_MS) return "時間が足りないため、次の夜に回しました";
+  // 夜間：台帳に書けなかった報告を商談日の位置に足し、録音のリンクを入れる。表全体の並べ替えはしない
+  var r = aplSync_({ nightly: true, by: "夜間自動処理" });
+  if (!r.ok) { if (r.busy) return "ほかの処理が書き込み中だったため、次の夜に回しました"; throw new Error(r.message); }
+  var leftN = (r.legacy || 0) + (r.held || 0);
+  return "追加 " + r.added + "・空欄を埋めた行 " + r.filled + (r.linked ? "・録音のリンク " + r.linked : "") + (r.later ? "・残り " + r.later + "件は次の夜" : "") +
+    (leftN ? "・自動では入れないアポ " + leftN + "件は未登録（管理者の画面の「台帳に入れる」）" : "") + (r.failed ? "・⚠ 書けなかった行 " + r.failed : "");
+}
+// 架電報告書の月初の自動作成。夜間の処理の記録とメールのあとで呼ぶ（時間が足りずに途中で止まっても、夜間の処理の記録は残る）。結果は、次の夜のメールに載せる
+function v111NightlyReportAfter_(startedAt) {
+  var msg = "";
+  try { msg = repMonthlyAuto_(false, startedAt ? Number(startedAt) + V111_NIGHT_REPORT_END_MS : 0) || ""; }
+  catch (e) { msg = "⚠ 作成できませんでした：" + String(e && e.message || e).slice(0, 160); }
+  if (msg.indexOf("を作成") >= 0 || msg.indexOf("⚠") === 0) v111PropSet_(V111_PROP.repMsg, msg);
+  if (msg) { try { logAudit("架電報告書の自動作成", "trigger", "", msg.slice(0, 300)); } catch (e2) {} }
+  return msg;
+}
+function v111NightlyExtra_() {
+  var out = "";
+  try { out += aplDigestText_(); } catch (e) {}
+  try { var m = v111Prop_(V111_PROP.repMsg); if (m) { out += "\n\n■ 架電報告書（月初の自動作成）\n" + m; v111PropDel_(V111_PROP.repMsg); } } catch (e2) {}
+  return out;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// v111: エディタから実行する自己点検（ログに PASS/FAIL を出す。シートは変更しない）
+// ═══════════════════════════════════════════════════════════════════════
+function v111SelfTest() {
+  var t = [];
+  function ok(name, cond) { t.push([name, !!cond]); }
+  // ⑴ 録音の保存先
+  ok("⑴ 録音の保存先のフォルダID（" + recAutosaveId_() + "）", recAutosaveId_() === extractFolderId_(CONFIG.REC_AUTOSAVE_FOLDER) && recAutosaveId_().length > 20);
+  ok("⑴ 以前の保存先は、いまの保存先と別のフォルダ", recAutosavePrevIds_().indexOf(recAutosaveId_()) < 0);
+  // ⑵ アポイント台帳
+  var cfg = aplCfg_();
+  ok("⑵ アポイント台帳のスプレッドシートが設定にある", !cfg.on || cfg.id.length > 20);
+  var f = aplFields_(), m = aplMapHeader_(["商談日", "商談時間", "会社名", "担当者名", "TEL", "状態", "アポID"], f);
+  ok("⑵ 台帳の見出しを読める（会社名・担当者名・TEL も同じ項目として扱う）", m.meetingDate === 1 && m.meetingTime === 2 && m.company === 3 && m.person === 4 && m.phone === 5 && m.status === 6 && m.apoId === 7);
+  ok("⑵ 日付の表記をそろえる", v111DateKey_("2026年11月5日") === "2026-11-05" && v111DateKey_("2026/11/5") === "2026-11-05" && v111Hm_("9:05") === "09:05" && v111Dow_("2026-11-15") === "日");
+  var Lx = { fields: f, map: aplMapHeader_(f.map(function (x) { return x.h; }), f), tz: "Asia/Tokyo" };
+  var recT = { apoId: "1", meetingDate: "2026-11-20", meetingTime: "14:00", company: "A社", person: "山田", role: "", phone: "0312345678", email: "", address: "", project: "P",
+    isTokutei: "", gaikokujin: "", tokutei: "", gijinkoku: "", decider: "", personality: "", handoff: "", reporter: "X", date: "2026-11-15", recUrl: "", checks: {} };
+  var dNew = aplDiffNew_(Lx, recT);
+  ok("⑵ 新しい行は 商談日・アポID を書く。「状態」は、これからの商談なら「予定」・過ぎた商談なら空", dNew[Lx.map.meetingDate] === "2026/11/20" && dNew[Lx.map.apoId] === "'1" && dNew[Lx.map.status] === undefined &&
+    aplNewStatus_(recT, "2026-11-15") === "予定" && aplNewStatus_(recT, "2026-12-01") === "");
+  var curRow = []; f.forEach(function () { curRow.push(""); });
+  curRow[Lx.map.meetingDate - 1] = "2026/11/25"; curRow[Lx.map.person - 1] = "山田 太郎"; curRow[Lx.map.status - 1] = "リスケ"; curRow[Lx.map.apoId - 1] = "1";
+  var recU = {}; Object.keys(recT).forEach(function (k) { recU[k] = recT[k]; }); recU.recUrl = "https://example.com/rec";
+  var dOld = aplDiffExisting_(Lx, curRow, recU, false);
+  ok("⑵ 登録済みの行には、録音のリンクだけを書く（人が直した・空にした内容は、書き戻さない）", Object.keys(dOld).length === 1 && dOld[Lx.map.rec] === "https://example.com/rec");
+  var curHand = []; f.forEach(function () { curHand.push(""); });
+  curHand[Lx.map.meetingDate - 1] = "2026/11/20"; curHand[Lx.map.meetingTime - 1] = "14:00"; curHand[Lx.map.company - 1] = "A社"; curHand[Lx.map.person - 1] = "山田 太郎";
+  var dAd = aplDiffExisting_(Lx, curHand, recT, true);
+  ok("⑵ 手で入力済みの行をはじめて引き当てたときは、空のセルだけを埋める（入っている担当者名は変えない）", dAd[Lx.map.person] === undefined && dAd[Lx.map.phone] === "'0312345678" && dAd[Lx.map.apoId] === "'1" && dAd[Lx.map.status] === undefined);
+  var mPri = aplMapHeader_(["アポ取得日", "訪問日", "商談日", "担当者", "先方担当者", "会社名", "商談時間 ※必須"], f);
+  ok("⑵ 同じ項目に当たる見出しが2つあるときは、先の言い方（商談日・先方担当者）の列を使う。「※必須」などの注記は読み飛ばす", mPri.meetingDate === 3 && mPri.person === 5 && mPri.date === 1 && mPri.company === 6 && mPri.meetingTime === 7);
+  ok("⑵ 文字の項目は、数式として動かないように書く", v111Txt_("=1+1") === "'=1+1" && v111Txt_("+81-90") === "'+81-90" && v111Txt_("山田") === "山田");
+  // ⑷ 確認項目
+  var cks = apoChecks_();
+  ok("⑷ アポ取得報告の確認項目に「外国人の採用も候補になるか？」がある", cks.some(function (c) { return c.label.indexOf("外国人の採用も候補") >= 0 && c.must === "YES"; }));
+  ok("⑷ YES/NO の表記をそろえる", apoYn_("yes") === "YES" && apoYn_("いいえ") === "NO" && apoYn_("") === "");
+  var srv = Date.parse("2026-11-15T14:05:30+09:00");
+  var n1 = apoNormalize_({ pin: "", apoId: srv - 5000, sentAt: srv - 1000, company: "A社", person: "山田", meetingDate: "2026-11-20", meetingTime: "14:00", checks: { gaikokuOk: "YES" } }, srv);
+  ok("⑷ 報告の登録日・確認項目・商談日時を読む", n1.date === "2026-11-15" && n1.meetingDate === "2026-11-20" && n1.meetingTime === "14:00" && (!cks.length || n1.checks[cks[0].key] === (cks[0].key === "gaikokuOk" ? "YES" : "")));
+  var n2 = apoNormalize_({ apoId: srv - 12 * 3600000 - 5000, sentAt: srv - 12 * 3600000 - 1000, company: "A社", person: "山田" }, srv);
+  ok("⑷ 端末の時計が12時間ずれていても、登録日は日本時間の当日", n2.date === "2026-11-15");
+  // ⑶ 架電履歴
+  var cfgH = { resultMap: {} };
+  var m1 = extHistMerge_("", [extHistItem_(cfgH, { date: "2026-11-05", time: "10:15", result: "不在" })], []);
+  ok("⑶ 履歴の1件目（" + m1.text + "）", m1.text === "1回目 2026/11/05 10:15 不在" && m1.count === 1);
+  var m2 = extHistMerge_(m1.text, [extHistItem_(cfgH, { date: "2026-11-07", time: "14:02", result: "アポ獲得" }), extHistItem_(cfgH, { date: "2026-11-05", time: "10:15", result: "不在" })], []);
+  ok("⑶ 2件目を足しても、同じ電話は増えない（古い順に番号を振る）", m2.count === 2 && m2.text.split(extHistSep_())[1] === "2回目 2026/11/07 14:02 アポ獲得");
+  var m3 = extHistMerge_(m2.text, [], [extHistItem_(cfgH, { date: "2026-11-07", time: "14:02", result: "アポ獲得" })]);
+  ok("⑶ 取消で、その1件だけが消える", m3.count === 1 && m3.text === m1.text);
+  var m4 = extHistMerge_(m2.text + extHistSep_() + "担当者は午後に在席" + extHistSep_() + "2026/11/16 15:00 山田様より折り返し", [], [], "2026-11-01");
+  ok("⑶ 人が書き足した行（日付で始まるメモも）は、電話として数えない・消さない", m4.count === 0 && m4.text.indexOf("担当者は午後に在席") >= 0 && m4.text.indexOf("2026/11/16 15:00 山田様より折り返し") >= 0);
+  var m5 = extHistMerge_(m1.text, [extHistItem_(cfgH, { date: "2026-11-05", time: "10:15", result: "不在" })], [extHistItem_(cfgH, { date: "2026-11-05", time: "10:15", result: "不在" })]);
+  ok("⑶ 同じ記録を置き換えても、2件にならない", m5.count === 1 && m5.text === m1.text);
+  ok("⑶ 列の名前は「架電回数（自動）」「架電履歴（自動）」。もとからある「架電回数」の列とは別に扱う", extHistHeadKey_("架電回数(自動)") === extHistHeadKey_(EXT_HIST_COUNT) && extHistHeadKey_("架電回数") !== extHistHeadKey_(EXT_HIST_COUNT));
+  // ⑶ 報告書
+  ok("⑶ 結果の分類（アポ獲得・再架電・不在・断り・不通・その他）", repResId_("アポ獲得") === "appo" && repResId_("再架電") === "cb" && repResId_("不在") === "absent" && repResId_("断り") === "refused" && repResId_("不通") === "wrong" && repResId_("資料送付") === "other");
+  ok("⑶ 割合・時間の表記", repPct_(1, 3) === 33.3 && repMinSec_(83) === "1:23" && repHourMin_(3720) === "1時間2分");
+  ok("⑶ リストIDから元シートのURLを作る", lregUrl_("ext:abcDEF123#45") === "https://docs.google.com/spreadsheets/d/abcDEF123/edit#gid=45");
+  ok("管理者だけが使える要求に、v111 の台帳・報告書が入っている", ["apl_status", "apl_sync", "rep_lists", "rep_list_set", "rep_build", "rep_pdf", "rep_auto_set", "rep_monthly_now", "proj_board", "apl_digest_set"].every(function (x) { return ADMIN_ONLY_TYPES[x]; }));
+  ok("アポインターの要求（アポ取得報告）は、管理者専用に入っていない", !ADMIN_ONLY_TYPES["appointment"]);
+  var all = t.every(function (x) { return x[1]; });
+  t.forEach(function (x) { Logger.log((x[1] ? "PASS " : "FAIL ") + x[0]); });
+  Logger.log(all ? "== v111SelfTest: ALL PASS ==" : "== v111SelfTest: FAILED ==");
+  return all;
+}
+// ── 導入時の確認（v111 の分）：Apps Script のエディタでこの関数を1回実行。新しい権限の許可も、ここで出ます ──
+function v111SetupCheck() {
+  try { rosterApply_(true); } catch (e0) {}
+  var a = recAutosaveCheck_(true);
+  Logger.log("① 録音の自動保存先: " + (a.ok ? "「" + a.name + "」 " + a.url : "開けません") + " ／ " + (a.message || ""));
+  // ② アポイント台帳：見出し（空のとき）・足りない列を用意して、書き込めることを確かめる（アポの行は足しません）
+  var prep = null;
+  try {
+    prep = v111Lock_(function () { APL_CTX_ = null; var L = aplOpen_(true, false); return L.ok ? { ok: true, created: L.created, added: L.addedCols || [] } : { ok: false, message: L.message }; }, 20000, true);
+    if (prep === V111_NOLOCK) prep = { ok: false, message: "ほかの処理が書き込み中でした。もう一度実行してください" };
+  } catch (eP) { prep = { ok: false, message: "台帳に書き込めません（" + CONFIG.GAS_OWNER_EMAIL + " が「編集者」になっているかを確かめてください）：" + String(eP && eP.message || eP).slice(0, 120) }; }
+  var st = aplStatus_(true);
+  if (!st.on) Logger.log("② アポイント台帳: 使わない設定です（CONFIG.APPO_LEDGER）");
+  else if (!st.ok || !prep.ok) Logger.log("② アポイント台帳: ⚠ " + ((prep && !prep.ok && prep.message) || st.message || "使えません"));
+  else {
+    Logger.log("② アポイント台帳: 「" + st.title + "／" + st.tab + "」 に書き込めます（いま " + st.rows + "件）" + (prep.created ? " ／ 空のシートに見出しを作りました" : "") + (prep.added.length ? " ／ 足した列：" + prep.added.join("・") : "") +
+      (st.fallback ? " ／ ⚠ " + st.fallbackWhy + "（「" + st.tab + "」タブを使います）" : ""));
+    Logger.log("　 列の読み取り: " + (st.mapInfo || []).map(function (m) { return m.field + "＝" + m.col + "列「" + m.header + "」"; }).join("／") + "（違っていたら、台帳の見出しを直してください）");
+    Logger.log("　 台帳に書けていないアポ " + (st.pending || 0) + "件（今夜の処理で入ります）／ 自動では入れないアポ " + ((st.legacy || 0) + (st.held || 0)) + "件（v110 までの報告 " + (st.legacy || 0) + "件・名簿にない PIN からの報告 " + (st.held || 0) + "件。管理者の画面の「台帳に入れる」）");
+  }
+  Logger.log("　 確認項目: " + apoChecks_().map(function (c) { return c.label + " → " + c.must; }).join("／"));
+  var n = 0;
+  try { n = lregEnsureFromCfgs_(); } catch (e1) {}
+  var reg = lregAll_(true);
+  Logger.log("③ リスト台帳: " + Object.keys(reg).length + "件" + (n ? "（いま " + n + "件を登録）" : ""));
+  Object.keys(reg).forEach(function (k) { Logger.log("　 ・" + reg[k].project + " ← " + reg[k].book + "／" + reg[k].tab + "（" + (FULL_NAME_MAP[reg[k].pin] || reg[k].name || "") + "）"); });
+  Logger.log("④ 元シートの「" + EXT_HIST_COUNT + "」「" + EXT_HIST_LOG + "」の列: " + (extHistOn_() ? "書きます（無ければ、見出しの右端に足します）" : "書きません（CONFIG.EXT_HISTORY_COLS = false）"));
+  try {
+    var f = repFolder_();
+    Logger.log("⑤ 架電報告書のフォルダ: 「" + f.getName() + "」 " + f.getUrl());
+    var probe = Utilities.newBlob("<html><body><p>テスト 架電報告書</p></body></html>", "text/html", "probe.html").getAs("application/pdf");
+    Logger.log("　 PDF への変換: できます（" + probe.getBytes().length + " バイト）");
+  } catch (e2) { Logger.log("⑤ 架電報告書: ⚠ " + String(e2 && e2.message || e2) + "（画面の「印刷／PDFに保存」は使えます）"); }
+  Logger.log("⑥ サーバーの版: " + GAS_VERSION + "（アプリの版と同じであること）");
+  Logger.log("⑦ 自己点検: " + (v111SelfTest() ? "すべて合格" : "不合格の項目があります（上のログ）"));
 }

@@ -1,5 +1,9 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v112
+// 川嶋メソッド テレアポ管理 — GAS完全版 v113
+// v113: v112 の ⑷ で足した「掛け直しの控え」（不在の先の架電回数）を、ログイン時の同期（fetch_state）の中で作るのをやめた。
+//          本番で測ると、取り込んでから日が経ったリストの人は、同期が 40〜68秒かかっていた（アプリの待ち時間は45秒）。
+//          同期では、できあがっている控えだけを返す。作るのは recall_get（アプリが同期のあとで、裏で取りに来る）。15分間使い回す。
+//          管理者の画面の「不在のままの先」は、全員分を1回の読み取りで作る（v112 は、人数分くり返し読んでいた）。
 // v112: ⑴ 設定シートは「1人に1行」：PIN が 0 で始まる人（091 など）の行が、以前の版の保存で増えていた。
 //          「外部連携設定」は、画面が先頭の1行を表示・保存するのに、取込は全部の行を順に実行していた（最後に取り込んだ別のリストが残る）。
 //          読むときに1人1行にまとめ、余分な行は「◯◯_退避」シートへ移す。「録音設定」「KPI目標」も、読む行と保存する行をそろえた。
@@ -219,7 +223,7 @@ var CONFIG = {
 var SHEET_ID = CONFIG.SHEET_ID;
 var ADMIN_SHEET_ID = CONFIG.ADMIN_SHEET_ID;
 // v95: この GAS がどの版で、どの機能に対応しているか
-var GAS_VERSION = "v112";
+var GAS_VERSION = "v113";
 var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
   "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run",
   "ext_prepare","pl_dashboard","pl_ledger","pl_projects","pl_bank","pl_quality","pl_bank_drive","jp_holidays",   // v105-107: 収支・損益・銀行明細
@@ -227,7 +231,8 @@ var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_s
   "adm_auth","shift_receipt","shift_pending","rec_auto","kanri_key_props",   // v109
   "acct_delete","live_v110","live_diag","fetch_rank","list_meta","list_progress","pos_v110","ext_v110","ext_health","ext_realtime","rec_autosave",   // v110
   "appo_v111","appo_checks","apo_ledger","list_registry","ext_history","call_report","proj_board",   // v111
-  "ext_one_row","company_calendar","sv_absence","dial_rules","recall_server","pin_rows"];   // v112
+  "ext_one_row","company_calendar","sv_absence","dial_rules","recall_server","pin_rows",   // v112
+  "recall_async"];   // v113
 // 名簿（稼働中）→ PIN・氏名・姓・メール。起動時に「アポインター名簿」シートの内容で置き換わる（rosterApply_）
 var PIN_MAP = {}, FULL_NAME_MAP = {}, STAFF_EMAILS = {};
 (function () {
@@ -448,7 +453,8 @@ function doPost(e) {
       "shift_pending", "rec_auto_status", "adm_status", "adm_session", "adm_devices", "adm_kanri_keys", "adm_notify_get",   // v109
       "list_meta", "fetch_rank", "live_diag", "ext_health", "rec_autosave_check", "acct_status",   // v110
       "apl_status", "rep_lists", "rep_build", "proj_board",   // v111
-      "cal_get", "cal_list", "rules_get", "pin_rows_audit"];   // v112
+      "cal_get", "cal_list", "rules_get", "pin_rows_audit",   // v112
+      "recall_get"];   // v113
     var idemOn = !!(d.clientReqId && READ_ONLY_TYPES.indexOf(d.type) < 0);
     if (idemOn) {
       var idempSeen = idemSeen_(d.clientReqId);
@@ -737,7 +743,8 @@ function doPostRoute_(d) {
       // v112: 会社スケジュール・SV不在／架電ルール（不在の掛け直し）と、その判断に使う「不在の先」の架電回数
       try { result.cal = calForClient_(); } catch (calErr) {}
       try { result.rules = rulesGet_(); } catch (ruErr) {}
-      try { result.recall = recallBuild_(d.pin); } catch (rcErr) { result.recallError = String(rcErr); }
+      // v113: 掛け直しの控えは、できあがっているものだけを返す（ここでは「架電結果」を読まない。無いときは項目ごと省く → アプリが recall_get で取りに来る）
+      try { var rcl113 = recallBuild_(d.pin, true); if (rcl113 !== undefined) result.recall = rcl113; } catch (rcErr) { result.recallError = String(rcErr); }
 
       // v57→v110: 架電位置（どの端末で保存したものでも返す。同じリストで、端末内の記録より新しければ、画面がそれを使う）
       try {
@@ -16379,42 +16386,88 @@ function rulesSet_(o, by) {
   try { logAudit("架電ルールの変更", by || "管理者", "不在の掛け直し", (n.recall.on ? "使う" : "使わない") + "／上限 " + n.recall.max + "回／間隔 " + n.recall.minHours + "時間"); } catch (e) {}
   return n;
 }
-// その人のいまのリスト（進捗の開始以降）で、最後の結果が「不在」の行。"元行:回数:最後にかけた時刻(分)" を並べた文字で返す
-function recallBuild_(pin) {
+// ── 掛け直しの控え：その人のいまのリスト（進捗の開始以降）で、最後の結果が「不在」の行。"元行:回数:最後にかけた時刻(分)" を並べた文字で持つ ──
+//   v113: 作るには「架電結果」を進捗の開始までさかのぼって読む（取り込んでから日が経ったリストでは、数十秒かかる）。
+//         v112 は、これをログイン時の同期（fetch_state）の中で作っていたため、同期がアプリの待ち時間（45秒）を超える人がいた。
+//         → 同期では「できあがっている控え」だけを返し、作るのは別の要求（recall_get：アプリが同期のあとで、裏で取りに来る）で行う。
+//           控えは15分間使い回す（そのあとにかけた分は、アプリが端末の履歴から足す）。管理者の画面の集計は、全員分を1回の読み取りで作る
+var RECALL_TTL = 900;
+function recallTarget_(pin) {
   var p = rosterNormPin_(pin), cfg = extCfgFor_(p);
   if (!p || !FULL_NAME_MAP[p] || !cfg || !cfg.ssId) return null;
   var lid = extCfgLid_(cfg), stamp = Number(cfg.importedAt) || 0, cycle = Number(cfg.cycleStart) || stamp || 0;
   if (!lid) return null;
-  var ck = "rcl_v112_" + p + "_" + v111Hash_(lid + "|" + cycle + "|" + stamp), cache = null;
-  try { cache = CacheService.getScriptCache(); var c = cache.get(ck); if (c) return JSON.parse(c); } catch (e) {}
-  var sinceKey = cycle ? jstKey_(cycle - 86400000) : "2000-01-01";
-  var by = {}, resolve = liveResolver_(), idMap = null;
-  // 取込をはさんだ記録は、元行の番号が変わっていることがある → 会社（電話番号＋会社名）で、いまの行を探す（1件に決まるときだけ）
-  function byIdentity(co, ph) {
-    if (!idMap) {
-      idMap = {};
-      memberListRows_(p).forEach(function (r) { var s = Number(r[4]) || 0; if (!s) return; var k = phKey_(r[1]) + "|" + normCompany_(r[0]); idMap[k] = idMap[k] === undefined ? s : 0; });
+  return { pin: p, lid: lid, stamp: stamp, cycle: cycle, key: "rcl_v113_" + p + "_" + v111Hash_(lid + "|" + cycle + "|" + stamp), by: {}, idMap: null };
+}
+function recallSince_(t) { return t.cycle ? jstKey_(t.cycle - 86400000) : "2000-01-01"; }
+function recallCacheGet_(t) {
+  try { var c = CacheService.getScriptCache().get(t.key); return c ? JSON.parse(c) : null; } catch (e) { return null; }
+}
+// 「架電結果」の1行を、その人の控えに数える（その人の行であることは、呼ぶ側で確かめる）
+function recallRow_(t, r, cols) {
+  if (cols.lid < 0 || String(r[cols.lid] || "") !== t.lid) return;
+  var ms = epochOk_(r[13]) || callMs_(kanriDateKey_(r[1]), kanriHM_(r[2]));
+  if (t.cycle && ms && ms < t.cycle) return;
+  var src = Number(r[15]) || 0, ls = cols.ls >= 0 ? progMs_(r[cols.ls]) : 0;
+  if (!src) return;
+  if (ls && t.stamp && ls !== t.stamp) {
+    // 取込をはさんだ記録は、元行の番号が変わっていることがある → 会社（電話番号＋会社名）で、いまの行を探す（1件に決まるときだけ）
+    if (!t.idMap) {
+      t.idMap = {};
+      memberListRows_(t.pin).forEach(function (m) { var s = Number(m[4]) || 0; if (!s) return; var k = phKey_(m[1]) + "|" + normCompany_(m[0]); t.idMap[k] = t.idMap[k] === undefined ? s : 0; });
     }
-    return idMap[phKey_(ph) + "|" + normCompany_(co)] || 0;
+    src = t.idMap[phKey_(String(r[4] || "")) + "|" + normCompany_(String(r[3] || ""))] || 0;
+    if (!src) return;
   }
-  var scan = crScanSince_(sinceKey, function (r, rowNo, cols) {
+  var o = t.by[src] || (t.by[src] = { n: 0, at: 0, r: "" });
+  o.n++;
+  if (ms >= o.at) { o.at = ms; o.r = mapResultLabelToId(r[6]); }
+}
+function recallFinish_(t, scan) {
+  var parts = [];
+  Object.keys(t.by).forEach(function (s) { var o = t.by[s]; if (o.r === "absent") parts.push(s + ":" + o.n + ":" + Math.floor(o.at / 60000)); });
+  var out = { lid: t.lid, cycle: t.cycle, a: parts.join(","), n: parts.length, capped: !!(scan && scan.capped), at: new Date().getTime() };
+  try { var js = JSON.stringify(out); if (js.length < 90000) CacheService.getScriptCache().put(t.key, js, RECALL_TTL); } catch (e2) {}
+  return out;
+}
+// 1人分。cacheOnly＝できあがっている控えだけを返す（無ければ undefined。「架電結果」は読まない）
+function recallBuild_(pin, cacheOnly) {
+  var t = recallTarget_(pin);
+  if (!t) return null;
+  var c = recallCacheGet_(t);
+  if (c) return c;
+  if (cacheOnly) return undefined;
+  var resolve = liveResolver_();
+  var scan = crScanSince_(recallSince_(t), function (r, rowNo, cols) {
     var raw = String(r[0] || "").trim();
-    if (!raw || resolve(raw, cols.pin >= 0 ? r[cols.pin] : "") !== p) return true;
-    if (cols.lid < 0 || String(r[cols.lid] || "") !== lid) return true;
-    var ms = epochOk_(r[13]) || callMs_(kanriDateKey_(r[1]), kanriHM_(r[2]));
-    if (cycle && ms && ms < cycle) return true;
-    var src = Number(r[15]) || 0, ls = cols.ls >= 0 ? progMs_(r[cols.ls]) : 0;
-    if (!src) return true;
-    if (ls && stamp && ls !== stamp) { src = byIdentity(String(r[3] || ""), String(r[4] || "")); if (!src) return true; }
-    var o = by[src] || (by[src] = { n: 0, at: 0, r: "" });
-    o.n++;
-    if (ms >= o.at) { o.at = ms; o.r = mapResultLabelToId(r[6]); }
+    if (raw && resolve(raw, cols.pin >= 0 ? r[cols.pin] : "") === t.pin) recallRow_(t, r, cols);
     return true;
   }, { max: 40000, grace: 800 });
-  var parts = [];
-  Object.keys(by).forEach(function (s) { var o = by[s]; if (o.r === "absent") parts.push(s + ":" + o.n + ":" + Math.floor(o.at / 60000)); });
-  var out = { lid: lid, cycle: cycle, a: parts.join(","), n: parts.length, capped: !!(scan && scan.capped) };
-  try { if (cache) { var js = JSON.stringify(out); if (js.length < 90000) cache.put(ck, js, 120); } } catch (e2) {}
+  return recallFinish_(t, scan);
+}
+// 全員分（管理者の画面用）。控えが無い人の分だけを、1回の読み取りでまとめて作る。戻り値：{ PIN: 控え（連携していない人は null） }
+function recallBuildAll_() {
+  var out = {}, targets = {}, need = [], minSince = "";
+  rosterPins_().forEach(function (p) {
+    var t = recallTarget_(p);
+    if (!t) { out[p] = null; return; }
+    var c = recallCacheGet_(t);
+    if (c) { out[p] = c; return; }
+    targets[p] = t; need.push(p);
+    var since = recallSince_(t);
+    if (!minSince || since < minSince) minSince = since;
+  });
+  if (need.length) {
+    var resolve = liveResolver_();
+    var scan = crScanSince_(minSince, function (r, rowNo, cols) {
+      var raw = String(r[0] || "").trim();
+      if (!raw) return true;
+      var t = targets[resolve(raw, cols.pin >= 0 ? r[cols.pin] : "")];
+      if (t) recallRow_(t, r, cols);
+      return true;
+    }, { max: 40000, grace: 800 });
+    need.forEach(function (p) { out[p] = recallFinish_(targets[p], scan); });
+  }
   return out;
 }
 function recallParse_(a) {
@@ -16424,22 +16477,21 @@ function recallParse_(a) {
 }
 // 掛け直しの見通し（管理者の画面用）：いま掛け直せる・間隔待ち・上限に達した
 function recallBoard_() {
-  var rules = rulesGet_().recall, now = new Date().getTime(), out = [];
+  var rules = rulesGet_().recall, now = new Date().getTime(), out = [], all = {}, err = "";
+  try { all = recallBuildAll_(); } catch (e) { err = String(e && e.message || e).slice(0, 100); }
   rosterPins_().forEach(function (p) {
     var one = { pin: p, name: FULL_NAME_MAP[p], absent: 0, ready: 0, waiting: 0, capped: 0, linked: false };
-    try {
-      var rc = recallBuild_(p);
-      if (rc) {
-        one.linked = true;
-        var m = recallParse_(rc.a);
-        Object.keys(m).forEach(function (s) {
-          one.absent++;
-          if (m[s].n >= rules.max) one.capped++;
-          else if (now - m[s].at < rules.minHours * 3600000) one.waiting++;
-          else one.ready++;
-        });
-      }
-    } catch (e) { one.error = String(e && e.message || e).slice(0, 100); }
+    var rc = all[p];
+    if (rc) {
+      one.linked = true;
+      var m = recallParse_(rc.a);
+      Object.keys(m).forEach(function (s) {
+        one.absent++;
+        if (m[s].n >= rules.max) one.capped++;
+        else if (now - m[s].at < rules.minHours * 3600000) one.waiting++;
+        else one.ready++;
+      });
+    } else if (err) one.error = err;
     out.push(one);
   });
   return out;
@@ -16455,6 +16507,10 @@ function v112Handle_(d) {
       var cgPin = rosterNormPin_(d.pin);
       if (!cgPin || !FULL_NAME_MAP[cgPin]) return jsonOut_({ status: "error", handled: true, code: "pin", message: "PIN を確認できません" });
       return jsonOut_({ status: "ok", handled: true, cal: calForClient_(), now: new Date().getTime() });
+    case "recall_get":       // v113: アポインターの画面（同期のあとで、裏で取りに来る）。掛け直しの控えを作って返す。名簿にある PIN からの要求にだけ返す
+      var rgPin = rosterNormPin_(d.pin);
+      if (!rgPin || !FULL_NAME_MAP[rgPin]) return jsonOut_({ status: "error", handled: true, code: "pin", message: "PIN を確認できません" });
+      return jsonOut_({ status: "ok", handled: true, recall: recallBuild_(rgPin) });
     case "cal_list":
       return jsonOut_({ status: "ok", handled: true, result: calAdmin_() });
     case "cal_save":
@@ -16546,7 +16602,7 @@ function v112SelfTest() {
   var rp = recallParse_("12:2:29700000,15:1:29700100,x:1:2");
   ok("⑷ 掛け直しの控えを読む（元行:回数:時刻）", rp["12"].n === 2 && rp["12"].at === 29700000 * 60000 && rp["15"].n === 1 && Object.keys(rp).length === 2);
   ok("管理者だけが使える要求に、v112 の登録・整理が入っている", ["cal_list", "cal_save", "cal_cancel", "cal_shift_fix", "rules_get", "rules_set", "pin_rows_audit", "pin_rows_repair"].every(function (x) { return ADMIN_ONLY_TYPES[x]; }));
-  ok("アポインターの要求（cal_get）は、管理者専用に入っていない", !ADMIN_ONLY_TYPES["cal_get"]);
+  ok("アポインターの要求（cal_get・recall_get）は、管理者専用に入っていない", !ADMIN_ONLY_TYPES["cal_get"] && !ADMIN_ONLY_TYPES["recall_get"]);
   var all = t.every(function (x) { return x[1]; });
   t.forEach(function (x) { Logger.log((x[1] ? "PASS " : "FAIL ") + x[0]); });
   Logger.log(all ? "== v112SelfTest: ALL PASS ==" : "== v112SelfTest: FAILED ==");

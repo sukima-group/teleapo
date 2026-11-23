@@ -16750,20 +16750,28 @@ function filledPick_(src, rowsList, skip) {
   (src.rows || []).forEach(function (r, i) { var p = (src.prev || [])[i]; if (p && p[0]) bySrc[Number(r[4]) || 0] = p[0]; });
   return (rowsList || []).filter(function (x) { return !!set[bySrc[x]]; });
 }
+// 古い版の架電リストの見出しの残り（G1〜I1 に「時刻」「結果」「メモ」。本番の全員のタブに残っていて、下の行は空）
+var PREV_LEGACY_HEAD = ["時刻", "結果", "メモ"];
 // 7〜12列目（G〜L列）を、前回の結果の控えに使ってよいか。
-//   見出しが空か、v114 の見出しのときだけ使う。見出しが空でも、2行目から下に何か入っていれば使わない（手で書いたものを消さないため）
+//   ・v114 の見出しのとき → 使う（下の行も v114 が書いたもの）
+//   ・見出しが空か、古い版の見出しの残り（時刻・結果・メモ）のとき → 2行目から下が空なら使う
+//   ・それ以外（手で書いた見出しなど）→ 使わない（手で書いたものを消さないため）
 function prevColsFree_(lsh) {
   var lc = lsh.getLastColumn(), w = PREV_COLS.length;
   if (lc < PREV_C0) return true;
-  var cols = Math.min(lc - PREV_C0 + 1, w), h = lsh.getRange(1, PREV_C0, 1, cols).getValues()[0], ours = false, blank = true;
+  var cols = Math.min(lc - PREV_C0 + 1, w), h = lsh.getRange(1, PREV_C0, 1, cols).getValues()[0], ours = false, blank = true, legacy = true;
   for (var i = 0; i < h.length; i++) {
     var s = String(h[i] == null ? "" : h[i]).trim();
+    if (s !== (PREV_LEGACY_HEAD[i] || "")) legacy = false;
     if (!s) continue;
     blank = false;
-    if (s !== PREV_COLS[i]) return false;
-    ours = true;
+    if (s === PREV_COLS[i]) ours = true;
   }
-  if (ours || !blank) return true;
+  if (ours) {
+    for (var k = 0; k < h.length; k++) { var s2 = String(h[k] == null ? "" : h[k]).trim(); if (s2 && s2 !== PREV_COLS[k]) return false; }
+    return true;
+  }
+  if (!blank && !legacy) return false;
   var last = lsh.getLastRow();
   if (last < 2) return true;
   var v = lsh.getRange(2, PREV_C0, last - 1, cols).getValues();

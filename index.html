@@ -9490,10 +9490,15 @@ function x114GapStat(st){
   if(!li.length)return null;
   var lid=String((li[0]&&li[0][5])||""),done={},nDone=0;
   if(pg&&pg.lid&&pg.lid===lid)String(pg.done||"").split(",").forEach(function(t){var m=t.split("-"),a=+m[0],b=m.length>1?+m[1]:a;if(!a)return;for(var x=a;x<=b&&x-a<100000;x++){done[x]=1}});
-  var far=-1,gaps=0,firstGap=-1,prevN=0;
+  /* NG・アポ済みの行は、アポインターの画面でも飛ばすので、未架電に数えない（判定はアポインターの画面と同じ：電話番号。会社名は、どちらかの電話番号が無いときだけ） */
+  var ngS={},apP={},apC={};
+  (ld("ng-"+st.id)||[]).forEach(function(n){var k=n?normPh(n.ph||""):"";if(k)ngS[k]=1});
+  (ld("a-"+st.id)||[]).forEach(function(a){if(!a)return;var p=normPh(a.phone||""),c=normCo(a.company||"");if(p)apP[p]=1;if(c)apC[c]=(apC[c]||0)|(p?1:2)});
+  function skip114(r){var p=normPh(String(r[1]||"")),c=normCo(String(r[0]||""));return !!((p&&(ngS[p]||apP[p]))||(c&&apC[c]&&(!p||(apC[c]&2))))}
+  var far=-1,gaps=0,firstGap=-1,prevN=0,exN=0;
   for(var i=0;i<li.length;i++){var s=Number(li[i][4])||0;if(done[s]){far=i;nDone++}if(pv[String(s)])prevN++}
-  for(var j=0;j<far;j++){var s2=Number(li[j][4])||0;if(!done[s2]){gaps++;if(firstGap<0)firstGap=j}}
-  return {rows:li.length,done:nDone,far:far,gaps:gaps,firstGap:firstGap,firstCo:firstGap>=0?String(li[firstGap][0]||""):"",prevN:prevN,linked:!!lid};
+  for(var j=0;j<far;j++){var s2=Number(li[j][4])||0;if(!done[s2]){if(skip114(li[j])){exN++;continue}gaps++;if(firstGap<0)firstGap=j}}
+  return {rows:li.length,done:nDone,far:far,gaps:gaps,firstGap:firstGap,firstCo:firstGap>=0?String(li[firstGap][0]||""):"",prevN:prevN,exN:exN,linked:!!lid};
 }
 function x114AdminCards(){
   if(U!=="admin")return "";
@@ -9509,7 +9514,7 @@ function x114AdminCards(){
   else{
     h+='<div style="font-size:10.5px;color:#64748b;margin:2px 0 4px">いちばん先まで架電した行より手前で、まだ架電していない行の数です。順番どおりにすると、次はこの行からかけます。</div>';
     stats.forEach(function(x){var g=x.g;
-      h+='<div class="x114Gap" style="display:flex;gap:8px;align-items:center;padding:5px 0;border-top:1px solid #f1f5f9;font-size:11.5px"><div style="min-width:76px;font-weight:800">'+htmlEsc(x.st.nm||"")+'</div><div style="flex:1;color:#334155">架電済み '+g.done+'／'+g.rows+'件・前回の結果あり '+g.prevN+'件'+(g.gaps?'<br><span style="color:#b45309;font-weight:800">⚠ 手前に未架電 '+g.gaps+'件（'+(g.firstGap+1)+'件目 '+htmlEsc(g.firstCo.slice(0,18))+' から）</span>':'<br><span style="color:#047857">✓ 飛ばしている行はありません</span>')+'</div></div>'});
+      h+='<div class="x114Gap" style="display:flex;gap:8px;align-items:center;padding:5px 0;border-top:1px solid #f1f5f9;font-size:11.5px"><div style="min-width:76px;font-weight:800">'+htmlEsc(x.st.nm||"")+'</div><div style="flex:1;color:#334155">架電済み '+g.done+'／'+g.rows+'件・前回の結果あり '+g.prevN+'件'+(g.gaps?'<br><span style="color:#b45309;font-weight:800">⚠ 手前に未架電 '+g.gaps+'件（'+(g.firstGap+1)+'件目 '+htmlEsc(g.firstCo.slice(0,18))+' から）</span>':'<br><span style="color:#047857">✓ 飛ばしている行はありません</span>')+(g.exN?'<br><span style="color:#64748b;font-size:10.5px">ほかに、NG・アポ済みで飛ばす行 '+g.exN+'件（数に入れていません）</span>':'')+'</div></div>'});
   }
   return h+'</div>';
 }

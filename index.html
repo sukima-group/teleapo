@@ -85,6 +85,12 @@ kbd{display:inline-block;padding:1px 6px;border:1px solid #cbd5e1;border-bottom-
 /* ==========================================================================
    川嶋メソッド テレアポ管理 PWA  v32 (15分刻みシフト + 再架電保存バグ修正 + 管理者シフトExcel取得)
    ==========================================================================
+   v114 変更（2026-11-23。詳しくは README.md）:
+   - ⑴ 前回の結果（前回なんて断られたか）：架電のカード・通話の画面・リストに出す（元シートの結果・メモ／全員の架電記録／この端末の履歴の、いちばん新しいもの）
+   - ⑵ 元シートの順番どおりに架電する：次の架電先は「いちばん上の、まだ架電していない行」（v113 までは「いまの行の次」から探していて、手前の行が残っていた）
+   - ⑶ アポ済みの先は、電話番号で判定（会社名だけが同じ先＝同じ法人の別の事業所などは、飛ばさずに知らせる）
+   - ⑷ 管理者：取込で、元シートの結果ごとに「架電する・しない」を選ぶ／架電の順番の設定／順番の点検（手前に残っている未架電）
+   - ⑸ 次にかける3件を、前回の結果つきで先に見せる
    v113 変更（2026-11-20。v112 を本番に入れて測った結果の修正）:
    - 掛け直しの控え（不在の先の架電回数）を、同期とは別に、裏で取りに行く（v112 は同期の中で数えていて、同期が45秒を超える人がいた）
    - 管理者の画面：架電ルールの設定をすぐに出し、人ごとの集計はそのあとで読む。重い集計・点検は15分に1回まで
@@ -225,7 +231,7 @@ var SHIFT_NOTIFY_TO = CONFIG.NOTIFY.SHIFT_TO;
 var DAILY_REPORT_TO = CONFIG.NOTIFY.DAILY_REPORT_TO;  /* v14: 退勤レポート通知先 */
 
 /* v26: 起動時キャッシュクリア - 旧バージョンのキャッシュを強制削除 */
-var APP_VERSION="v113";
+var APP_VERSION="v114";
 /* v35: 会社ロゴ(スキマ) 埋め込み - オフラインでも表示 */
 var LOGO="data:image/png;base64,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";
 (function(){
@@ -2614,6 +2620,7 @@ function loadUser(id){
   progSrv=ld("prog-"+id)||null;
   repass=ld("repass-"+id)||null;
   try{x112Restore(id)}catch(eX12){}   /* v112 */
+  try{x114Restore(id)}catch(eX14){}   /* v114 */
   if(repass&&((repass.lid||"")!==(listLid||"")||(listCycle&&repass.cyc&&Number(repass.cyc)!==Number(listCycle))))repass=null;
   listDone=false;syncState.ok=true;syncState.err="";syncState.fails=0;syncState.pending=null;
   skipped=skipLoad(id);
@@ -2688,8 +2695,9 @@ function hasAppo(r){
   var co=normCo(gf(r,"co")||"");
   for(var i=0;i<appos.length;i++){
     var a=appos[i];if(!a)continue;
-    if(ph&&normPh(a.phone||"")===ph)return true;
-    if(co&&normCo(a.company||"")===co)return true;
+    var ap114=normPh(a.phone||"");
+    if(ph&&ap114===ph)return true;
+    if(co&&normCo(a.company||"")===co&&(!ph||!ap114))return true;   /* v114: 会社名だけが同じで電話番号が違う先（同じ法人の別の事業所など）は、飛ばさない */
   }
   return false;
 }
@@ -2895,12 +2903,15 @@ function restorePos(announce){
   /* 保存した位置の行が、もう架電済み（別の端末でかけた等）なら、その先の未架電へ */
   if(idx>=0&&called(idx)&&!callCtx){var nx0=nextUncalled(idx+1,rows.length);if(nx0>=0){idx=nx0;how="next"}}
   if(idx<0){idx=firstUncalled();if(idx>=0)how="uncalled"}
+  /* v114: 元シートの順番どおり：手前に、まだ架電していない行があれば、そこから（通話の途中で開き直したときは、その行のまま。自動の同期では、開いている行を動かさない） */
+  X114.backFrom=-1;
+  if(x114Strict()&&!callCtx){var f114=firstUncalled();if(f114>=0&&(idx<0||called(idx)||!show(idx)||(announce&&f114<idx))){if(idx>=0&&f114<idx)X114.backFrom=idx;idx=f114;how="uncalled"}}
   if(idx<0){idx=Math.max(0,rows.length-1);listDone=true}     /* すべて架電済み */
   ci=idx;
   if(announce&&idx>0){
-    var cur=rows[idx];
+    var cur=rows[idx],bf114=X114.backFrom;
     setTimeout(function(){
-      flash("▶ "+(gf(cur,"co")||"")+"（"+(idx+1)+"/"+rows.length+"件目）から再開します");
+      flash(bf114>=0?"↩ 元シートの順番どおり、手前のまだ架電していない「"+(gf(cur,"co")||"")+"」（"+(idx+1)+"件目）からかけます":"▶ "+(gf(cur,"co")||"")+"（"+(idx+1)+"/"+rows.length+"件目）から再開します");
     },600);
   }
   return how?idx:-1;
@@ -3122,15 +3133,17 @@ function gapsBefore(){var n=0;for(var i=0;i<ci&&i<rows.length;i++)if(show(i)&&!c
 function goNext(){
   pastHistOpen=false;
   if(!rows.length)return false;
-  var i=nextUncalled(ci+1,rows.length),back=false;
-  if(i<0){i=nextUncalled(0,ci);back=i>=0}
+  var i,back=false,strict114=x114Strict();
+  if(strict114){i=x114FirstUncalled(ci);back=i>=0&&i<ci}   /* v114: 元シートの順番どおり（いちばん上の、まだ架電していない行。いまの行は除く） */
+  else{i=nextUncalled(ci+1,rows.length);if(i<0){i=nextUncalled(0,ci);back=i>=0}}
+  if(i<0&&strict114&&show(ci)&&!called(ci)){setTimeout(function(){flash("まだ架電していないのは、この行だけです")},350);return false}
   if(i<0){
     listDone=true;savePos();
     setTimeout(function(){flash("✅ このリストは最後まで架電しました")},350);
     return false;
   }
   listDone=false;ci=i;savePos();
-  if(back){var co=gf(rows[i],"co")||"";setTimeout(function(){flash("↩ リストの最後まで進みました。まだ架電していない「"+co+"」（"+(i+1)+"件目）に戻ります")},350)}
+  if(back){var co=gf(rows[i],"co")||"";setTimeout(function(){flash(strict114?"↩ 元シートの順番どおり、まだ架電していない「"+co+"」（"+(i+1)+"件目）からかけます":"↩ リストの最後まで進みました。まだ架電していない「"+co+"」（"+(i+1)+"件目）に戻ります")},350)}
   return true;
 }
 /* 「不在だった先をもう一度かける」を始める */
@@ -3354,7 +3367,7 @@ function progressBanner(){
   var done=calledCount(),gaps=gapsBefore(),h="";
   var src=(listLid&&progSrv&&progSrv.lid===listLid)?"元シートの順番":"リストの順番";
   h+='<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:12px;padding:9px 12px;margin:0 0 10px;font-size:11.5px;color:#0c4a6e;line-height:1.7">';
-  h+='<b>📍 '+src+'で架電中</b>　架電済み <b>'+done+'</b> / '+rows.length+'件'+(repass&&repass.lid===listLid?'　<span style="color:#7c3aed;font-weight:800">🔁 不在の先をもう一巡中（残り '+absentLeft()+'件）</span>':'');
+  h+='<b>📍 '+src+'で架電中'+(x114Strict()?'（順番どおり・飛ばさない）':'')+'</b>　架電済み <b>'+done+'</b> / '+rows.length+'件'+(repass&&repass.lid===listLid?'　<span style="color:#7c3aed;font-weight:800">🔁 不在の先をもう一巡中（残り '+absentLeft()+'件）</span>':'');
   if(gaps>0)h+='<div style="margin-top:4px;color:#b45309;font-weight:700">⚠ 手前に、まだ架電していない行が '+gaps+'件あります <button id="gapBack" style="margin-left:6px;padding:4px 10px;border:1px solid #f59e0b;border-radius:8px;background:#fff;color:#b45309;font-weight:800;font-size:11px;font-family:inherit">↩ そこへ戻る</button></div>';
   if(listDone||(done>=rows.length&&nextUncalled(0,rows.length)<0)){
     var ab=absentLeft();
@@ -3363,6 +3376,7 @@ function progressBanner(){
     try{h+=x112RecallNote()}catch(eX12){}   /* v112: 間隔待ち・上限に達した件数 */
     h+='<div style="margin-top:4px;color:#64748b">新しいリスト・最初からのかけ直しは、管理者が設定します。</div>';
   }
+  try{h+=x114NextLine()}catch(eX14x){}   /* v114: 次にかける3件（前回の結果つき）・飛ばす行 */
   h+='</div>';
   return h;
 }
@@ -3414,6 +3428,7 @@ function loadFromGAS(staff,cb,opts){
 function applyServerState(staff,d,opts,cb){
     opts=opts||{};
     try{x112ServerApply(staff,d)}catch(eX12){}   /* v112: 会社スケジュール・架電ルール・掛け直しの控え（架電済みの印を作る前に入れる） */
+    try{x114ServerApply(staff,d)}catch(eX14){}   /* v114: 前回の結果（元シートの控え）。全員の架電記録は、裏で取りに行く */
     var posPlan="";
     /* 1. 架電リスト (v22: サーバーが正 - 空ならローカルもクリア) */
     if(d.list!==undefined){
@@ -3635,6 +3650,7 @@ function fetchAppointerStateToLocal(staff,cb){
       if(d.list.length>0)sv("c-"+staff.id,(d.list[0]&&d.list[0].length>=6)?{co:0,ph:1,pe:2,ad:3,src:4,lid:5}:((d.list[0]&&d.list[0].length>=5)?{co:0,ph:1,pe:2,ad:3,src:4}:{co:0,ph:1,pe:2,ad:3}));   /* v110: 元行・リストIDの列を落とさない（「○○として操作」で保存した結果が元シートに反映されなかった） */
       if(d.listMeta){sv("llid-"+staff.id,(d.list[0]&&d.list[0].length>=6)?String(d.list[0][5]||""):"");sv("lcyc-"+staff.id,Number(d.listCycle)||Number(d.listStamp)||0);sv("listStamp-"+staff.id,Number(d.listStamp)||0);sv("lsig-"+staff.id,listHash(d.list));sv("prog-"+staff.id,d.prog||null)}
     }
+    if(d.prevSrc!==undefined)sv("pv114-"+staff.id,d.prevSrc||{});   /* v114: 管理者の「順番の点検」に使う */
     /* 出退勤マージ */
     if(d.att){
       var localAtt=ld("at-"+staff.id)||{};
@@ -7885,6 +7901,7 @@ function admTopCards(){
       h+='<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-top:1px solid #f1f5f9;font-size:11.5px;flex-wrap:wrap"><b style="min-width:70px">'+htmlEsc(m.name)+'</b><span style="background:'+c[0]+';color:'+c[1]+';border-radius:10px;padding:1px 7px;font-weight:800;font-size:10.5px">'+m.state+'</span><span style="color:#64748b">今日 送信'+m.sentToday+'件／架電'+m.callsToday+'件'+(m.pending?'・待ち'+m.pending+'件':'')+(m.lastScanAt?'・最終 '+htmlEsc(String(m.lastScanAt).slice(5)):'')+'</span>'+(m.lastError?'<span style="color:#b91c1c;width:100%">⚠️ '+htmlEsc(m.lastError)+'</span>':'')+'</div>'});
     h+='<div style="font-size:10px;color:#94a3b8;margin-top:4px">「未接続」の人は、本人のスマホでこのアプリを開くと「はじめの設定」が自動で出ます（出ないときは、ホームの「🎙 はじめの設定を始める」）。赤い字は、録音が見つからない通話が続いている知らせです。</div></div>';
   }
+  try{h+=x114AdminCards()}catch(eX14){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v114 のカードを表示できませんでした：'+htmlEsc(String(eX14&&eX14.message||eX14))+'</div>'}   /* v114: 架電の順番・順番の点検 */
   try{h+=x112AdminCards()}catch(eX12){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v112 のカードを表示できませんでした：'+htmlEsc(String(eX12&&eX12.message||eX12))+'</div>'}   /* v112: 会社スケジュール・SV不在・架電ルール・設定シートの整理 */
   try{h+=x111AdminCards()}catch(eX11){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v111 のカードを表示できませんでした：'+htmlEsc(String(eX11&&eX11.message||eX11))+'</div>'}   /* v111: アポイント台帳・架電報告書・案件別の進み具合 */
   h+=x110AdminCards();   /* v110: 録音の保存先・連携の点検・集計の点検・削除したアカウント */
@@ -8203,7 +8220,7 @@ function x110ImportRun(pin,mode){
   X110.impBusy=true;render();
   flash("📥 元シートから取り込んでいます…");
   var hid=(X110.imp&&X110.imp.hidden)||"",fil=(X110.imp&&X110.imp.filled)||"";
-  directGasPost({type:"ext_import",pin:pin,mode:mode||"auto",hidden:hid||undefined,filled:(fil==="done"||fil==="ignore")?fil:undefined},180000).then(function(res){
+  directGasPost({type:"ext_import",pin:pin,mode:mode||"auto",hidden:hid||undefined,filled:(fil==="done"||fil==="ignore"||fil==="pick")?fil:undefined,filledSkip:fil==="pick"?x114SkipList(pin):undefined},180000).then(function(res){
     X110.impBusy=false;
     var rp=(res&&res.reports&&res.reports[0])||null;
     extReports=(res&&res.reports)||[];
@@ -8286,8 +8303,8 @@ function x110Modal(){
       h+='<div style="background:'+(needFil?"#fffbeb":"#f8fafc")+';border:'+(needFil?"2px solid #f59e0b":"1px solid #cbd5e1")+';border-radius:10px;padding:9px;margin:8px 0;font-size:11.5px;color:#334155;line-height:1.7">元シートの「結果」の列に、<b>すでに値が入っているのに未架電の行が '+filN+'件</b>あります'+((pv.filledSample||[]).length?'（例： '+htmlEsc(pv.filledSample.join("、"))+'）':'')+'。<br>';
       if(pv.unchanged)h+='架電済みにするときは、下の「元シートに合わせる」を押してください。';
       else{
-        h+=(needFil?'<b style="color:#b45309">どちらで取り込むか、選んでください</b>':'この行の扱い：<b>'+(m.filled==="done"?"架電済みにする（結果が空の行から架電）":"未架電のまま（この行にも架電する）")+'</b>');
-        h+='<div style="display:flex;gap:6px;margin-top:6px"><button data-x110="fill" data-v="done" style="'+X110_BTN+';flex:1'+(m.filled==="done"?";background:#eef2ff;border-color:#6366f1;color:#3730a3":"")+'">架電済みにする</button><button data-x110="fill" data-v="ignore" style="'+X110_BTN+';flex:1'+(m.filled==="ignore"||(!m.filled&&!needFil)?";background:#eef2ff;border-color:#6366f1;color:#3730a3":"")+'">未架電のまま</button></div>';
+        h+=(needFil?'<b style="color:#b45309">どれで取り込むか、選んでください</b>':'この行の扱い：<b>'+(m.filled==="done"?"架電済みにする（結果が空の行から架電）":(m.filled==="pick"?"結果ごとに選ぶ（選んだ結果の行だけ架電済み）":"すべて架電する（前回の結果を見ながら）"))+'</b>');
+        h+=x114FillUI(m,pv,needFil);   /* v114: すべて架電する／すべて架電済みにする／結果ごとに選ぶ */
       }
       h+='</div>';
     }
@@ -9272,6 +9289,230 @@ function x112Field(e){
 document.addEventListener("change",x112Field);
 document.addEventListener("input",x112Field);
 
+/* ══════════════════════════════════════════════════════════════════════
+   v114: 前回の結果（前回なんて断られたか）／元シートの順番どおりに架電（飛ばさない）／結果ごとに架電する・しない／次にかける3件
+   ・前回の結果：①元シートの「結果」「メモ」（取込のときにサーバーが控えたもの。同期で届く）
+                ②全員の「架電結果」の、同じ電話番号への架電（ほかのリスト・ほかの方の分も。同期のあとで、裏で取りに行く）
+                ③この端末の履歴 のうち、いちばん新しいもの。架電のカード・通話の画面・リストに出す
+   ・順番：架電ルールの「順番」が strict（初期値）のときは、次の架電先を「元シートのいちばん上の、まだ架電していない行」にする。
+           v113 までは「いまの行の次」から探していたため、取り込み直しのあと前の位置から再開すると、その手前の行が最後まで残っていた
+   ・アポ済みの先：電話番号で判定する（会社名だけが同じ先＝同じ法人の別の事業所などは、飛ばさずに「同じ会社名でアポあり」と出す）
+   ══════════════════════════════════════════════════════════════════════ */
+var X114={pv:{},ph:{},phAt:0,_pvAt:{},skip:{},ordBusy:false,_lm:null,_lmSig:"",backFrom:-1};
+function x114Strict(){var r=X112&&X112.rules;return !(r&&r.order==="continue")}
+function x114PhKey(p){return normPh(p).replace(/^0+/,"")}
+function x114Restore(id){
+  X114.pv=ld("pv114-"+id)||{};X114.ph=ld("ph114-"+id)||{};X114.phAt=Number(ld("pha114-"+id))||0;X114._lm=null;
+}
+/* 同期（fetch_state）の返事から。管理者が全員を同期したときも、その人の分として端末に控える（順番の点検に使う） */
+function x114ServerApply(staff,d){
+  if(!d||!staff||!staff.id)return;
+  if(d.prevSrc!==undefined){
+    sv("pv114-"+staff.id,d.prevSrc||{});
+    if(U&&U!=="admin"&&U.id===staff.id)X114.pv=d.prevSrc||{};
+  }
+  if(d.list!==undefined)x114PrevFetch(staff);
+}
+/* 全員の架電記録（電話番号ごと）と、元シートの控えの読み直しは、同期とは別に裏で取りに行く（20分に1回まで） */
+function x114PrevFetch(staff){
+  try{
+    if(!staff||!staff.id||!GAS||!navigator.onLine)return;
+    if(!U||U==="admin"||U.id!==staff.id)return;
+    if(Date.now()-(Number(X114._pvAt[staff.id])||0)<1200000)return;
+    X114._pvAt[staff.id]=Date.now();
+    directGasPost({type:"prev_get",pin:staff.pin||staff.id},150000).then(function(r){
+      if(!r||r.status!=="ok")return;
+      if(r.prevSrc){X114.pv=r.prevSrc;sv("pv114-"+staff.id,r.prevSrc)}
+      if(r.prevHist){X114.ph=r.prevHist;X114.phAt=Number(r.prevHistAt)||Date.now();sv("ph114-"+staff.id,X114.ph);sv("pha114-"+staff.id,X114.phAt)}
+      X114._lm=null;
+      x112Redraw();
+    }).catch(function(){X114._pvAt[staff.id]=Date.now()-1080000});   /* 取れなかったときは、2分たてばまた取りに行ける */
+  }catch(e){}
+}
+/* ── 前回の結果 ── */
+function x114K(d,t){
+  var s=String(d||"").replace(/\//g,"-").trim(),m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if(!m)return "";
+  var tm=String(t||"").match(/(\d{1,2}):(\d{2})/);
+  return m[1]+"-"+pad(+m[2])+"-"+pad(+m[3])+" "+(tm?pad(+tm[1])+":"+tm[2]:"00:00");
+}
+function x114Md(d){var m=String(d||"").replace(/\//g,"-").match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);return m?(+m[2])+"/"+(+m[3]):""}
+function x114ResLabel(rid){for(var j=0;j<RESULTS.length;j++)if(RESULTS[j].id===rid)return RESULTS[j].l;return rid||""}
+/* この端末の履歴（新しい順）を、電話番号ごとにまとめる（リストの全行で使うので、履歴が変わったときだけ作り直す） */
+function x114LocalMap(){
+  var top=hist&&hist[0]?(hist[0].cid||"")+"|"+(hist[0].d||"")+(hist[0].tm||""):"",sig=(hist?hist.length:0)+"|"+top;
+  if(X114._lm&&X114._lmSig===sig)return X114._lm;
+  var m={};
+  for(var i=0;i<(hist||[]).length;i++){
+    var c=hist[i];if(!c||!c.ph)continue;
+    var k=x114PhKey(c.ph);if(!k)continue;
+    if(!m[k])m[k]={c:c,n:0,c2:null};else if(!m[k].c2)m[k].c2=c;
+    m[k].n++;
+  }
+  X114._lm=m;X114._lmSig=sig;return m;
+}
+function x114HasPrev(i){
+  var r=rows[i];if(!r)return false;
+  var src=gf(r,"src"),k=x114PhKey(gf(r,"ph")||"");
+  return !!((listLid&&src!==undefined&&src!==""&&X114.pv[String(src)])||(k&&(X114.ph[k]||x114LocalMap()[k])));
+}
+/* その行の前回の結果：{d,t,who,res,memo,out,from,n,hist,prev2} 。無ければ null */
+function x114Prev(i){
+  var r=rows[i];if(!r)return null;
+  var ph=gf(r,"ph")||"",k=x114PhKey(ph),src=gf(r,"src"),c=[],n=0,hist0="";
+  var s=(listLid&&src!==undefined&&src!=="")?X114.pv[String(src)]:null;
+  if(s&&(s[0]||s[1])){c.push({k:x114K(s[2],s[3]),d:s[2],t:s[3],who:s[4]||"",res:s[0]||"",memo:s[1]||"",out:"",from:"元シート"});}
+  if(s&&s[5]){hist0=s[5];var hm=String(s[5]).match(/^(\d+)回/);if(hm)n=Math.max(n,+hm[1])}
+  var h=k?X114.ph[k]:null;
+  if(h&&h[1]){n=Math.max(n,Number(h[0])||0);c.push({k:x114K(h[1][0],h[1][1]),d:h[1][0],t:h[1][1],who:h[1][2]||"",res:h[1][3]||"",memo:h[1][4]||"",out:h[1][5]||"",from:"全員の架電記録"});
+    if(h[2])c.push({k:x114K(h[2][0],h[2][1]),d:h[2][0],t:h[2][1],who:h[2][2]||"",res:h[2][3]||"",memo:h[2][4]||"",out:h[2][5]||"",from:"全員の架電記録"})}
+  var lm=k?x114LocalMap()[k]:null;
+  if(lm){
+    [lm.c,lm.c2].forEach(function(e){if(e)c.push({k:x114K(e.d,e.tm),d:e.d,t:e.tm,who:"自分",res:x114ResLabel(e.r),memo:e.memo||"",out:e.out||"",from:"この端末"})});
+    n=Math.max(n,lm.n);
+  }
+  if(!c.length)return null;
+  c.sort(function(a,b){return a.k<b.k?1:(a.k>b.k?-1:(b.memo?1:0)-(a.memo?1:0))});
+  var best=c[0],p2=null;
+  for(var j=1;j<c.length;j++){if(c[j].k&&c[j].k!==best.k){p2=c[j];break}}
+  best.n=Math.max(n,1);best.hist=hist0;best.prev2=p2;
+  return best;
+}
+/* 結果の文字から、色を決める（断り系＝赤・アポ＝緑・かけ直し＝橙・不在／不通＝灰） */
+function x114Tone(res){
+  var t=String(res||"");
+  if(/アポ/.test(t))return {c:"#047857",bg:"#ecfdf5",bd:"#6ee7b7",i:"🎯"};
+  if(/断|NG|ＮＧ|不要|拒否|ブロック|お断|興味な|他社|一括|結構|迷惑|クレーム/.test(t))return {c:"#b91c1c",bg:"#fef2f2",bd:"#fca5a5",i:"✋"};
+  if(/再架電|折り?返|また|改めて|検討|資料/.test(t))return {c:"#b45309",bg:"#fffbeb",bd:"#fcd34d",i:"📞"};
+  if(/不在|留守|外出|出張|休み|会議|席を外/.test(t))return {c:"#334155",bg:"#f1f5f9",bd:"#cbd5e1",i:"🚶"};
+  if(/不通|使われて|番号|繋がら|つながら/.test(t))return {c:"#475569",bg:"#f8fafc",bd:"#cbd5e1",i:"❌"};
+  return {c:"#3730a3",bg:"#eef2ff",bd:"#c7d2fe",i:"🗂"};
+}
+function x114When(p){var md=x114Md(p.d);return (md?md+(p.t?" "+p.t:""):"日付なし")+(p.who?"・"+p.who:"")}
+/* 表示。mode："card"（架電のカード）・"call"（通話の画面）・"row"（リストの1行） */
+function x114PrevBox(i,mode){
+  var p=x114Prev(i);
+  if(!p){return mode==="row"?"":""}
+  var tn=x114Tone(p.res||p.memo),res=p.res||"（結果なし・メモのみ）";
+  if(mode==="row")return '<div class="x114Row" style="margin:5px 0 0 38px;font-size:11px;color:'+tn.c+';background:'+tn.bg+';border:1px solid '+tn.bd+';border-radius:7px;padding:3px 8px;line-height:1.5">'+tn.i+' 前回 '+htmlEsc(x114When(p))+'：<b>'+htmlEsc(res)+'</b>'+(p.memo?' ｜ '+htmlEsc(String(p.memo).slice(0,40)):'')+(p.n>1?'（'+p.n+'回）':'')+'</div>';
+  var h='<div class="x114Prev" style="margin-top:8px;border-radius:11px;border:2px solid '+tn.bd+';background:'+tn.bg+';padding:9px 11px;text-align:left">';
+  h+='<div style="font-size:11px;font-weight:800;color:'+tn.c+'">'+tn.i+' 架電済みの会社です（前回 '+htmlEsc(x114When(p))+'）'+(p.n>1?'　これまで '+p.n+'回':'')+'</div>';
+  h+='<div class="x114Res" style="font-size:'+(mode==="call"?15:17)+'px;font-weight:900;color:'+tn.c+';margin-top:2px;line-height:1.35">'+htmlEsc(res)+'</div>';
+  if(p.memo)h+='<div class="x114Memo" style="font-size:12.5px;color:#1e293b;margin-top:3px;line-height:1.5;font-weight:700">📝 '+htmlEsc(p.memo)+'</div>';
+  if(p.out)h+='<div style="font-size:11.5px;color:#9f1239;margin-top:2px">💬 切り返し：'+htmlEsc(p.out)+'</div>';
+  if(p.prev2)h+='<div style="font-size:10.5px;color:#64748b;margin-top:4px">その前：'+htmlEsc(x114When(p.prev2))+' '+htmlEsc(p.prev2.res||"")+(p.prev2.memo?'（'+htmlEsc(String(p.prev2.memo).slice(0,30))+'）':'')+'</div>';
+  if(p.hist)h+='<div style="font-size:10.5px;color:#64748b;margin-top:2px">元シートの架電履歴：'+htmlEsc(p.hist)+'</div>';
+  h+='<div style="font-size:9.5px;color:#94a3b8;margin-top:3px">出どころ：'+htmlEsc(p.from)+'</div>';
+  return h+'</div>';
+}
+/* 電話番号の違う先で、会社名だけが同じアポ（同じ法人の別の事業所など）。飛ばさずに知らせる */
+function x114AppoNear(i){
+  var r=rows[i];if(!r||!appos||!appos.length)return "";
+  var ph=normPh(gf(r,"ph")||""),co=normCo(gf(r,"co")||"");if(!co||!ph)return "";
+  for(var j=0;j<appos.length;j++){var a=appos[j];if(!a)continue;var ap=normPh(a.phone||"");
+    if(ap&&ap!==ph&&normCo(a.company||"")===co)return '<div class="x114Near" style="margin-top:6px;font-size:11px;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:5px 8px;line-height:1.6">⚠ 同じ会社名でアポがあります（'+htmlEsc(a.meetingDate||a.date||"")+' '+htmlEsc(a.person||"")+'・電話番号 '+htmlEsc(fmtPhone(a.phone||""))+'）。電話番号が違うので、別の事業所として架電します</div>'}
+  return "";
+}
+/* ── 元シートの順番どおり ── */
+/* いちばん上の、まだ架電していない行（except の行は除く） */
+function x114FirstUncalled(except){for(var i=0;i<rows.length;i++)if(i!==except&&show(i)&&!called(i))return i;return -1}
+/* 次にかける3件（いまの行を除く） */
+function x114NextList(n){
+  var out=[];
+  if(x114Strict()){for(var i=0;i<rows.length&&out.length<n;i++)if(i!==ci&&show(i)&&!called(i))out.push(i)}
+  else{for(var j=ci+1;j<rows.length&&out.length<n;j++)if(show(j)&&!called(j))out.push(j);for(var k=0;k<ci&&out.length<n;k++)if(show(k)&&!called(k))out.push(k)}
+  return out;
+}
+/* 飛ばす行（NG・アポ済み・スキップ）の数 */
+function x114Excluded(){
+  var o={ng:0,appo:0,skip:0};
+  for(var i=0;i<rows.length;i++){var r=rows[i];if(!r)continue;if(isNG(gf(r,"ph")))o.ng++;else if(hasAppo(r))o.appo++;else if(skipped[i])o.skip++}
+  return o;
+}
+function x114NextLine(){
+  if(!U||U==="admin"||!rows.length)return "";
+  var nx=x114NextList(3),h="";
+  if(nx.length){
+    h+='<div class="x114Next" style="margin-top:6px;padding-top:6px;border-top:1px dashed #bae6fd"><b>次にかける：</b>';
+    nx.forEach(function(i,k){
+      var p=x114Prev(i),tn=p?x114Tone(p.res||p.memo):null;
+      h+='<div style="margin-top:2px">'+(k+1)+'. '+(i+1)+'件目 '+htmlEsc(String(gf(rows[i],"co")||"").slice(0,24))+(p?' <span style="color:'+tn.c+';font-weight:800">（前回 '+htmlEsc(String(p.res||"メモあり").slice(0,12))+'）</span>':'')+'</div>';
+    });
+    h+='</div>';
+  }
+  var ex=x114Excluded(),parts=[];
+  if(ex.ng)parts.push("NG "+ex.ng);if(ex.appo)parts.push("アポ済み "+ex.appo);if(ex.skip)parts.push("スキップ "+ex.skip);
+  if(parts.length)h+='<div style="margin-top:4px;font-size:10.5px;color:#64748b">飛ばす行：'+parts.join("・")+'件（理由はリストで確認できます）</div>';
+  return h;
+}
+/* ── 管理者：取込で「結果ごとに選ぶ」 ── */
+function x114SkipList(pin){var m=X114.skip[pin]||{};return Object.keys(m).filter(function(k){return m[k]})}
+function x114FillUI(m,pv,needFil){
+  var sel=function(on){return on?";background:#eef2ff;border-color:#6366f1;color:#3730a3":""};
+  var by=pv.filledBy||[],h='';
+  h+='<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">';
+  h+='<button data-x110="fill" data-v="ignore" style="'+X110_BTN+';flex:1;min-width:120px'+sel(m.filled==="ignore"||(!m.filled&&!needFil))+'">すべて架電する<br><span style="font-size:10px;font-weight:600">前回の結果を見ながら</span></button>';
+  h+='<button data-x110="fill" data-v="done" style="'+X110_BTN+';flex:1;min-width:120px'+sel(m.filled==="done")+'">すべて架電済みにする<br><span style="font-size:10px;font-weight:600">結果が空の行だけ架電</span></button>';
+  if(by.length)h+='<button data-x110="fill" data-v="pick" style="'+X110_BTN+';flex:1;min-width:120px'+sel(m.filled==="pick")+'">結果ごとに選ぶ<br><span style="font-size:10px;font-weight:600">例：不要・NG は架電しない</span></button>';
+  h+='</div>';
+  if(m.filled==="pick"&&by.length){
+    var sk=X114.skip[m.pin]||{},nSk=0;
+    h+='<div style="margin-top:7px;font-size:11px;color:#334155">架電<b>しない</b>結果を押して選んでください（選んだ結果の行は架電済みにします。ほかの行は、前回の結果を見ながら架電します）</div><div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:5px">';
+    by.forEach(function(b){var on=!!sk[b.v];if(on)nSk+=b.n;var tn=x114Tone(b.v);
+      h+='<button data-x114="skipTog" data-pin="'+htmlEsc(m.pin)+'" data-v="'+htmlEsc(b.v)+'" class="x114Chip" style="padding:6px 10px;border-radius:16px;border:1.5px solid '+(on?"#b91c1c":tn.bd)+';background:'+(on?"#b91c1c":"#fff")+';color:'+(on?"#fff":tn.c)+';font-size:11.5px;font-weight:800;font-family:inherit">'+(on?"✕ ":"")+htmlEsc(b.v)+' '+b.n+'</button>'});
+    h+='</div><div class="x114PickSum" style="margin-top:5px;font-size:11px;font-weight:800;color:#3730a3">架電しない：'+nSk+'行 ／ 架電する（前回の結果を見ながら）：'+Math.max(0,(Number(pv.filledNotDone)||0)-nSk)+'行</div>';
+  }
+  return h;
+}
+document.addEventListener("click",function(e){
+  var el=e.target&&e.target.closest?e.target.closest("[data-x114]"):null;
+  if(!el)return;
+  var a=el.getAttribute("data-x114"),pin=el.getAttribute("data-pin")||"",v=el.getAttribute("data-v")||"";
+  e.preventDefault();
+  if(a==="skipTog"){var m=X114.skip[pin]||(X114.skip[pin]={});m[v]=!m[v];render();return}
+  if(a==="order"){x114OrderSave(v);return}
+  if(a==="sync"){try{adminSyncAll()}catch(eS){}return}
+});
+/* ── 管理者：架電の順番・順番の点検 ── */
+function x114OrderNow(){var r=X112.rulesAdm&&X112.rulesAdm.rules;return r?(r.order==="continue"?"continue":"strict"):""}
+function x114OrderSave(v){
+  if(X114.ordBusy||!admTok)return;
+  X114.ordBusy=true;render();
+  directGasPost({type:"rules_set",rules:{order:v==="continue"?"continue":"strict"}},60000).then(function(r){
+    X114.ordBusy=false;
+    if(r&&r.result&&r.result.rules){if(X112.rulesAdm)X112.rulesAdm.rules=r.result.rules;else X112.rulesAdm={rules:r.result.rules,board:null}}
+    vib([40,30,40]);flash("✅ 架電の順番を保存しました。アポインターの画面には、2分以内に反映されます");render();
+  }).catch(function(err){X114.ordBusy=false;flash("⚠️ 保存できませんでした："+htmlEsc(String(err&&err.message||err).slice(0,100)));render()});
+}
+/* 管理者の端末に控えてある各アポインターのデータ（「同期」で届いたもの）から、手前に残っている未架電を数える */
+function x114GapStat(st){
+  var li=ld("l-"+st.id)||[],pg=ld("prog-"+st.id)||null,pv=ld("pv114-"+st.id)||{};
+  if(!li.length)return null;
+  var lid=String((li[0]&&li[0][5])||""),done={},nDone=0;
+  if(pg&&pg.lid&&pg.lid===lid)String(pg.done||"").split(",").forEach(function(t){var m=t.split("-"),a=+m[0],b=m.length>1?+m[1]:a;if(!a)return;for(var x=a;x<=b&&x-a<100000;x++){done[x]=1}});
+  var far=-1,gaps=0,firstGap=-1,prevN=0;
+  for(var i=0;i<li.length;i++){var s=Number(li[i][4])||0;if(done[s]){far=i;nDone++}if(pv[String(s)])prevN++}
+  for(var j=0;j<far;j++){var s2=Number(li[j][4])||0;if(!done[s2]){gaps++;if(firstGap<0)firstGap=j}}
+  return {rows:li.length,done:nDone,far:far,gaps:gaps,firstGap:firstGap,firstCo:firstGap>=0?String(li[firstGap][0]||""):"",prevN:prevN,linked:!!lid};
+}
+function x114AdminCards(){
+  if(U!=="admin")return "";
+  var h='<div id="x114OrderCard" style="'+X112_CARD+'#0ea5e9"><div style="font-size:14px;font-weight:800;color:#075985">🧭 架電の順番（v114）</div>';
+  var cur=x114OrderNow();
+  h+='<div style="font-size:11.5px;color:#334155;line-height:1.7;margin-top:4px">いま：<b>'+(cur?(cur==="continue"?"いまの行の次から（v113 までの動き）":"元シートの順番どおり（まだ架電していない行を飛ばさない）"):"読み込み中…")+'</b></div>';
+  h+='<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap"><button data-x114="order" data-v="strict" style="'+X112_BTN+';flex:1;min-width:150px'+(cur==="strict"?";background:#e0f2fe;border-color:#0284c7;color:#075985":"")+'">'+(X114.ordBusy?"⏳ ":"")+'元シートの順番どおり<br><span style="font-size:10px;font-weight:600">いちばん上の未架電からかける</span></button>';
+  h+='<button data-x114="order" data-v="continue" style="'+X112_BTN+';flex:1;min-width:150px'+(cur==="continue"?";background:#e0f2fe;border-color:#0284c7;color:#075985":"")+'">いまの行の次から<br><span style="font-size:10px;font-weight:600">手前の未架電は、最後に戻る</span></button></div>';
+  /* 順番の点検 */
+  var stats=[];(STAFF||[]).forEach(function(st){var g=x114GapStat(st);if(g&&g.linked)stats.push({st:st,g:g})});
+  h+='<div style="margin-top:10px;font-size:12px;font-weight:800;color:#075985">順番の点検（手前に残っている未架電）</div>';
+  if(!stats.length)h+='<div style="font-size:11px;color:#64748b;margin-top:3px">「🔄 全員の状況を同期」のあとに出ます。 <button data-x114="sync" style="'+X112_BTN+'">'+(adminSyncing?"⏳ 同期中…":"🔄 いま同期する")+'</button></div>';
+  else{
+    h+='<div style="font-size:10.5px;color:#64748b;margin:2px 0 4px">いちばん先まで架電した行より手前で、まだ架電していない行の数です。順番どおりにすると、次はこの行からかけます。</div>';
+    stats.forEach(function(x){var g=x.g;
+      h+='<div class="x114Gap" style="display:flex;gap:8px;align-items:center;padding:5px 0;border-top:1px solid #f1f5f9;font-size:11.5px"><div style="min-width:76px;font-weight:800">'+htmlEsc(x.st.nm||"")+'</div><div style="flex:1;color:#334155">架電済み '+g.done+'／'+g.rows+'件・前回の結果あり '+g.prevN+'件'+(g.gaps?'<br><span style="color:#b45309;font-weight:800">⚠ 手前に未架電 '+g.gaps+'件（'+(g.firstGap+1)+'件目 '+htmlEsc(g.firstCo.slice(0,18))+' から）</span>':'<br><span style="color:#047857">✓ 飛ばしている行はありません</span>')+'</div></div>'});
+  }
+  return h+'</div>';
+}
 var X111={apl:null,aplBusy:false,aplSyncBusy:false,rep:null,repBusy:false,opt:{preset:"month",from:"",to:"",project:"",showMemo:true,showCaller:false,detail:"all"},res:null,resBusy:false,pdf:null,pdfBusy:false,board:null,boardBusy:false,open:{},edit:{}};
 var X111_CARD='background:#fff;border-radius:14px;padding:12px;margin-bottom:12px;border:1.5px solid ';
 /* 知らせ（flash）は HTML として表示される。サーバー・台帳・入力欄から来た文字は、文字として出す */
@@ -11943,6 +12184,7 @@ else if(V==="home"&&!isA){
     h+='<div style="font-size:18px;font-weight:800;margin-top:4px">'+(gf(cur,"co")||"行"+(ci+1))+'</div>';
     if(gf(cur,"pe"))h+='<div style="font-size:13px;color:#64748b;margin-top:2px">👤 '+gf(cur,"pe")+'</div>';
     if(gf(cur,"ad"))h+='<div style="font-size:11px;color:#94a3b8;margin-top:2px">📍 '+gf(cur,"ad")+'</div>';
+    try{h+=x114PrevBox(ci,"card");h+=x114AppoNear(ci)}catch(eX14p){}   /* v114: 前回の結果（前回なんて断られたか） */
     if(phone){
       /* v28: NGリストチェック - NG番号なら警告して発信ボタンを出さない */
       var ngHit=isNG(phone);
@@ -12080,6 +12322,7 @@ else if(V==="call"){
   if(listProject&&!offCx)h+='<div style="font-size:10.5px;color:#3730a3;font-weight:800;margin-top:1px">📁 案件：'+htmlEsc(listProject)+'</div>';   /* v111 */
   if(offCx){if(offCx.pe)h+='<div style="font-size:12px;color:#64748b;margin-top:1px">👤 '+htmlEsc(offCx.pe)+'</div>'}
   else if(cur&&gf(cur,"pe"))h+='<div style="font-size:12px;color:#64748b;margin-top:1px">👤 '+gf(cur,"pe")+'</div>';
+  if(!offCx){try{var pi114=(callCtx&&typeof ctxIndex==="function"&&ctxIndex(callCtx)>=0)?ctxIndex(callCtx):ci;h+=x114PrevBox(pi114,"call")}catch(eX14c){}}   /* v114: 通話中も、前回の結果を見ながら */
   if(callCtx&&callCtx.cb)h+='<div style="font-size:10px;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:5px 8px;margin-top:5px;font-weight:700;line-height:1.6">🔔 再架電の先です。結果はこの会社に記録します'+(offCx?'（いまのリストには無い会社なので、リストの位置は動かしません）':'（保存したら、発信の前に表示していた行へ戻ります）')+'</div>';
   /* v53: 現在位置（リストの何件目か） */
   /* v80: PC発信の切替は「オートコールのON/OFFに関係なく」常に見える場所に置く */
@@ -12887,7 +13130,8 @@ else if(V==="list"){
   if(listSearch)h+='<button id="clrSrch" style="padding:0 14px;border:1px solid #ef4444;border-radius:10px;background:#fef2f2;color:#dc2626;font-size:13px;font-weight:700">✕</button>';
   h+='</div>';
   /* フィルタチップ */
-  var counts={all:rows.length,uncalled:0,called:0,skipped:0,appo:0};
+  var counts={all:rows.length,uncalled:0,called:0,skipped:0,appo:0,prev:0};
+  try{rows.forEach(function(_,i){if(x114HasPrev(i))counts.prev++})}catch(eX14f){}   /* v114 */
   var tcL=tdc();
   rows.forEach(function(_,i){
     if(skipped[i])counts.skipped++;
@@ -12895,7 +13139,7 @@ else if(V==="list"){
     else counts.uncalled++;
   });
   h+='<div style="display:flex;gap:5px;margin-bottom:10px;overflow-x:auto;padding:2px">';
-  [["all","すべて","#64748b",counts.all],["uncalled","未架電","#3b82f6",counts.uncalled],["called","架電済","#10b981",counts.called],["appo","アポ","#f59e0b",counts.appo],["skipped","スキップ","#ef4444",counts.skipped]].forEach(function(f){
+  [["all","すべて","#64748b",counts.all],["uncalled","未架電","#3b82f6",counts.uncalled],["called","架電済","#10b981",counts.called],["prev","前回の結果あり","#7c3aed",counts.prev],["appo","アポ","#f59e0b",counts.appo],["skipped","スキップ","#ef4444",counts.skipped]].forEach(function(f){
     var sel=listFilter===f[0];
     h+='<button data-flt="'+f[0]+'" style="white-space:nowrap;padding:7px 12px;border:1.5px solid '+f[2]+';border-radius:18px;background:'+(sel?f[2]:"#fff")+';color:'+(sel?"#fff":f[2])+';font-size:11px;font-weight:700;font-family:inherit">'+f[1]+' <b>'+f[3]+'</b></button>';
   });
@@ -14038,6 +14282,7 @@ if(lst){
     if(listFilter==="skipped"&&!sk)return;
     if(listFilter==="called"&&!cl)return;
     if(listFilter==="appo"){if(calledRes(i)!=="appo")return}
+    if(listFilter==="prev"&&!x114HasPrev(i))return;   /* v114 */
     /* 検索 */
     if(q){
       var co=String(gf(row,"co")||"").toLowerCase();
@@ -14067,6 +14312,8 @@ if(lst){
       if(pe||ad){
         inner+='<div style="font-size:11px;color:#64748b;margin-left:38px">'+(pe?'👤 '+pe:'')+(pe&&ad?' / ':'')+(ad?'📍 '+ad:'')+'</div>';
       }
+      try{inner+=x114PrevBox(i,"row")}catch(eX14r){}   /* v114: 前回の結果 */
+      if(!sk&&!cl){try{var ng114=isNG(ph);if(ng114)inner+='<div style="margin:4px 0 0 38px;font-size:10.5px;color:#b91c1c;font-weight:700">🚫 NG のため飛ばします'+(ng114.reason?'（'+htmlEsc(String(ng114.reason).slice(0,30))+'）':'')+'</div>';else if(hasAppo(row))inner+='<div style="margin:4px 0 0 38px;font-size:10.5px;color:#b45309;font-weight:700">🎯 アポ済みのため飛ばします</div>'}catch(eX14n){}}
       if(ph){
         inner+='<div style="display:flex;align-items:center;gap:6px;margin-top:6px;margin-left:38px">';
         inner+='<span style="font-size:13px;color:#3b82f6;font-family:monospace;flex:1">📞 '+fp+'</span>';

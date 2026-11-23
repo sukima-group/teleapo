@@ -1,5 +1,11 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v113
+// 川嶋メソッド テレアポ管理 — GAS完全版 v114
+// v114: ⑴ 前回の結果（前回なんて断られたか）：取込のとき、元シートの「結果」「メモ」「日付」「時刻」と「架電履歴（自動）」を架電リストのタブ（7〜12列目）に控え、
+//          同期（fetch_state）で返す。全員の「架電結果」の電話番号ごとの記録（ほかのリスト・ほかの方の分）は、prev_get（アプリが裏で取りに来る）で返す。
+//       ⑵ 架電ルールに「順番」：strict＝元シートの順番どおり（まだ架電していない行を飛ばさない。初期値）／continue＝いまの行の次から（v113 まで）。
+//          本番では、取り込み直しのあと前の位置から再開し、その手前の行（藤田さんのリストで 3〜375件目）が最後まで残っていた。
+//       ⑶ 取込で、元シートに結果が入っている行を「結果ごとに」架電する・しないを選べる（filled:"pick" と filledSkip:[結果の値]）。
+//       ⑷ 同じリストの取り込み直しで、架電済みの印を「架電結果」からも引き継ぐ（11/20 の取り込み直しで、11/17 に架電した183社に二度かけていた）。
 // v113: v112 の ⑷ で足した「掛け直しの控え」（不在の先の架電回数）を、ログイン時の同期（fetch_state）の中で作るのをやめた。
 //          本番で測ると、取り込んでから日が経ったリストの人は、同期が 40〜68秒かかっていた（アプリの待ち時間は45秒）。
 //          同期では、できあがっている控えだけを返す。作るのは recall_get（アプリが同期のあとで、裏で取りに来る）。15分間使い回す。
@@ -223,7 +229,7 @@ var CONFIG = {
 var SHEET_ID = CONFIG.SHEET_ID;
 var ADMIN_SHEET_ID = CONFIG.ADMIN_SHEET_ID;
 // v95: この GAS がどの版で、どの機能に対応しているか
-var GAS_VERSION = "v113";
+var GAS_VERSION = "v114";
 var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
   "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run",
   "ext_prepare","pl_dashboard","pl_ledger","pl_projects","pl_bank","pl_quality","pl_bank_drive","jp_holidays",   // v105-107: 収支・損益・銀行明細
@@ -232,7 +238,8 @@ var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_s
   "acct_delete","live_v110","live_diag","fetch_rank","list_meta","list_progress","pos_v110","ext_v110","ext_health","ext_realtime","rec_autosave",   // v110
   "appo_v111","appo_checks","apo_ledger","list_registry","ext_history","call_report","proj_board",   // v111
   "ext_one_row","company_calendar","sv_absence","dial_rules","recall_server","pin_rows",   // v112
-  "recall_async"];   // v113
+  "recall_async",   // v113
+  "prev_get", "order_strict", "filled_pick"];   // v114
 // 名簿（稼働中）→ PIN・氏名・姓・メール。起動時に「アポインター名簿」シートの内容で置き換わる（rosterApply_）
 var PIN_MAP = {}, FULL_NAME_MAP = {}, STAFF_EMAILS = {};
 (function () {
@@ -454,7 +461,8 @@ function doPost(e) {
       "list_meta", "fetch_rank", "live_diag", "ext_health", "rec_autosave_check", "acct_status",   // v110
       "apl_status", "rep_lists", "rep_build", "proj_board",   // v111
       "cal_get", "cal_list", "rules_get", "pin_rows_audit",   // v112
-      "recall_get"];   // v113
+      "recall_get",   // v113
+      "prev_get"];   // v114
     var idemOn = !!(d.clientReqId && READ_ONLY_TYPES.indexOf(d.type) < 0);
     if (idemOn) {
       var idempSeen = idemSeen_(d.clientReqId);
@@ -496,6 +504,9 @@ function doPostRoute_(d) {
     }
     // v111: アポ取得報告・アポイント台帳・架電報告書・案件別の進み具合
     // v112: 会社スケジュール・SV不在・架電ルール・設定シートの整理（連携の操作の前には、連携設定の余分な行を片付ける）
+    // v114: 前回の結果（prev_get）
+    var v114Res = v114Handle_(d);
+    if (v114Res) return v114Res;
     var v112Res = v112Handle_(d);
     if (v112Res) return v112Res;
     var v111Res = v111Handle_(d);
@@ -740,6 +751,8 @@ function doPostRoute_(d) {
       // v110: リストの版（件数・署名）と、進捗（架電済みの元行・最後に架電した行）
       try { result.listMeta = listMeta_(d.pin, true); } catch (lmErr) {}
       try { result.prog = progForClient_(d.pin); } catch (pgErr) { result.progError = String(pgErr); }
+      // v114: 前回の結果（取込のときに、元シートから架電リストのタブへ控えたもの。元シートは読まない）
+      try { result.prevSrc = prevForClient_(ss2.getSheetByName(sheetName)); } catch (pvErr) { result.prevError = String(pvErr); }
       // v112: 会社スケジュール・SV不在／架電ルール（不在の掛け直し）と、その判断に使う「不在の先」の架電回数
       try { result.cal = calForClient_(); } catch (calErr) {}
       try { result.rules = rulesGet_(); } catch (ruErr) {}
@@ -1822,7 +1835,9 @@ function doPostRoute_(d) {
         if (!d.pin && d.all !== true) return jsonOut_({ status: "error", code: "need_pin", message: "取り込む方（PIN）を指定してください。全員分は「全員」のボタンから実行してください" });
         // v110: mode＝"auto"（変更が無ければ何もしない・あれば続きを引き継ぐ）／"keep"／"reset"（最初からかけ直す）。hidden＝"include"／"exclude"
         //       filled＝"done" なら、元シートの「結果」の列にすでに値が入っている行を、架電済みとして取り込む／"ignore" なら未架電のまま（管理者が選んだ）
-        var imOpts = { mode: String(d.mode || "auto"), hidden: (d.hidden === "include" || d.hidden === "exclude") ? d.hidden : "", filled: d.filled === "done" ? "done" : (d.filled === "ignore" ? "ignore" : "") };
+        var imOpts = { mode: String(d.mode || "auto"), hidden: (d.hidden === "include" || d.hidden === "exclude") ? d.hidden : "", filled: d.filled === "done" ? "done" : (d.filled === "ignore" ? "ignore" : (d.filled === "pick" ? "pick" : "")) };
+        // v114: 結果ごとに選ぶ（filled:"pick"）ときの「架電しない結果」の値
+        if (imOpts.filled === "pick") imOpts.filledSkip = Array.isArray(d.filledSkip) ? d.filledSkip.map(function (x) { return String(x == null ? "" : x); }).slice(0, 200) : [];
         if (d.pin && d.pickGid) {
           var imPick = extPickTab_(d.pin, d.pickGid);
           if (!imPick.ok) return jsonOut_({ status: "error", handled: true, message: imPick.message });
@@ -12602,6 +12617,7 @@ function extReadSource_(ss0, tsh, cfg, hiddenOpt, fast) {
   var hr = Number(cfg.headerRow) || 1, lastRow = tsh.getLastRow();
   var out = { rows: [], total: 0, blank: 0, hidden: 0, hiddenSkipped: 0, hiddenKnown: false, hiddenBy: "", hiddenPartial: false, dupPhone: 0, badPhone: 0, numericCompany: 0,
     filled: [],          // 取り込む行のうち、元シートの「結果」の列にすでに値が入っている行（元行の番号）
+    prev: [],            // v114: 取り込む行ごとの、前回の結果（rows と同じ並び。無い行は null）
     mode: hiddenOpt || (String(cfg.hiddenMode || "") === "除外" ? "exclude" : "include") };
   if (lastRow <= hr) return out;
   var n = lastRow - hr, start = hr + 1, lastCol = tsh.getLastColumn();
@@ -12610,6 +12626,8 @@ function extReadSource_(ss0, tsh, cfg, hiddenOpt, fast) {
   out.hiddenKnown = hid.known; out.hiddenBy = hid.by; out.hiddenPartial = !!hid.partial;
   var lid = extListId_(cfg.ssId, String(tsh.getSheetId()));
   var cCo = cfg.colCompany, cPh = cfg.colPhone || 0, cPe = cfg.colPerson || 0, cAd = cfg.colAddress || 0, cRes = cfg.colResult || 0, seenPh = {};
+  var hcPv = null;
+  try { hcPv = extHistCols_(tsh, hr, false); } catch (eHcPv) {}      // v114: 「架電履歴（自動）」の列（前回の結果の「これまで」に使う）
   for (var i = 0; i < n; i++) {
     var r = block[i];
     var co = String(r[cCo - 1] == null ? "" : r[cCo - 1]).trim();
@@ -12623,6 +12641,7 @@ function extReadSource_(ss0, tsh, cfg, hiddenOpt, fast) {
     if (/^[\d\-\s]+$/.test(co)) out.numericCompany++;
     out.rows.push([co, ph, cPe ? String(r[cPe - 1] == null ? "" : r[cPe - 1]).trim() : "", cAd ? String(r[cAd - 1] == null ? "" : r[cAd - 1]).trim() : "", start + i, lid]);
     if (cRes && cRes <= r.length && String(r[cRes - 1] == null ? "" : r[cRes - 1]).trim() !== "") out.filled.push(start + i);
+    out.prev.push(prevFromSrcRow_(r, cfg, hcPv));      // v114
   }
   return out;
 }
@@ -12809,6 +12828,7 @@ function importFromExternal_(cfg, opts) {
     rep.ok = true; rep.unchanged = true; rep.imported = src.rows.length; rep.importedAt = cfg.importedAt; rep.verified = true;
     if (opts.hidden) extCfgWriteImport_(cfg, { hiddenMode: opts.hidden === "exclude" ? "除外" : "含める" });
     if (!cfg.snapSig || !cfg.cycleStart) extCfgWriteImport_(cfg, { snapSig: snapSig, cycleStart: cfg.cycleStart || cfg.importedAt, srcTitle: ss0.getName(), count: src.rows.length });
+    try { rep.prev = prevWriteList_(lsh, src.prev, src.rows.length); PropertiesService.getScriptProperties().setProperty(PREV_PROP + cfg.pin, String(new Date().getTime())); } catch (ePv0) {}   // v114
     rep.message = "元シートに変更はありません（" + src.rows.length + "件）。リストと架電の続きは、そのままです" + hiddenNote;
     return rep;
   }
@@ -12817,13 +12837,18 @@ function importFromExternal_(cfg, opts) {
   if (lsh.getLastRow() > 1) { lsh.getRange(2, 1, lsh.getLastRow() - 1, 6).clearContent(); }
   gridEnsure_(lsh, src.rows.length + 1, 6);       // 1000行を超えるリストでも、行を足してから書く
   lsh.getRange(2, 1, src.rows.length, 6).setValues(src.rows);
+  // v114: 前回の結果（元シートの「結果」「メモ」「日付」「時刻」と「架電履歴（自動）」）を、7〜12列目に控える
+  try { rep.prev = prevWriteList_(lsh, src.prev, src.rows.length); PropertiesService.getScriptProperties().setProperty(PREV_PROP + cfg.pin, String(new Date().getTime())); } catch (ePv) { rep.prevError = String(ePv); }
   // 検証：書いた内容を読み直し、元シートの並びと同じかを確かめる
   var back = extNonEmpty_(lsh.getRange(2, 1, Math.max(1, lsh.getLastRow() - 1), 6).getValues());
   rep.verified = back.length === src.rows.length && extSnapSig_(back) === snapSig;
 
   var now = new Date().getTime();
   var newCycle = !sameList || mode === "reset";
-  var carried = 0, diff = null;
+  var carried = 0, diff = null, diffHist = 0;
+  // v114: この周の「架電結果」から、架電済みの会社を探しておく（読むのに数秒かかるので、進捗の鍵を持つ前に読む）
+  var byHistPre = [];
+  if (!newCycle) { try { byHistPre = progCarryFromHist_(cfg.pin, lid, Number(cfg.cycleStart) || Number(cfg.importedAt) || 0, src.rows); } catch (eCh) {} }
   progLocked_(function () {
   if (newCycle) {
     progReset_(cfg.pin, lid, now, now);
@@ -12834,6 +12859,10 @@ function importFromExternal_(cfg, opts) {
     var im = extIdentityMap_(prevRows, src.rows), doneNew = [];
     diff = im.stat;
     rangesUnpack_(g.done).forEach(function (o) { if (im.map[o]) doneNew.push(im.map[o]); });
+    // v114: 前のリストとの突き合わせで引き継げなかった印も、この周の「架電結果」から会社で探して引き継ぐ（二度かけないように）
+    var seenD = {};
+    doneNew.forEach(function (x) { seenD[x] = true; });
+    byHistPre.forEach(function (x) { if (!seenD[x]) { seenD[x] = true; doneNew.push(x); diffHist++; } });
     carried = doneNew.length;
     progPut_(cfg.pin, { lid: lid, cycle: g.cycle || cfg.cycleStart || cfg.importedAt || now, stamp: now, done: rangesPack_(doneNew),
       lastSrc: im.map[g.lastSrc] || 0, lastCo: im.map[g.lastSrc] ? g.lastCo : "", lastAt: g.lastAt });
@@ -12844,22 +12873,27 @@ function importFromExternal_(cfg, opts) {
   // 元シートに結果が入っている行の扱い：管理者が「架電済みにする」を選んだときだけ、進捗に加える（選ばなければ、件数を知らせるだけ）
   var gNow = progGet_(cfg.pin), fdNow = extFilledNotDone_(src, gNow && gNow.lid === lid ? gNow.done : "");
   rep.filled = src.filled.length; rep.filledNotDone = fdNow.rows.length; rep.filledApplied = 0;
-  if (opts.filled === "done" && fdNow.rows.length && gNow && gNow.lid === lid) {
+  // v114: 「結果ごとに選ぶ」（pick）のときは、選んだ結果の行だけを架電済みにする（ほかの行は、前回の結果を見ながら架電する）
+  var fdApply = opts.filled === "done" ? fdNow.rows : (opts.filled === "pick" ? filledPick_(src, fdNow.rows, opts.filledSkip) : []);
+  if (fdApply.length && gNow && gNow.lid === lid) {
     progLocked_(function () {
       var curI = progGet_(cfg.pin);
       if (!curI || curI.lid !== lid) curI = gNow;
-      progPut_(cfg.pin, { row: curI.row, lid: lid, cycle: curI.cycle, stamp: curI.stamp, done: rangesPack_(rangesUnpack_(curI.done).concat(fdNow.rows)), lastSrc: curI.lastSrc, lastCo: curI.lastCo, lastAt: curI.lastAt });
+      progPut_(cfg.pin, { row: curI.row, lid: lid, cycle: curI.cycle, stamp: curI.stamp, done: rangesPack_(rangesUnpack_(curI.done).concat(fdApply)), lastSrc: curI.lastSrc, lastCo: curI.lastCo, lastAt: curI.lastAt });
     });
-    rep.filledApplied = fdNow.rows.length; rep.filledNotDone = 0;
+    rep.filledApplied = fdApply.length; rep.filledNotDone = fdNow.rows.length - fdApply.length;
   }
-  if (opts.filled === "ignore" || (mode === "reset" && sameList)) progAckSet_(cfg.pin, (gNow && gNow.lid === lid && gNow.cycle) || (newCycle ? now : (cfg.cycleStart || cfg.importedAt || now)));
+  if (opts.filled === "pick") rep.filledSkip = (opts.filledSkip || []).slice(0, 30);
+  if (opts.filled === "ignore" || opts.filled === "pick" || (mode === "reset" && sameList)) progAckSet_(cfg.pin, (gNow && gNow.lid === lid && gNow.cycle) || (newCycle ? now : (cfg.cycleStart || cfg.importedAt || now)));
   listMetaClear_(cfg.pin);
 
   rep.ok = true; rep.imported = src.rows.length; rep.importedAt = now; rep.newCycle = newCycle; rep.carried = carried; rep.diff = diff;
   rep.message = "取り込み " + src.rows.length + "件（" + (FULL_NAME_MAP[cfg.pin] || cfg.pin) + " さんのリスト「" + name + "」だけを更新・元シートの並び順のまま）" +
-    (newCycle ? (mode === "reset" && sameList ? "／最初からかけ直します" : "") : "／架電済み " + carried + "件を引き継ぎました（続きから架電できます）" + (diff && (diff.added || diff.gone || diff.moved) ? "／前回との差：追加 " + diff.added + "・削除 " + diff.gone + "・行の移動 " + diff.moved : "")) +
+    (newCycle ? (mode === "reset" && sameList ? "／最初からかけ直します" : "") : "／架電済み " + carried + "件を引き継ぎました（続きから架電できます）" + (diffHist ? "（うち " + diffHist + "件は、架電結果から会社で探して引き継ぎ）" : "") + (diff && (diff.added || diff.gone || diff.moved) ? "／前回との差：追加 " + diff.added + "・削除 " + diff.gone + "・行の移動 " + diff.moved : "")) +
     hiddenNote + (src.blank ? "／会社名が空の行 " + src.blank + "件は除外" : "") +
-    (rep.filledApplied ? "／元シートに結果が入っていた " + rep.filledApplied + "行は架電済みにしました" : (rep.filledNotDone ? "／元シートに結果が入っている " + rep.filledNotDone + "行は未架電のままです" + (opts.filled === "ignore" ? "（この行にも架電します）" : "（「連携の点検」→「元シートに合わせる」で架電済みにできます）") : "")) +
+    (rep.filledApplied ? "／元シートに結果が入っていた " + rep.filledApplied + "行は架電済みにしました" + (opts.filled === "pick" ? "（" + (opts.filledSkip || []).slice(0, 6).join("・") + "）" + (rep.filledNotDone ? "／ほかの " + rep.filledNotDone + "行は、前回の結果を見ながら架電します" : "") : "")
+      : (rep.filledNotDone ? "／元シートに結果が入っている " + rep.filledNotDone + "行は未架電のままです" + (opts.filled === "ignore" || opts.filled === "pick" ? "（この行にも、前回の結果を見ながら架電します）" : "（「連携の点検」→「元シートに合わせる」で架電済みにできます）") : "")) +
+    (rep.prev > 0 ? "／前回の結果 " + rep.prev + "行を控えました" : (rep.prev < 0 ? "／前回の結果は控えていません（このタブの G〜L 列に、ほかの内容が入っているため。消してから取り込み直すと控えます）" : "")) +
     (rep.verified ? "／検証OK" : "／⚠ 検証で差が見つかりました（もう一度取り込んでください）");
   logAudit("リスト取り込み", "管理者", rep.name, rep.message + " リストID:" + lid);
   return rep;
@@ -12978,6 +13012,7 @@ function extImportPreview_(pin, opts) {
     hidden: src.hidden, hiddenKnown: src.hiddenKnown, hiddenMode: src.mode, hiddenSkipped: src.hiddenSkipped,
     hiddenUnknown: hidUnknown, hiddenUnknownMessage: hidUnknown ? EXT_HIDDEN_UNKNOWN_MSG : "",
     filled: src.filled.length, filledNotDone: fdP.rows.length, filledSample: fdP.sample, hasResultCol: !!cfg.colResult,
+    filledBy: filledByCount_(src, fdP.rows).slice(0, 40), prevN: (src.prev || []).filter(function (x) { return !!x; }).length,   // v114
     hiddenSaved: !!cfg.hiddenMode || !!opts.hidden,     // 非表示の行の扱いを、管理者がもう選んだか
     sample: src.rows.slice(0, 3).map(function (r) { return r[0]; }), lastSample: src.rows.length ? src.rows[src.rows.length - 1][0] : "",
     listId: lid, sharedWith: shared, sameList: sameList, unchanged: unchanged, current: prevRows.length, done: done, carry: carry, diff: diff, warn: warn,
@@ -16366,7 +16401,7 @@ function calAdmin_() {
 // v112 ⑷: 架電ルール（不在の先への掛け直し）
 //   max＝1社にかける回数の上限（最初の1回を含む）／minHours＝前にかけてから、次にかけるまでにあける時間
 // ═══════════════════════════════════════════════════════════════════════
-var DIAL_RULES_DEFAULT = { recall: { on: true, max: 3, minHours: 20 } };
+var DIAL_RULES_DEFAULT = { recall: { on: true, max: 3, minHours: 20 }, order: "strict" };   // v114: order
 function rulesNorm_(o) {
   var r = (o && o.recall) || {}, d = DIAL_RULES_DEFAULT.recall;
   var max = Math.round(Number(r.max)), mh = Number(r.minHours);
@@ -16374,16 +16409,19 @@ function rulesNorm_(o) {
   if (max > 10) max = 10;
   if (!(mh >= 0) || r.minHours === "" || r.minHours === null || r.minHours === undefined) mh = d.minHours;
   if (mh > 240) mh = 240;
-  return { recall: { on: r.on !== false, max: max, minHours: Math.round(mh * 10) / 10 } };
+  // v114: 架電の順番。strict＝元シートの順番どおり（まだ架電していない行を飛ばさない）／continue＝いまの行の次から（v113 まで）
+  return { recall: { on: r.on !== false, max: max, minHours: Math.round(mh * 10) / 10 }, order: (o && o.order === "continue") ? "continue" : "strict" };
 }
 function rulesGet_() {
   try { var raw = v111Prop_(V112_PROP.rules); if (raw) return rulesNorm_(JSON.parse(raw)); } catch (e) {}
   return rulesNorm_(DIAL_RULES_DEFAULT);
 }
 function rulesSet_(o, by) {
-  var n = rulesNorm_(o);
+  // v114: 送られてきた項目だけを変える（掛け直しのルールだけを保存したときに、順番の設定が初期値に戻らないように）
+  var cur = rulesGet_(), m = { recall: (o && o.recall) ? o.recall : cur.recall, order: (o && o.order !== undefined) ? o.order : cur.order };
+  var n = rulesNorm_(m);
   v111PropSet_(V112_PROP.rules, JSON.stringify(n));
-  try { logAudit("架電ルールの変更", by || "管理者", "不在の掛け直し", (n.recall.on ? "使う" : "使わない") + "／上限 " + n.recall.max + "回／間隔 " + n.recall.minHours + "時間"); } catch (e) {}
+  try { logAudit("架電ルールの変更", by || "管理者", "不在の掛け直し・順番", (n.recall.on ? "使う" : "使わない") + "／上限 " + n.recall.max + "回／間隔 " + n.recall.minHours + "時間／順番 " + (n.order === "continue" ? "いまの行の次から" : "元シートの順番どおり")); } catch (e) {}
   return n;
 }
 // ── 掛け直しの控え：その人のいまのリスト（進捗の開始以降）で、最後の結果が「不在」の行。"元行:回数:最後にかけた時刻(分)" を並べた文字で持つ ──
@@ -16634,7 +16672,333 @@ function v112SetupCheck() {
     items.slice(0, 20).forEach(function (it) { Logger.log("　 ・" + it.kind + "　" + (it.kind === "SV不在" ? it.target + " " : "") + it.title + "　" + it.from + (it.ft ? " " + it.ft : "") + "〜" + it.to + (it.tt ? " " + it.tt : "") + (it.lock ? "（シフト登録不可）" : "")); });
   } catch (e4) { Logger.log("③ 会社スケジュール: ⚠ " + String(e4 && e4.message || e4)); }
   var ru = rulesGet_().recall;
-  Logger.log("④ 架電ルール（不在の掛け直し）: " + (ru.on ? "1社 " + ru.max + "回まで・" + ru.minHours + "時間あけてから" : "使わない"));
+  Logger.log("④ 架電ルール（不在の掛け直し）: " + (ru.on ? "1社 " + ru.max + "回まで・" + ru.minHours + "時間あけてから" : "使わない") +
+    "／順番：" + (rulesGet_().order === "continue" ? "いまの行の次から" : "元シートの順番どおり（飛ばさない）"));   // v114
   Logger.log("⑤ サーバーの版: " + GAS_VERSION + "（アプリの版と同じであること）");
   Logger.log("⑥ 自己点検: " + (v112SelfTest() ? "すべて合格" : "不合格の項目があります（上のログ）"));
+  var t114 = v114SelfTest();
+  Logger.log("⑦ v114 の自己点検（前回の結果・順番・結果ごとの選択）: " + (t114.pass === t114.total ? "すべて合格" : "不合格 " + t114.failed.join("・")));
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// v114 ⑴ 前回の結果（前回なんて断られたか）を、架電の画面に出す
+//   ・元シートの「結果」「メモ」「日付」「時刻」「名前」の列と「架電履歴（自動）」を、取込のときに架電リストのタブ（7〜12列目）へ控える。
+//     ログイン時の同期（fetch_state）は、その控えを返すだけ（元シートは読まない。同期を遅くしない）
+//   ・全員の「架電結果」から、同じ電話番号への架電（ほかのリスト・ほかの方の分も）をまとめて返す（prev_get：アプリが同期のあとで、裏で取りに来る）。
+//     「架電結果」を読むのは、チーム全体で30分に1回まで（電話番号ごとの索引を作り、キャッシュに置いて使い回す）
+// v114 ⑵ 元シートの順番どおりに架電する（飛ばさない）：架電ルールに「順番」（strict＝元シートの順番どおり／continue＝いまの行の次から）
+// v114 ⑶ 取込で、元シートに結果が入っている行を「結果ごとに」架電する・しないを選ぶ（コールセンターの「架電対象のステータス」）
+// v114 ⑷ 同じリストの取り込み直しで、架電済みの印を「架電結果」からも引き継ぐ
+//   （v113 までは、前のリストとの突き合わせだけで引き継いでいた。本番では、11/20 の取り込み直しで 11/17 に架電した183社の印が消え、同じ会社に二度かけていた）
+// ═══════════════════════════════════════════════════════════════════════
+var PREV_COLS = ["前回の結果", "前回メモ", "前回の架電日", "前回の時刻", "前回の架電者", "これまでの架電（元シート）"];
+var PREV_C0 = 7;                 // 架電リストのタブの、前回の結果を控える最初の列（G列）
+var PREVH_TTL = 1800;            // 電話番号ごとの索引（全員の架電結果）を使い回す時間（秒）
+var PREVH_CHUNK = 30000;         // キャッシュ1件に入れる文字数（日本語でも 100KB を超えないように）
+var PREV_PROP = "PREV_SNAP_V114_";
+
+function prevDateText_(v) {
+  if (v === null || v === undefined || v === "") return "";
+  if (isDate_(v)) return Utilities.formatDate(v, "Asia/Tokyo", "yyyy/MM/dd");
+  var k = kanriDateKey_(v);
+  return k ? k.replace(/-/g, "/") : String(v).trim().slice(0, 20);
+}
+function prevTimeText_(v) {
+  if (v === null || v === undefined || v === "") return "";
+  if (isDate_(v)) return Utilities.formatDate(v, "Asia/Tokyo", "HH:mm");
+  return kanriHM_(v) || String(v).trim().slice(0, 12);
+}
+// 結果の値（「不要・NG」など）をそろえる（前後の空白・連続する空白）。結果ごとの選択で使う
+function prevResKey_(v) { return String(v == null ? "" : v).replace(/[\s　]+/g, " ").trim(); }
+// 元シートの1行 → 前回の結果 [結果, メモ, 日付, 時刻, 架電者, これまでの架電]。何も無ければ null
+function prevFromSrcRow_(r, cfg, hc) {
+  function cell(c) { return c && c <= r.length ? r[c - 1] : ""; }
+  var res = prevResKey_(cell(cfg.colResult)).slice(0, 60);
+  var memoV = cell(cfg.colMemo), memo = String(memoV == null ? "" : memoV).replace(/\s+$/, "").replace(/^\s+/, "").slice(0, 300);
+  var hist = "";
+  if (hc && hc.hist) {
+    try {
+      var items = extHistParse_(cell(hc.hist)).items;
+      if (items.length) hist = items.length + "回：" + items.slice(-3).map(function (it) {
+        return Number(it.date.slice(5, 7)) + "/" + Number(it.date.slice(8, 10)) + " " + it.time + (it.result ? " " + it.result : "");
+      }).join("／");
+    } catch (eH) {}
+  }
+  if (!res && !memo && !hist) return null;
+  var who = String(cell(cfg.colName) == null ? "" : cell(cfg.colName)).trim().slice(0, 30);
+  return [res, memo, prevDateText_(cell(cfg.colDate)), prevTimeText_(cell(cfg.colTime)), who, hist.slice(0, 200)];
+}
+// 取り込む行の、結果の値ごとの件数（rowsList＝数える元行。無ければ結果の入っている全部）。多い順
+function filledByCount_(src, rowsList) {
+  var want = null, cnt = {}, order = [];
+  if (rowsList) { want = {}; rowsList.forEach(function (x) { want[x] = true; }); }
+  (src.rows || []).forEach(function (r, i) {
+    var p = (src.prev || [])[i], s = Number(r[4]) || 0;
+    if (!p || !p[0] || (want && !want[s])) return;
+    if (!cnt[p[0]]) { cnt[p[0]] = 0; order.push(p[0]); }
+    cnt[p[0]]++;
+  });
+  order.sort(function (a, b) { return cnt[b] - cnt[a] || (a < b ? -1 : 1); });
+  return order.map(function (v) { return { v: v, n: cnt[v] }; });
+}
+// 結果ごとの選択：skip（架電しない結果の値）に入る行だけを返す
+function filledPick_(src, rowsList, skip) {
+  var set = {};
+  (skip || []).forEach(function (v) { var k = prevResKey_(v); if (k) set[k] = true; });
+  var bySrc = {};
+  (src.rows || []).forEach(function (r, i) { var p = (src.prev || [])[i]; if (p && p[0]) bySrc[Number(r[4]) || 0] = p[0]; });
+  return (rowsList || []).filter(function (x) { return !!set[bySrc[x]]; });
+}
+// 7〜12列目（G〜L列）を、前回の結果の控えに使ってよいか。
+//   見出しが空か、v114 の見出しのときだけ使う。見出しが空でも、2行目から下に何か入っていれば使わない（手で書いたものを消さないため）
+function prevColsFree_(lsh) {
+  var lc = lsh.getLastColumn(), w = PREV_COLS.length;
+  if (lc < PREV_C0) return true;
+  var cols = Math.min(lc - PREV_C0 + 1, w), h = lsh.getRange(1, PREV_C0, 1, cols).getValues()[0], ours = false, blank = true;
+  for (var i = 0; i < h.length; i++) {
+    var s = String(h[i] == null ? "" : h[i]).trim();
+    if (!s) continue;
+    blank = false;
+    if (s !== PREV_COLS[i]) return false;
+    ours = true;
+  }
+  if (ours || !blank) return true;
+  var last = lsh.getLastRow();
+  if (last < 2) return true;
+  var v = lsh.getRange(2, PREV_C0, last - 1, cols).getValues();
+  for (var r = 0; r < v.length; r++) for (var c = 0; c < v[r].length; c++) if (String(v[r][c] == null ? "" : v[r][c]).trim() !== "") return false;
+  return true;
+}
+// 架電リストのタブの 7〜12列目に、前回の結果を書く（prevArr は、2行目からの行と同じ並び）。戻り値：書いた行の数（列を使えないときは -1）
+function prevWriteList_(lsh, prevArr, n) {
+  var w = PREV_COLS.length;
+  if (!prevColsFree_(lsh)) return -1;
+  gridEnsure_(lsh, n + 1, PREV_C0 + w - 1);
+  lsh.getRange(1, PREV_C0, 1, w).setValues([PREV_COLS]).setFontWeight("bold").setBackground("#fef3c7");
+  var last = lsh.getLastRow();
+  if (last > 1) lsh.getRange(2, PREV_C0, last - 1, w).clearContent();
+  if (!n) return 0;
+  var vals = [], cnt = 0;
+  for (var i = 0; i < n; i++) {
+    var p = (prevArr || [])[i];
+    if (p) cnt++;
+    vals.push(p ? [p[0], p[1], p[2], p[3], p[4], p[5]] : ["", "", "", "", "", ""]);
+  }
+  lsh.getRange(2, PREV_C0, n, w).setNumberFormat("@").setValues(vals);
+  return cnt;
+}
+// 同期で返す：架電リストのタブに控えてある前回の結果。{ 元行: [結果, メモ, 日付, 時刻, 架電者, これまで] }。控えが無いリストは {}
+function prevForClient_(sh) {
+  if (!sh || sh.getLastRow() < 2) return {};
+  if (sh.getLastColumn() < PREV_C0) return {};
+  var n = sh.getLastRow() - 1, out = {};
+  var v = sh.getRange(1, 5, n + 1, PREV_C0 + PREV_COLS.length - 5).getValues();  // 見出し＋（元行・リストID・前回の6列）
+  if (String(v[0][2] == null ? "" : v[0][2]).trim() !== PREV_COLS[0]) return {};  // v114 の控えの列でなければ読まない
+  for (var i = 1; i < v.length; i++) {
+    var r = v[i], src = Number(r[0]) || 0;
+    if (!src || !String(r[1] == null ? "" : r[1]).trim()) continue;          // 元シートから取り込んだ行だけ
+    var res = String(r[2] == null ? "" : r[2]).trim(), memo = String(r[3] == null ? "" : r[3]).trim(), hist = String(r[7] == null ? "" : r[7]).trim();
+    if (!res && !memo && !hist) continue;
+    out[src] = [res, memo.slice(0, 200), prevDateText_(r[4]), prevTimeText_(r[5]), String(r[6] == null ? "" : r[6]).trim(), hist.slice(0, 200)];
+  }
+  return out;
+}
+// 取込をしなくても、元シートの「結果」「メモ」を読み直して控えを新しくする（取込より後に、元シートへ書かれた結果・メモも出す）。
+//   元行が同じで、会社（会社名・電話番号）も同じ行だけを書く（元シートの行がずれているときは、その行は書かない）
+function prevRefreshFromSheet_(pin) {
+  var p = rosterNormPin_(pin), cfg = extCfgFor_(p);
+  if (!p || !cfg || !cfg.ssId || !cfg.colCompany) return { ok: false, message: "連携設定がありません" };
+  var name = memberSheetName_(p);
+  if (!name) return { ok: false, message: "架電リストのタブがありません" };
+  var lsh = SpreadsheetApp.openById(SHEET_ID).getSheetByName(name);
+  if (!lsh || lsh.getLastRow() < 2) return { ok: false, message: "架電リストが空です" };
+  var ss0, tab;
+  try { ss0 = SpreadsheetApp.openById(cfg.ssId); tab = extTabForCfg_(ss0, cfg); } catch (e) { return { ok: false, message: "元スプレッドシートを開けません" }; }
+  if (!tab || !tab.sh || tab.conflict) return { ok: false, message: "連携先のタブを決められません" };
+  var lid = extListId_(cfg.ssId, String(tab.sh.getSheetId()));
+  var n = lsh.getLastRow() - 1, rows = lsh.getRange(2, 1, n, 6).getValues();
+  if (!rows.length || String(rows[0][5] || "") !== lid) return { ok: false, message: "いまの架電リストは、この元シートから取り込んだものではありません" };
+  var src = extReadSource_(ss0, tab.sh, cfg, "include", true), at = {};
+  src.rows.forEach(function (r, i) { at[Number(r[4]) || 0] = i; });
+  var prevArr = [], hit = 0, miss = 0;
+  rows.forEach(function (r) {
+    var s = Number(r[4]) || 0, i = at[s];
+    if (i === undefined) { prevArr.push(null); if (s) miss++; return; }
+    var sr = src.rows[i];
+    if (normCompany_(sr[0]) !== normCompany_(r[0]) || phKey_(sr[1]) !== phKey_(r[1])) { prevArr.push(null); miss++; return; }
+    prevArr.push(src.prev[i] || null); hit++;
+  });
+  // 読んでいる間に、取込でリストが入れ替わっていたら書かない（入れ替わったリストの控えは、取込のときに書かれている）
+  var again = lsh.getLastRow() - 1 === n ? lsh.getRange(2, 5, n, 2).getValues() : null;
+  if (!again || again.some(function (x, i) { return String(x[0]) !== String(rows[i][4]) || String(x[1]) !== String(rows[i][5]); })) return { ok: false, message: "読んでいる間に、リストが入れ替わりました" };
+  var cnt = prevWriteList_(lsh, prevArr, n);
+  try { PropertiesService.getScriptProperties().setProperty(PREV_PROP + p, String(new Date().getTime())); } catch (eP) {}
+  if (cnt < 0) return { ok: false, message: "架電リストのタブの G〜L 列に、ほかの内容が入っているため、前回の結果を控えていません" };
+  return { ok: true, rows: n, prev: cnt, matched: hit, mismatched: miss };
+}
+function prevSnapAge_(pin) {
+  try { var v = Number(PropertiesService.getScriptProperties().getProperty(PREV_PROP + rosterNormPin_(pin))) || 0; return v ? new Date().getTime() - v : Infinity; } catch (e) { return Infinity; }
+}
+
+// ── 全員の「架電結果」の、電話番号ごとの索引（最新の架電・その前の架電・回数）──
+function cachePutBig_(key, str, ttl) {
+  var c = CacheService.getScriptCache(), n = Math.max(1, Math.ceil(str.length / PREVH_CHUNK)), o = {};
+  for (var i = 0; i < n; i++) o[key + "_" + i] = str.slice(i * PREVH_CHUNK, (i + 1) * PREVH_CHUNK);
+  if (n > 400) return false;
+  c.putAll(o, ttl);
+  c.put(key, String(n), ttl);
+  return true;
+}
+function cacheGetBig_(key) {
+  var c = CacheService.getScriptCache(), n = Number(c.get(key)) || 0;
+  if (!n) return null;
+  var keys = [];
+  for (var i = 0; i < n; i++) keys.push(key + "_" + i);
+  var got = c.getAll(keys), s = "";
+  for (var j = 0; j < n; j++) { var part = got[keys[j]]; if (part === undefined || part === null) return null; s += part; }
+  return s;
+}
+// 架電結果の1行 → 索引の1件 [日付, 時刻, 名前, 結果, メモ, 切り返し, 会社名, 終話ステップ]
+function prevHistItem_(r) {
+  var memo = String(r[11] == null ? "" : r[11]).replace(/\s+/g, " ").trim();
+  return [kanriDateKey_(r[1]) || "", kanriHM_(r[2]) || "", String(r[0] == null ? "" : r[0]).trim().slice(0, 20), String(r[6] == null ? "" : r[6]).trim().slice(0, 20),
+    memo.slice(0, 80), String(r[10] == null ? "" : r[10]).replace(/\s+/g, " ").trim().slice(0, 40), String(r[3] == null ? "" : r[3]).trim().slice(0, 40), String(r[12] == null ? "" : r[12]).trim().slice(0, 12)];
+}
+// 索引を作る（チーム全体で1回。直近400日・最大8万行）。{ 電話番号のキー: [回数, 最新の1件, その前の1件] }
+function prevIdxBuild_() {
+  var idx = {}, since = jstKey_(new Date().getTime() - 400 * 86400000);
+  var scan = crScanSince_(since, function (r) {
+    var pk = phKey_(r[4]);
+    if (!pk || pk.length < 8) return true;
+    var it = prevHistItem_(r);
+    if (!it[0]) return true;
+    var o = idx[pk];
+    if (!o) { idx[pk] = [1, it, null]; return true; }
+    o[0]++;
+    var key = it[0] + " " + it[1];
+    if (key > o[1][0] + " " + o[1][1]) { o[2] = o[1]; o[1] = it; }
+    else if (!o[2] || key > o[2][0] + " " + o[2][1]) o[2] = it;
+    return true;
+  }, { max: 80000, grace: 1500 });
+  return { idx: idx, at: new Date().getTime(), scanned: scan.scanned, capped: !!scan.capped };
+}
+// 索引を得る。30分より新しい索引があれば、それを使う。古い索引しか無いときは、それを使いながら1人だけが作り直す。
+//   作り直しは「架電結果」を読むので数秒〜数十秒かかる。スクリプトの鍵（架電結果の保存も使う）は使わず、キャッシュの印で「作っている人」を1人にする
+function prevIdxGet_(force) {
+  var key = "pvh_v114_idx", busyKey = "pvh_v114_busy", c = CacheService.getScriptCache(), cur = null;
+  try { var s = cacheGetBig_(key); if (s) cur = JSON.parse(s); } catch (e) { cur = null; }
+  var now = new Date().getTime();
+  if (cur && !force && now - (Number(cur.at) || 0) < PREVH_TTL * 1000) return cur;
+  var busy = null;
+  try { busy = c.get(busyKey); } catch (eB) {}
+  if (busy && !force) {
+    if (cur) return cur;                                   // ほかの人が作り直している：古い索引で答える
+    for (var w = 0; w < 18; w++) {                         // 索引がまだ無い：できあがるのを待つ（最大 約45秒）
+      Utilities.sleep(2500);
+      try { var s2 = cacheGetBig_(key); if (s2) return JSON.parse(s2); } catch (e2) {}
+      try { if (!c.get(busyKey)) break; } catch (e3) { break; }
+    }
+  }
+  try { c.put(busyKey, String(now), 150); } catch (e4) {}
+  try {
+    var b = prevIdxBuild_();
+    try { cachePutBig_(key, JSON.stringify(b), 21600); } catch (e5) {}     // 6時間置く（30分を過ぎたら、次に来た人が作り直す）
+    return b;
+  } finally { try { c.remove(busyKey); } catch (e6) {} }
+}
+// その人のいまのリストの電話番号の分だけを返す
+function prevHistFor_(pin, force) {
+  var rows = memberListRows_(pin), b = prevIdxGet_(force), out = {}, n = 0;
+  rows.forEach(function (r) {
+    var pk = phKey_(r[1]);
+    if (!pk || out[pk] || !b.idx[pk]) return;
+    out[pk] = b.idx[pk]; n++;
+  });
+  return { map: out, n: n, at: b.at, capped: b.capped, scanned: b.scanned };
+}
+
+// ⑷ 同じリストの取り込み直し：この周（進捗の開始より後）に、その人がこのリストでかけた会社を「架電結果」から探し、新しいリストの元行にする
+//   会社（電話番号＋会社名 → 電話番号だけ → 会社名だけ。1件に決まるとき）で探す。元行の番号が変わっていても引き継げる
+function progCarryFromHist_(pin, lid, cycleMs, newRows) {
+  var p = rosterNormPin_(pin);
+  if (!p || !lid) return [];
+  var both = {}, byPh = {}, byCo = {};
+  (newRows || []).forEach(function (r) {
+    var s = Number(r[4]) || 0; if (!s) return;
+    var pk = phKey_(r[1]), cn = normCompany_(r[0]);
+    (both[pk + "|" + cn] = both[pk + "|" + cn] || []).push(s);
+    if (pk) (byPh[pk] = byPh[pk] || []).push(s);
+    if (cn) (byCo[cn] = byCo[cn] || []).push(s);
+  });
+  var out = {}, resolve = liveResolver_(), sinceKey = cycleMs ? jstKey_(cycleMs - 86400000) : "2000-01-01";
+  crScanSince_(sinceKey, function (r, rowNo, cols) {
+    var raw = String(r[0] || "").trim();
+    if (!raw || resolve(raw, cols.pin >= 0 ? r[cols.pin] : "") !== p) return true;
+    if (cols.lid < 0 || String(r[cols.lid] || "") !== lid) return true;
+    var ms = epochOk_(r[13]) || callMs_(kanriDateKey_(r[1]), kanriHM_(r[2]));
+    if (cycleMs && ms && ms < cycleMs) return true;
+    var pk = phKey_(r[4]), cn = normCompany_(r[3]), cand = both[pk + "|" + cn] || [];
+    if (cand.length !== 1) cand = (pk && byPh[pk] && byPh[pk].length === 1) ? byPh[pk] : ((cn && byCo[cn] && byCo[cn].length === 1 && !pk) ? byCo[cn] : cand);
+    if (cand.length === 1) out[cand[0]] = true;
+    else if (cand.length > 1) {                       // 同じ会社が2行あるとき：元の行の番号にいちばん近い行
+      var hint = Number(r[15]) || 0, best = cand[0];
+      cand.forEach(function (x) { if (Math.abs(x - hint) < Math.abs(best - hint)) best = x; });
+      out[best] = true;
+    }
+    return true;
+  }, { max: 40000, grace: 800 });
+  return Object.keys(out).map(Number).sort(function (a, b) { return a - b; });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// v114: 新しい要求の入口（doPostRoute_ から呼ぶ。該当しなければ null）
+// ═══════════════════════════════════════════════════════════════════════
+function v114Handle_(d) {
+  switch (d.type) {
+    case "prev_get":         // アポインターの画面（同期のあとで、裏で取りに来る）。前回の結果（元シートの控え）と、全員の架電記録（電話番号ごと）
+      var pgPin = rosterNormPin_(d.pin);
+      if (!pgPin || !FULL_NAME_MAP[pgPin]) return jsonOut_({ status: "error", handled: true, code: "pin", message: "PIN を確認できません" });
+      var out = { status: "ok", handled: true, at: new Date().getTime() };
+      try {
+        // 元シートの控え：30分より古ければ、元シートを読み直す（取込のあとに元シートへ書かれた結果・メモも出すため）
+        if (prevSnapAge_(pgPin) > 1800000) { var rf = prevRefreshFromSheet_(pgPin); out.refresh = rf; }
+        var nm = memberSheetName_(pgPin), lsh = nm ? SpreadsheetApp.openById(SHEET_ID).getSheetByName(nm) : null;
+        out.prevSrc = prevForClient_(lsh);
+      } catch (eS) { out.prevSrcError = String(eS && eS.message || eS).slice(0, 200); }
+      try {
+        var ph = prevHistFor_(pgPin, false);
+        out.prevHist = ph.map; out.prevHistAt = ph.at; out.prevHistN = ph.n; out.capped = ph.capped;
+      } catch (eH) { out.prevHistError = String(eH && eH.message || eH).slice(0, 200); }
+      return jsonOut_(out);
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// v114: エディタから実行する自己点検（ログに PASS/FAIL を出す。シートは変更しない）
+// ═══════════════════════════════════════════════════════════════════════
+function v114SelfTest() {
+  var t = [];
+  function ok(name, cond) { t.push([name, !!cond]); }
+  ok("版は v114", GAS_VERSION === "v114");
+  ok("prev_get は、管理者専用に入っていない", !ADMIN_ONLY_TYPES["prev_get"]);
+  ok("結果の値をそろえる", prevResKey_("  不要・NG　 ") === "不要・NG");
+  ok("日付の表示", prevDateText_("2026/11/5(木)") === "2026/11/05" && prevDateText_("") === "");
+  var r = ["", "", "2026/11/12", "10:05", "不要・NG", "本社で一括", "株式会社A", "", "", "0312345678", ""];
+  var cfg = { colResult: 5, colMemo: 6, colDate: 3, colTime: 4, colName: 0 };
+  var pv = prevFromSrcRow_(r, cfg, null);
+  ok("元シートの1行 → 前回の結果", pv && pv[0] === "不要・NG" && pv[1] === "本社で一括" && pv[2] === "2026/11/12" && pv[3] === "10:05");
+  ok("結果もメモも無い行は null", prevFromSrcRow_(["", "", "", "", "", "", "株式会社B"], cfg, null) === null);
+  var rules = rulesNorm_({});
+  ok("架電の順番の初期値は「元シートの順番どおり」", rules.order === "strict");
+  ok("順番の設定を読む", rulesNorm_({ order: "continue" }).order === "continue" && rulesNorm_({ order: "x" }).order === "strict");
+  var src = { rows: [["A", "1", "", "", 2, "L"], ["B", "2", "", "", 3, "L"], ["C", "3", "", "", 4, "L"]], prev: [["不在", "", "", "", "", ""], ["不要・NG", "", "", "", "", ""], ["不在", "", "", "", "", ""]] };
+  var by = filledByCount_(src, null);
+  ok("結果ごとの件数", by.length === 2 && by[0].v === "不在" && by[0].n === 2);
+  ok("結果ごとの選択", filledPick_(src, [2, 3, 4], ["不要・NG"]).join(",") === "3");
+  var pass = t.filter(function (x) { return x[1]; }).length;
+  t.forEach(function (x) { Logger.log((x[1] ? "PASS " : "FAIL ") + x[0]); });
+  Logger.log("v114SelfTest: " + pass + " / " + t.length);
+  return { pass: pass, total: t.length, failed: t.filter(function (x) { return !x[1]; }).map(function (x) { return x[0]; }) };
 }

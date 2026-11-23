@@ -5,7 +5,7 @@
    - install時に全ての旧キャッシュを強制削除
    - skipWaiting + clients.claim で即座に新SWを適用
    ========================================================================== */
-const VERSION = "v113.0.0-2026-11-20";
+const VERSION = "v114.0.0-2026-11-23";
 const CACHE = "kawashima-" + VERSION;
 const STATIC_ASSETS = [
   "./manifest.json",

@@ -1,5 +1,10 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v114
+// 川嶋メソッド テレアポ管理 — GAS完全版 v115
+// v115: ⑴ アカウントの追加：石井和子（093）・石河巧（095）。PIN は以前の方（坂上 093・浜田 095）と同じだが、v108 から名前で区別しているため、前の方のデータは付かない。
+//       ⑵ スキップに理由と戻す時刻（あとで＝2時間後／きょうはかけない＝あしたの朝／番号・会社が違う＝管理者が確認）。「スキップ記録」シートに残し、同期で返す。
+//       ⑶ 時間帯ごとの接続率（直近60日・全員の架電結果）。前回の結果の索引と同じ読み方の中で数え、prev_get・hours_get で返す。
+//       ⑷ 架電ルールに「架電の時間帯」「Zoom Phone」「不在の掛け直しを前回と違う時間帯に」。
+//       ⑸ Zoom Phone の通話履歴の取り込み（スクリプト プロパティに ZOOM_ACCOUNT_ID・ZOOM_CLIENT_ID・ZOOM_CLIENT_SECRET があるときだけ）。
 // v114: ⑴ 前回の結果（前回なんて断られたか）：取込のとき、元シートの「結果」「メモ」「日付」「時刻」と「架電履歴（自動）」を架電リストのタブ（7〜12列目）に控え、
 //          同期（fetch_state）で返す。全員の「架電結果」の電話番号ごとの記録（ほかのリスト・ほかの方の分）は、prev_get（アプリが裏で取りに来る）で返す。
 //       ⑵ 架電ルールに「順番」：strict＝元シートの順番どおり（まだ架電していない行を飛ばさない。初期値）／continue＝いまの行の次から（v113 まで）。
@@ -134,7 +139,10 @@ var CONFIG = {
     { pin: "101", name: "藤田直美", sh: "藤田", email: "fujita.sukimagroup@gmail.com", folderId: "1fNCpuY4o2QUUEzcSWn8ngCA6NQ56tQMz" },
     { pin: "110", name: "田中久美子", sh: "田中", email: "tanaka.sukimagroup@gmail.com", folderId: "" },
     { pin: "112", name: "中村花林", sh: "中村", email: "nakamura.sukimagroup@gmail.com", folderId: "" },
-    { pin: "114", name: "片山佳代", sh: "片山", email: "katayama.sukimagroup@gmail.com", folderId: "" }
+    { pin: "114", name: "片山佳代", sh: "片山", email: "katayama.sukimagroup@gmail.com", folderId: "" },
+    // v115: 追加。PIN 093・095 は以前の方（坂上順子・浜田敏幸。v110 で削除）と同じだが、名前で区別するため前の方のデータは付かない
+    { pin: "093", name: "石井和子", sh: "石井", email: "kazuo.sukimagroup@gmail.com", folderId: "" },
+    { pin: "095", name: "石河巧", sh: "石河", email: "", folderId: "" }
   ],
   // v110: 削除したアカウント。ここに書いた「PIN と氏名の両方が一致する」名簿・暗証番号・各設定の行を、デプロイ後に自動で削除する
   //       （名簿の正は「アポインター名簿」シートのため、上の ROSTER から外すだけでは消えない）。架電結果・勤怠などの業務の記録は残す
@@ -229,7 +237,7 @@ var CONFIG = {
 var SHEET_ID = CONFIG.SHEET_ID;
 var ADMIN_SHEET_ID = CONFIG.ADMIN_SHEET_ID;
 // v95: この GAS がどの版で、どの機能に対応しているか
-var GAS_VERSION = "v114";
+var GAS_VERSION = "v115";
 var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
   "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run",
   "ext_prepare","pl_dashboard","pl_ledger","pl_projects","pl_bank","pl_quality","pl_bank_drive","jp_holidays",   // v105-107: 収支・損益・銀行明細
@@ -239,7 +247,8 @@ var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_s
   "appo_v111","appo_checks","apo_ledger","list_registry","ext_history","call_report","proj_board",   // v111
   "ext_one_row","company_calendar","sv_absence","dial_rules","recall_server","pin_rows",   // v112
   "recall_async",   // v113
-  "prev_get", "order_strict", "filled_pick"];   // v114
+  "prev_get", "order_strict", "filled_pick",   // v114
+  "roster_v115", "skip_reason", "call_hours", "hours_stats", "zoom_phone"];   // v115
 // 名簿（稼働中）→ PIN・氏名・姓・メール。起動時に「アポインター名簿」シートの内容で置き換わる（rosterApply_）
 var PIN_MAP = {}, FULL_NAME_MAP = {}, STAFF_EMAILS = {};
 (function () {
@@ -462,7 +471,8 @@ function doPost(e) {
       "apl_status", "rep_lists", "rep_build", "proj_board",   // v111
       "cal_get", "cal_list", "rules_get", "pin_rows_audit",   // v112
       "recall_get",   // v113
-      "prev_get"];   // v114
+      "prev_get",   // v114
+      "hours_get", "zoom_status"];   // v115
     var idemOn = !!(d.clientReqId && READ_ONLY_TYPES.indexOf(d.type) < 0);
     if (idemOn) {
       var idempSeen = idemSeen_(d.clientReqId);
@@ -505,6 +515,9 @@ function doPostRoute_(d) {
     // v111: アポ取得報告・アポイント台帳・架電報告書・案件別の進み具合
     // v112: 会社スケジュール・SV不在・架電ルール・設定シートの整理（連携の操作の前には、連携設定の余分な行を片付ける）
     // v114: 前回の結果（prev_get）
+    // v115: スキップの理由・時間帯の接続率・Zoom Phone
+    var v115Res = v115Handle_(d);
+    if (v115Res) return v115Res;
     var v114Res = v114Handle_(d);
     if (v114Res) return v114Res;
     var v112Res = v112Handle_(d);
@@ -753,6 +766,7 @@ function doPostRoute_(d) {
       try { result.prog = progForClient_(d.pin); } catch (pgErr) { result.progError = String(pgErr); }
       // v114: 前回の結果（取込のときに、元シートから架電リストのタブへ控えたもの。元シートは読まない）
       try { result.prevSrc = prevForClient_(ss2.getSheetByName(sheetName)); } catch (pvErr) { result.prevError = String(pvErr); }
+      try { result.skips = skipForClient_(d.pin); result.skipsAt = new Date().getTime(); } catch (skErr) { result.skipsError = String(skErr); }   // v115
       // v112: 会社スケジュール・SV不在／架電ルール（不在の掛け直し）と、その判断に使う「不在の先」の架電回数
       try { result.cal = calForClient_(); } catch (calErr) {}
       try { result.rules = rulesGet_(); } catch (ruErr) {}
@@ -11301,7 +11315,9 @@ var ADMIN_ONLY_TYPES = (function () {
    // v111
    "apl_status apl_sync apl_digest_set rep_lists rep_list_set rep_build rep_pdf rep_auto_set rep_monthly_now proj_board " +
    // v112
-   "cal_list cal_save cal_cancel cal_shift_fix rules_get rules_set pin_rows_audit pin_rows_repair ").split(" ").forEach(function (t) { if (t) o[t] = true; });
+   "cal_list cal_save cal_cancel cal_shift_fix rules_get rules_set pin_rows_audit pin_rows_repair " +
+   // v115
+   "skip_admin hours_get zoom_status zoom_sync zoom_trigger ").split(" ").forEach(function (t) { if (t) o[t] = true; });
   return o;
 })();
 
@@ -16401,7 +16417,8 @@ function calAdmin_() {
 // v112 ⑷: 架電ルール（不在の先への掛け直し）
 //   max＝1社にかける回数の上限（最初の1回を含む）／minHours＝前にかけてから、次にかけるまでにあける時間
 // ═══════════════════════════════════════════════════════════════════════
-var DIAL_RULES_DEFAULT = { recall: { on: true, max: 3, minHours: 20 }, order: "strict" };   // v114: order
+var DIAL_RULES_DEFAULT = { recall: { on: true, max: 3, minHours: 20, diffHour: false }, order: "strict",   // v114: order
+  callHours: { on: false, windows: "09:00-12:00,13:00-18:00" }, zoom: { on: false } };   // v115: 架電の時間帯・Zoom Phone・掛け直しを前回と違う時間帯に
 function rulesNorm_(o) {
   var r = (o && o.recall) || {}, d = DIAL_RULES_DEFAULT.recall;
   var max = Math.round(Number(r.max)), mh = Number(r.minHours);
@@ -16410,7 +16427,10 @@ function rulesNorm_(o) {
   if (!(mh >= 0) || r.minHours === "" || r.minHours === null || r.minHours === undefined) mh = d.minHours;
   if (mh > 240) mh = 240;
   // v114: 架電の順番。strict＝元シートの順番どおり（まだ架電していない行を飛ばさない）／continue＝いまの行の次から（v113 まで）
-  return { recall: { on: r.on !== false, max: max, minHours: Math.round(mh * 10) / 10 }, order: (o && o.order === "continue") ? "continue" : "strict" };
+  // v115: 架電の時間帯（その外では画面に知らせる）・Zoom Phone（発信のアプリを選べる）・不在の掛け直しを前回と違う時間帯に
+  var ch = (o && o.callHours) || {}, win = callHoursNorm_(ch.windows !== undefined && ch.windows !== null ? ch.windows : DIAL_RULES_DEFAULT.callHours.windows);
+  return { recall: { on: r.on !== false, max: max, minHours: Math.round(mh * 10) / 10, diffHour: r.diffHour === true }, order: (o && o.order === "continue") ? "continue" : "strict",
+    callHours: { on: ch.on === true && !!win, windows: win || callHoursNorm_(DIAL_RULES_DEFAULT.callHours.windows) }, zoom: { on: !!(o && o.zoom && o.zoom.on === true) } };
 }
 function rulesGet_() {
   try { var raw = v111Prop_(V112_PROP.rules); if (raw) return rulesNorm_(JSON.parse(raw)); } catch (e) {}
@@ -16418,10 +16438,14 @@ function rulesGet_() {
 }
 function rulesSet_(o, by) {
   // v114: 送られてきた項目だけを変える（掛け直しのルールだけを保存したときに、順番の設定が初期値に戻らないように）
-  var cur = rulesGet_(), m = { recall: (o && o.recall) ? o.recall : cur.recall, order: (o && o.order !== undefined) ? o.order : cur.order };
+  // v115: 掛け直しのルールは、送られてきた項目だけを重ねる（v112 の画面は diffHour を送らないため、消さない）。時間帯・Zoom も同じ
+  function mg(a, b) { var x = {}; Object.keys(a || {}).forEach(function (k) { x[k] = a[k]; }); Object.keys(b || {}).forEach(function (k) { x[k] = b[k]; }); return x; }
+  var cur = rulesGet_(), m = { recall: (o && o.recall) ? mg(cur.recall, o.recall) : cur.recall, order: (o && o.order !== undefined) ? o.order : cur.order,
+    callHours: (o && o.callHours) ? mg(cur.callHours, o.callHours) : cur.callHours, zoom: (o && o.zoom) ? mg(cur.zoom, o.zoom) : cur.zoom };
   var n = rulesNorm_(m);
   v111PropSet_(V112_PROP.rules, JSON.stringify(n));
-  try { logAudit("架電ルールの変更", by || "管理者", "不在の掛け直し・順番", (n.recall.on ? "使う" : "使わない") + "／上限 " + n.recall.max + "回／間隔 " + n.recall.minHours + "時間／順番 " + (n.order === "continue" ? "いまの行の次から" : "元シートの順番どおり")); } catch (e) {}
+  try { logAudit("架電ルールの変更", by || "管理者", "不在の掛け直し・順番", (n.recall.on ? "使う" : "使わない") + "／上限 " + n.recall.max + "回／間隔 " + n.recall.minHours + "時間／順番 " + (n.order === "continue" ? "いまの行の次から" : "元シートの順番どおり") +
+    "／掛け直しは前回と違う時間帯に " + (n.recall.diffHour ? "する" : "しない") + "／架電の時間帯 " + (n.callHours.on ? n.callHours.windows : "決めない") + "／Zoom Phone " + (n.zoom.on ? "使う" : "使わない")); } catch (e) {}
   return n;
 }
 // ── 掛け直しの控え：その人のいまのリスト（進捗の開始以降）で、最後の結果が「不在」の行。"元行:回数:最後にかけた時刻(分)" を並べた文字で持つ ──
@@ -16678,6 +16702,10 @@ function v112SetupCheck() {
   Logger.log("⑥ 自己点検: " + (v112SelfTest() ? "すべて合格" : "不合格の項目があります（上のログ）"));
   var t114 = v114SelfTest();
   Logger.log("⑦ v114 の自己点検（前回の結果・順番・結果ごとの選択）: " + (t114.pass === t114.total ? "すべて合格" : "不合格 " + t114.failed.join("・")));
+  var t115 = v115SelfTest();
+  Logger.log("⑧ v115 の自己点検（アカウント・スキップ・時間帯・Zoom）: " + (t115.pass === t115.total ? "すべて合格" : "不合格 " + t115.failed.join("・")));
+  try { var r115 = rosterLoad_(true); Logger.log("⑨ 名簿（稼働中）: " + r115.active.map(function (m) { return m.name + "（" + m.pin + "）"; }).join("・")); } catch (eR) {}
+  Logger.log("⑩ Zoom Phone の通話履歴: " + (zoomCfg_() ? "鍵あり（管理者の画面から取り込めます）" : "鍵なし（使うときは、スクリプト プロパティに ZOOM_ACCOUNT_ID・ZOOM_CLIENT_ID・ZOOM_CLIENT_SECRET を入れる）"));
 }
 
 
@@ -16875,8 +16903,9 @@ function prevHistItem_(r) {
 }
 // 索引を作る（チーム全体で1回。直近400日・最大8万行）。{ 電話番号のキー: [回数, 最新の1件, その前の1件] }
 function prevIdxBuild_() {
-  var idx = {}, since = jstKey_(new Date().getTime() - 400 * 86400000);
-  var scan = crScanSince_(since, function (r) {
+  var idx = {}, since = jstKey_(new Date().getTime() - 400 * 86400000), H = hoursNew115_();   // v115: 時間帯ごとの接続率も数える
+  var scan = crScanSince_(since, function (r, rowNo, cols) {
+    try { hoursAdd115_(H, r, cols); } catch (eH) {}
     var pk = phKey_(r[4]);
     if (!pk || pk.length < 8) return true;
     var it = prevHistItem_(r);
@@ -16889,7 +16918,7 @@ function prevIdxBuild_() {
     else if (!o[2] || key > o[2][0] + " " + o[2][1]) o[2] = it;
     return true;
   }, { max: 80000, grace: 1500 });
-  return { idx: idx, at: new Date().getTime(), scanned: scan.scanned, capped: !!scan.capped };
+  return { idx: idx, at: new Date().getTime(), scanned: scan.scanned, capped: !!scan.capped, hours: hoursFin115_(H) };
 }
 // 索引を得る。30分より新しい索引があれば、それを使う。古い索引しか無いときは、それを使いながら1人だけが作り直す。
 //   作り直しは「架電結果」を読むので数秒〜数十秒かかる。スクリプトの鍵（架電結果の保存も使う）は使わず、キャッシュの印で「作っている人」を1人にする
@@ -16923,7 +16952,7 @@ function prevHistFor_(pin, force) {
     if (!pk || out[pk] || !b.idx[pk]) return;
     out[pk] = b.idx[pk]; n++;
   });
-  return { map: out, n: n, at: b.at, capped: b.capped, scanned: b.scanned };
+  return { map: out, n: n, at: b.at, capped: b.capped, scanned: b.scanned, hours: b.hours || null };
 }
 
 // ⑷ 同じリストの取り込み直し：この周（進捗の開始より後）に、その人がこのリストでかけた会社を「架電結果」から探し、新しいリストの元行にする
@@ -16977,6 +17006,7 @@ function v114Handle_(d) {
       try {
         var ph = prevHistFor_(pgPin, false);
         out.prevHist = ph.map; out.prevHistAt = ph.at; out.prevHistN = ph.n; out.capped = ph.capped;
+        try { out.hours = hoursFor115_(pgPin, { hours: ph.hours, at: ph.at }, d.lid); } catch (eHr) {}   // v115: 時間帯ごとの接続率
       } catch (eH) { out.prevHistError = String(eH && eH.message || eH).slice(0, 200); }
       return jsonOut_(out);
   }
@@ -17008,5 +17038,447 @@ function v114SelfTest() {
   var pass = t.filter(function (x) { return x[1]; }).length;
   t.forEach(function (x) { Logger.log((x[1] ? "PASS " : "FAIL ") + x[0]); });
   Logger.log("v114SelfTest: " + pass + " / " + t.length);
+  return { pass: pass, total: t.length, failed: t.filter(function (x) { return !x[1]; }).map(function (x) { return x[0]; }) };
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// v115: ⑴ アカウントの追加（石井和子 093・石河巧 095）は、設定ブロックの CONFIG.ROSTER。デプロイ後の最初の要求で名簿シートに補う
+//       ⑵ スキップの理由と戻す時刻（スキップ記録シート）
+//       ⑶ 時間帯ごとの接続率（全員の架電結果から。前回の結果の索引と同じ読み方の中で数える）
+//       ⑷ 架電の時間帯・Zoom Phone・不在の掛け直しを前回と違う時間帯に（架電ルールに足す）
+//       ⑸ Zoom Phone の通話履歴の取り込み（Server-to-Server OAuth。スクリプトプロパティに鍵があるときだけ動く）
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── ⑵ スキップの理由と戻す時刻 ──
+//   発信システムのプレビュー方式では、スキップに理由を付け、理由ごとに「いつ戻すか」を決める（すぐ戻す・時間をおく・確認に回す）。
+//   v114 までのスキップは、その端末の中だけの印で、理由も残らず、別の端末・管理者からは見えなかった。
+var SKIP_SHEET = "スキップ記録";
+var SKIP_HEADER = ["ID", "PIN", "氏名", "リストID", "元行", "会社名", "電話番号", "理由の種類", "理由", "戻す時刻", "記録日時", "状態", "解除日時", "解除した人"];
+var SKIP_KINDS = {
+  later: "あとで（2時間後に戻す）",
+  tomorrow: "きょうはかけない（あしたの朝に戻す）",
+  check: "番号・会社が違う・重複（管理者に確認）",
+  other: "その他（あしたの朝に戻す）"
+};
+// 戻す時刻（サーバーの時計で決める。端末の時計がずれていても同じ）。check は管理者が戻すまで（0）
+function skipUntil_(kind, nowMs) {
+  if (kind === "later") return nowMs + 2 * 3600000;
+  if (kind === "check") return 0;
+  var k = jstKey_(nowMs + 86400000);                       // あしたの 9:00（日本時間）
+  return Date.parse(k + "T09:00:00+09:00");
+}
+function skipSheet_() { return ensureSheet(SpreadsheetApp.openById(SHEET_ID), SKIP_SHEET, SKIP_HEADER); }
+function skipRows_(noCreate) {
+  var sh = noCreate ? SpreadsheetApp.openById(SHEET_ID).getSheetByName(SKIP_SHEET) : skipSheet_();   // 一覧を見るだけのときは、シートを作らない
+  if (!sh || sh.getLastRow() < 2) return { sh: sh, rows: [] };
+  return { sh: sh, rows: sh.getRange(2, 1, sh.getLastRow() - 1, SKIP_HEADER.length).getValues() };
+}
+// 行 → 画面へ返す形
+function skipObj_(r, rowNo) {
+  return { id: String(r[0] || ""), pin: rosterNormPin_(r[1]), name: String(r[2] || ""), lid: String(r[3] || ""), src: Number(r[4]) || 0,
+    co: String(r[5] || ""), ph: String(r[6] || ""), kind: String(r[7] || ""), reason: String(r[8] || ""), until: Number(r[9]) || 0,
+    at: Number(r[10]) || 0, state: String(r[11] || ""), row: rowNo };
+}
+// いま効いているスキップか（スキップ中で、戻す時刻がまだ来ていない。確認待ちは管理者が戻すまで）
+function skipActive_(o, nowMs) { return o.state === "スキップ中" && (o.kind === "check" ? true : o.until > nowMs); }
+// スキップ中の記録だけを、キャッシュに置く（同期のたびにシート全体を読まないため。書いたら消す・10分で読み直す）
+var SKIP_CACHE_KEY = "sk115_act_v1";
+function skipActRows_(fresh) {
+  var c = null;
+  try { c = CacheService.getScriptCache(); } catch (e) {}
+  if (!fresh && c) { try { var j = c.get(SKIP_CACHE_KEY); if (j) return JSON.parse(j); } catch (e1) {} }
+  var t = skipRows_(true), out = [];
+  for (var i = 0; i < t.rows.length; i++) { var o = skipObj_(t.rows[i], i + 2); if (o.state === "スキップ中") out.push(o); }
+  if (c) { try { var js = JSON.stringify(out); if (js.length < 90000) c.put(SKIP_CACHE_KEY, js, 600); } catch (e2) {} }
+  return out;
+}
+function skipCacheClear_() { try { CacheService.getScriptCache().remove(SKIP_CACHE_KEY); } catch (e) {} }
+// 同じ行のスキップか（元行があれば元行で。元行の無いリストは、電話番号と会社名で）
+function skipSameRow_(o, lid, src, ph, co) {
+  if (o.lid !== String(lid || "")) return false;
+  var sn = Number(src) || 0;
+  if (sn || o.src) return o.src === sn;
+  return String(o.ph || "").replace(/[^\d]/g, "") === String(ph || "").replace(/[^\d]/g, "") && String(o.co || "").trim() === String(co || "").trim();
+}
+// アポインターの同期で返す：その人の、いま効いているスキップ
+function skipForClient_(pin) {
+  var p = rosterNormPin_(pin), now = new Date().getTime(), out = [];
+  skipActRows_(false).forEach(function (o) {
+    if (o.pin === p && skipActive_(o, now)) out.push({ id: o.id, lid: o.lid, src: o.src, co: o.co, ph: o.ph, kind: o.kind, reason: o.reason, until: o.until, at: o.at });
+  });
+  return out;
+}
+// アポインターがスキップした（理由つき）
+function skipSet_(d) {
+  var p = rosterNormPin_(d.pin);
+  if (!p || !FULL_NAME_MAP[p]) return { ok: false, code: "pin", message: "PIN を確認できません" };
+  if (d.kind === "clear") {             // 本人がスキップをやめる（その行だけ・src が無ければ、そのリストのすべて）
+    var lk = LockService.getScriptLock();
+    try { lk.waitLock(20000); } catch (eL0) { return { ok: false, code: "busy", message: "混み合っています。もう一度押してください" }; }
+    var cleared = 0;
+    try {
+      var t0 = skipRows_(true), now0 = new Date().getTime();
+      for (var c = 0; c < t0.rows.length; c++) {
+        var o0 = skipObj_(t0.rows[c], c + 2);
+        if (o0.pin !== p || o0.state !== "スキップ中") continue;
+        if (d.all) { if (d.lid && o0.lid !== String(d.lid)) continue; }         // 「スキップ全解除」：そのリストのすべて
+        else if (!skipSameRow_(o0, d.lid, d.src, d.ph, d.co)) continue;          // その行だけ
+        t0.sh.getRange(c + 2, 12, 1, 3).setValues([["戻した（本人）", new Date(now0), FULL_NAME_MAP[p]]]);
+        cleared++;
+      }
+    } finally { try { lk.releaseLock(); } catch (eR0) {} skipCacheClear_(); }
+    return { ok: true, cleared: cleared, now: new Date().getTime() };
+  }
+  var kind = SKIP_KINDS[d.kind] ? d.kind : "";
+  if (!kind) return { ok: false, code: "kind", message: "スキップの理由を選んでください" };
+  var note = String(d.note || "").trim().slice(0, 200);
+  if (kind === "other" && !note) return { ok: false, code: "note", message: "「その他」は理由を書いてください" };
+  var now = new Date().getTime(), until = skipUntil_(kind, now);
+  var id = "SK" + now.toString(36) + Math.floor(Math.random() * 1296).toString(36);
+  var reason = SKIP_KINDS[kind] + (note ? "：" + note : "");
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(20000); } catch (eL) { return { ok: false, code: "busy", message: "混み合っています。もう一度押してください" }; }
+  try {
+    var t = skipRows_(), sh = t.sh;
+    // 同じ人・同じリスト・同じ行のスキップ中の記録は、新しいものに置き換える（「戻した」にする）
+    for (var i = 0; i < t.rows.length; i++) {
+      var o = skipObj_(t.rows[i], i + 2);
+      if (o.pin === p && o.state === "スキップ中" && skipSameRow_(o, d.lid, d.src, d.ph, d.co)) {
+        sh.getRange(i + 2, 12, 1, 3).setValues([["置き換え", new Date(now), FULL_NAME_MAP[p]]]);
+      }
+    }
+    sh.appendRow([id, asText_(p), FULL_NAME_MAP[p], String(d.lid || "").slice(0, 200), Number(d.src) || "", String(d.co || "").slice(0, 120),
+      asText_(String(d.ph || "").slice(0, 40)), kind, reason, until, now, "スキップ中", "", ""]);
+  } finally { try { lock.releaseLock(); } catch (eR) {} skipCacheClear_(); }
+  try { logAudit("スキップ", FULL_NAME_MAP[p], String(d.co || "") + "（元行 " + (Number(d.src) || "?") + "）", reason); } catch (eA) {}
+  return { ok: true, skip: { id: id, lid: String(d.lid || ""), src: Number(d.src) || 0, kind: kind, reason: reason, until: until, at: now }, now: now };
+}
+// 管理者：スキップの一覧（いま効いているもの＋直近7日に記録したもの）・戻す・NG にする
+function skipAdmin_(d) {
+  var now = new Date().getTime(), act = String(d.action || "list");
+  if (act === "list") {
+    var t = skipRows_(true), list = [], since = now - 7 * 86400000;
+    for (var i = t.rows.length - 1; i >= 0 && list.length < 400; i--) {
+      var o = skipObj_(t.rows[i], i + 2);
+      var act2 = skipActive_(o, now);
+      if (!act2 && o.at < since) continue;
+      o.active = act2;
+      list.push(o);
+    }
+    return { ok: true, list: list, now: now, kinds: SKIP_KINDS };
+  }
+  if (act === "release" || act === "ng") {
+    var id = String(d.id || "");
+    if (!id) return { ok: false, message: "ID がありません" };
+    var lock = LockService.getScriptLock();
+    try { lock.waitLock(20000); } catch (eL) { return { ok: false, code: "busy", message: "混み合っています。もう一度押してください" }; }
+    var hit = null;
+    try {
+      var t2 = skipRows_(true);
+      for (var j = 0; j < t2.rows.length; j++) {
+        if (String(t2.rows[j][0]) !== id) continue;
+        hit = skipObj_(t2.rows[j], j + 2);
+        t2.sh.getRange(j + 2, 12, 1, 3).setValues([[act === "ng" ? "NGにした" : "戻した", new Date(now), "管理者"]]);
+        break;
+      }
+    } finally { try { lock.releaseLock(); } catch (eR) {} skipCacheClear_(); }
+    if (!hit) return { ok: false, message: "記録が見つかりません（" + id + "）" };
+    if (act === "ng" && hit.ph) {
+      try {
+        var ngSheet = ensureSheet(SpreadsheetApp.openById(SHEET_ID), "NGリスト", ["登録日時", "登録者", "電話番号", "会社名", "理由", "状態"]);
+        var norm = String(hit.ph).replace(/[^\d]/g, ""), ex = ngSheet.getDataRange().getValues(), dup = false;
+        for (var k = 1; k < ex.length; k++) if (String(ex[k][2] || "").replace(/[^\d]/g, "") === norm && String(ex[k][5] || "") !== "削除") { dup = true; break; }
+        if (!dup) ngSheet.appendRow([new Date(now), "管理者（スキップの確認）", hit.ph, hit.co, "スキップの確認：" + hit.reason, "有効"]);
+      } catch (eN) {}
+    }
+    try { logAudit(act === "ng" ? "スキップ→NG" : "スキップを戻す", "管理者", hit.name + "：" + hit.co, hit.reason); } catch (eA) {}
+    return { ok: true, id: id, state: act === "ng" ? "NGにした" : "戻した" };
+  }
+  return { ok: false, message: "action が正しくありません" };
+}
+
+// ── ⑶ 時間帯ごとの接続率 ──
+//   発信システムは、自分たちの架電の記録から「時間帯ごとのつながりやすさ」を出し、つながりやすい時間にかける・不在の先は前回と違う時間にかけ直す。
+//   つながった＝アポ・再架電・断り・その他（相手が出た）／つながらない＝不在・不通
+var HOURS_DAYS = 60, HOURS_FROM = 8, HOURS_TO = 20;
+function hoursNew115_() { return { team: {}, lid: {}, since: jstKey_(new Date().getTime() - HOURS_DAYS * 86400000) }; }
+function hoursAdd115_(H, r, cols) {
+  var dk = kanriDateKey_(r[1]);
+  if (!dk || dk < H.since) return;
+  var hm = kanriHM_(r[2]);
+  if (!hm) return;
+  var h = Number(hm.slice(0, 2));
+  if (!(h >= HOURS_FROM && h <= HOURS_TO)) return;
+  var id = mapResultLabelToId(r[6]);
+  if (!id) return;
+  var conn = (id === "appo" || id === "cb" || id === "refused" || id === "other") ? 1 : 0, appo = id === "appo" ? 1 : 0;
+  var t = H.team[h] || (H.team[h] = [0, 0, 0]);
+  t[0]++; t[1] += conn; t[2] += appo;
+  var lid = cols && cols.lid >= 0 ? String(r[cols.lid] || "") : "";
+  if (lid) {
+    var L = H.lid[lid] || (H.lid[lid] = {});
+    var u = L[h] || (L[h] = [0, 0, 0]);
+    u[0]++; u[1] += conn; u[2] += appo;
+  }
+}
+// 1時間ごとの [時, 件数, つながった, アポ] の並びにする
+function hoursRows115_(m) {
+  var out = [];
+  for (var h = HOURS_FROM; h <= HOURS_TO; h++) { var v = m && m[h]; if (v && v[0]) out.push([h, v[0], v[1], v[2]]); }
+  return out;
+}
+function hoursFin115_(H) {
+  var lids = {};
+  Object.keys(H.lid).forEach(function (k) { lids[k] = hoursRows115_(H.lid[k]); });
+  return { team: hoursRows115_(H.team), lid: lids, days: HOURS_DAYS, since: H.since };
+}
+// アポインターへ：チーム全体と、その人のいまのリストの分
+function hoursFor115_(pin, b, lidHint) {
+  var hs = b && b.hours;
+  if (!hs) return null;
+  // いまのリストの ID：画面から届いた ID を使う（古い画面のときは、タブの F2 だけを読む。リスト全体は読まない）
+  var lid = String(lidHint || "").slice(0, 200);
+  if (!lid) {
+    try {
+      var nm = memberSheetName_(pin), lsh = nm ? SpreadsheetApp.openById(SHEET_ID).getSheetByName(nm) : null;
+      if (lsh && lsh.getLastRow() >= 2 && lsh.getLastColumn() >= 6) lid = String(lsh.getRange(2, 6).getValue() || "");
+    } catch (eL) {}
+  }
+  return { team: hs.team || [], list: lid && hs.lid ? (hs.lid[lid] || []) : [], lid: lid, days: hs.days, since: hs.since, at: b.at };
+}
+
+// ── ⑷ 架電ルールに足す：架電の時間帯・Zoom Phone・不在の掛け直しを前回と違う時間帯に ──
+//   架電の時間帯：発信システムは、キャンペーンごとに「かけてよい時間帯」を決め、その外では発信しない。この仕組みは、時間外に画面へ知らせる
+function callHoursNorm_(s) {
+  var out = [];
+  String(s || "").replace(/[～〜~－ー―]/g, "-").replace(/[：]/g, ":").replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+    .split(/[,、\s]+/).forEach(function (part) {
+      var m = part.match(/^(\d{1,2})(?::(\d{2}))?-(\d{1,2})(?::(\d{2}))?$/);
+      if (!m) return;
+      var a = Number(m[1]) * 60 + Number(m[2] || 0), b = Number(m[3]) * 60 + Number(m[4] || 0);
+      if (!(a >= 0 && b <= 24 * 60 && a < b)) return;
+      out.push([a, b]);
+    });
+  out.sort(function (x, y) { return x[0] - y[0]; });
+  var merged = [];
+  out.forEach(function (w) { var l = merged[merged.length - 1]; if (l && w[0] <= l[1]) l[1] = Math.max(l[1], w[1]); else merged.push([w[0], w[1]]); });
+  return merged.slice(0, 6).map(function (w) { return hmOf115_(w[0]) + "-" + hmOf115_(w[1]); }).join(",");
+}
+function hmOf115_(m) { return ("0" + Math.floor(m / 60)).slice(-2) + ":" + ("0" + (m % 60)).slice(-2); }
+
+// ── ⑸ Zoom Phone の通話履歴 ──
+//   Zoom の管理者が Zoom App Marketplace で「Server-to-Server OAuth」アプリを作り、Account ID・Client ID・Client Secret を
+//   Apps Script の「プロジェクトの設定 → スクリプト プロパティ」に ZOOM_ACCOUNT_ID・ZOOM_CLIENT_ID・ZOOM_CLIENT_SECRET として入れる。
+//   権限（スコープ）：phone:read:list_call_logs:admin（アカウントの通話履歴）。鍵は画面にもシートにも出さない
+var ZOOM_PROPS = { acct: "ZOOM_ACCOUNT_ID", id: "ZOOM_CLIENT_ID", secret: "ZOOM_CLIENT_SECRET", last: "V115_ZOOM_LAST" };
+var ZOOM_SHEET = "Zoom通話履歴";
+var ZOOM_HEADER = ["ZoomID", "通話ID", "開始", "秒", "方向", "発信元", "発信先", "結果", "接続", "発信者", "発信者メール", "取り込み日時", "架電結果の行"];
+var ZOOM_CR_COLS = ["Zoom通話秒", "Zoom結果", "ZoomID"];
+var ZOOM_MATCH_MS = 20 * 60000;     // 架電結果の時刻との差が20分以内なら、同じ電話とみなす
+function zoomCfg_() {
+  try {
+    var p = PropertiesService.getScriptProperties();
+    var a = String(p.getProperty(ZOOM_PROPS.acct) || "").trim(), i = String(p.getProperty(ZOOM_PROPS.id) || "").trim(), s = String(p.getProperty(ZOOM_PROPS.secret) || "").trim();
+    return (a && i && s) ? { acct: a, id: i, secret: s } : null;
+  } catch (e) { return null; }
+}
+function zoomToken_(cfg, force) {
+  var c = null, key = "zoom_tok_v115";
+  try { c = CacheService.getScriptCache(); if (!force) { var t = c.get(key); if (t) return t; } } catch (e) {}
+  var res = UrlFetchApp.fetch("https://zoom.us/oauth/token?grant_type=account_credentials&account_id=" + encodeURIComponent(cfg.acct), {
+    method: "post", muteHttpExceptions: true, headers: { Authorization: "Basic " + Utilities.base64Encode(cfg.id + ":" + cfg.secret) } });
+  var code = res.getResponseCode(), j = null;
+  try { j = JSON.parse(res.getContentText() || "{}"); } catch (eJ) { j = {}; }
+  if (code !== 200 || !j.access_token) throw new Error("Zoom の認証に失敗しました（" + code + "：" + String(j.reason || j.message || j.error || "").slice(0, 120) + "）。スクリプト プロパティの ID・シークレットを確かめてください");
+  var ttl = Math.max(60, Math.min(3300, (Number(j.expires_in) || 3600) - 300));
+  try { if (c) c.put(key, j.access_token, ttl); } catch (eP) {}
+  return j.access_token;
+}
+function zoomGet_(cfg, path, params) {
+  var qs = Object.keys(params || {}).filter(function (k) { return params[k] !== "" && params[k] !== null && params[k] !== undefined; })
+    .map(function (k) { return encodeURIComponent(k) + "=" + encodeURIComponent(params[k]); }).join("&");
+  var url = "https://api.zoom.us/v2" + path + (qs ? "?" + qs : "");
+  for (var tryN = 0; tryN < 2; tryN++) {
+    var tok = zoomToken_(cfg, tryN > 0);
+    var res = UrlFetchApp.fetch(url, { method: "get", muteHttpExceptions: true, headers: { Authorization: "Bearer " + tok } });
+    var code = res.getResponseCode(), txt = res.getContentText() || "{}";
+    if (code === 401 && tryN === 0) continue;                    // 認証の期限切れ：取り直して1回だけやり直す
+    var j = null;
+    try { j = JSON.parse(txt); } catch (eJ) { j = {}; }
+    if (code === 429) throw new Error("Zoom の API の回数の上限に達しました。しばらくしてからもう一度取り込みます");
+    if (code !== 200) throw new Error("Zoom の API がエラーを返しました（" + code + "：" + String(j.message || "").slice(0, 160) + "）" + (Number(j.code) === 2031 ? "。この Zoom アカウントで Zoom Phone が使えません" : ""));
+    return j;
+  }
+  throw new Error("Zoom の認証に失敗しました");
+}
+// E.164（+81…）→ 国内の番号の数字（0…）
+function zoomDomestic_(s) {
+  var t = String(s || "").replace(/[^\d+]/g, "");
+  if (t.indexOf("+81") === 0) return "0" + t.slice(3);
+  if (t.indexOf("81") === 0 && t.length >= 11 && t.length <= 12) return "0" + t.slice(2);
+  return t.replace(/\+/g, "");
+}
+// 通話履歴の1件 → そろえた形（新しい call_history と、古い call_logs の両方を読む）
+function zoomItem_(it) {
+  var start = Date.parse(it.start_time || it.date_time || "") || 0;
+  return {
+    id: String(it.call_history_uuid || it.id || it.call_id || ""), callId: String(it.call_id || ""),
+    start: start, sec: Number(it.duration) || 0, dir: String(it.direction || ""),
+    from: String(it.caller_did_number || it.caller_number || it.caller_ext_number || ""),
+    to: String(it.callee_did_number || it.callee_number || it.callee_ext_number || ""),
+    result: String(it.call_result || it.result || ""), conn: String(it.connect_type || ""),
+    caller: String(it.caller_name || ""), callerEmail: String(it.caller_email || "")
+  };
+}
+// 期間の通話履歴を取る（ページを送って最大 maxPages ページ）
+function zoomHistory_(cfg, fromKey, toKey, maxPages) {
+  var items = [], token = "", pages = 0;
+  do {
+    var j = zoomGet_(cfg, "/phone/call_history", { from: fromKey, to: toKey, page_size: 300, next_page_token: token });
+    (j.call_history || j.call_logs || []).forEach(function (it) { items.push(zoomItem_(it)); });
+    token = String(j.next_page_token || "");
+    pages++;
+  } while (token && pages < (maxPages || 20));
+  return { items: items, pages: pages, more: !!token };
+}
+// 取り込み：Zoom通話履歴シートに足し（同じ ZoomID は足さない）、架電結果の行（同じ電話番号・20分以内）に通話秒・結果を書く
+function zoomSync_(opts) {
+  opts = opts || {};
+  var cfg = zoomCfg_(), now = new Date().getTime();
+  var st = { at: now, ok: false, fetched: 0, added: 0, matched: 0, outbound: 0, message: "" };
+  if (!cfg) { st.message = "Zoom の鍵（スクリプト プロパティ）が入っていません"; zoomSaveLast_(st); return st; }
+  var days = Math.max(1, Math.min(31, Number(opts.days) || 2));
+  var fromKey = jstKey_(now - (days - 1) * 86400000), toKey = jstKey_(now);
+  try {
+    var h = zoomHistory_(cfg, fromKey, toKey, opts.maxPages || 20);
+    st.fetched = h.items.length; st.more = h.more;
+    var out = h.items.filter(function (x) { return x.id && x.start && /out/i.test(x.dir) && zoomDomestic_(x.to).length >= 9; });
+    st.outbound = out.length;
+    var ss = SpreadsheetApp.openById(SHEET_ID), zs = ensureSheet(ss, ZOOM_SHEET, ZOOM_HEADER);
+    var seen = {};
+    if (zs.getLastRow() > 1) zs.getRange(2, 1, zs.getLastRow() - 1, 1).getValues().forEach(function (r) { seen[String(r[0])] = true; });
+    var fresh = out.filter(function (x) { return !seen[x.id]; });
+    // 架電結果の行と突き合わせる（期間の行を1回だけ読む）
+    var byPh = {}, crSh = ss.getSheetByName("架電結果"), cc = null;
+    if (crSh && fresh.length) {
+      cc = ensureCols_(crSh, ZOOM_CR_COLS);
+      crScanSince_(jstKey_(now - days * 86400000), function (r, rowNo) {
+        var pk = phKey_(r[4]);
+        if (!pk) return true;
+        var ms = epochOk_(r[13]) || callMs_(kanriDateKey_(r[1]), kanriHM_(r[2]));
+        if (!ms) return true;
+        (byPh[pk] = byPh[pk] || []).push({ row: rowNo, ms: ms, taken: String(r[cc[ZOOM_CR_COLS[2]] - 1] || "") });
+        return true;
+      }, { max: 30000, grace: 200 });
+    }
+    var addRows = [], writes = [];
+    fresh.forEach(function (x) {
+      var pk = phKey_(zoomDomestic_(x.to)), cand = byPh[pk] || [], best = null;
+      var endMs = x.start + x.sec * 1000;                      // 架電結果の時刻は「結果を保存したとき」＝電話を切ったあと。Zoom の終わりの時刻と比べる
+      cand.forEach(function (c) {
+        if (c.taken) return;
+        var dlt = Math.abs(c.ms - endMs);
+        if (dlt <= ZOOM_MATCH_MS && (!best || dlt < best.d)) best = { c: c, d: dlt };
+      });
+      if (best) { best.c.taken = x.id; writes.push({ row: best.c.row, x: x }); }
+      addRows.push([x.id, x.callId, new Date(x.start), x.sec, x.dir, x.from, x.to, x.result, x.conn, x.caller, x.callerEmail, new Date(now), best ? best.c.row : ""]);
+    });
+    if (addRows.length) { gridEnsure_(zs, zs.getLastRow() + addRows.length, ZOOM_HEADER.length); zs.getRange(zs.getLastRow() + 1, 1, addRows.length, ZOOM_HEADER.length).setValues(addRows); }
+    writes.forEach(function (w) {
+      try { crSh.getRange(w.row, cc[ZOOM_CR_COLS[0]], 1, 1).setValue(w.x.sec); crSh.getRange(w.row, cc[ZOOM_CR_COLS[1]], 1, 1).setValue(w.x.result || w.x.conn); crSh.getRange(w.row, cc[ZOOM_CR_COLS[2]], 1, 1).setValue(w.x.id); } catch (eW) {}
+    });
+    st.added = addRows.length; st.matched = writes.length; st.ok = true;
+    st.message = "Zoom の通話 " + st.fetched + "件（発信 " + st.outbound + "件）を読み、新しい " + st.added + "件を取り込みました（架電結果と結び付いた " + st.matched + "件）" + (h.more ? "。通話が多く、1回で読める 6,000件を超えた分は読めていません（取り込む日数を短くしてください）" : "");
+  } catch (e) {
+    st.message = String(e && e.message || e).slice(0, 300);
+  }
+  zoomSaveLast_(st);
+  return st;
+}
+function zoomSaveLast_(st) { try { PropertiesService.getScriptProperties().setProperty(ZOOM_PROPS.last, JSON.stringify(st)); } catch (e) {} }
+function zoomLast_() { try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(ZOOM_PROPS.last) || "null"); } catch (e) { return null; } }
+function zoomTriggerOn_() { try { return ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === "zoomSyncTick"; }); } catch (e) { return false; } }
+// 時間のトリガーから（15分ごと）
+function zoomSyncTick() { try { if (zoomCfg_()) zoomSync_({ days: 1, auto: true }); } catch (e) { Logger.log("zoomSyncTick: " + e); } }
+function zoomStatus_() {
+  return { configured: !!zoomCfg_(), last: zoomLast_(), trigger: zoomTriggerOn_(), props: [ZOOM_PROPS.acct, ZOOM_PROPS.id, ZOOM_PROPS.secret], scope: "phone:read:list_call_logs:admin" };
+}
+function zoomTriggerSet_(on) {
+  var had = false;
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === "zoomSyncTick") { had = true; if (!on) ScriptApp.deleteTrigger(t); } });
+  if (on && !had) ScriptApp.newTrigger("zoomSyncTick").timeBased().everyMinutes(15).create();
+  return zoomTriggerOn_();
+}
+
+// ── 要求の入口（v115） ──
+function v115Handle_(d) {
+  switch (d.type) {
+    case "rules_set":      // v115: 架電の時間帯の書き方を先に確かめる（正しければ、v112 の処理へ進む）
+      var chw = d.rules && d.rules.callHours && d.rules.callHours.windows;
+      if (chw !== undefined && chw !== null && !callHoursNorm_(chw))
+        return jsonOut_({ status: "error", handled: true, code: "call_hours", message: "架電の時間帯の書き方が正しくありません（例：09:00-12:00,13:00-18:00）" });
+      return null;
+    case "skip_set":       // アポインター：スキップ（理由つき）
+      var r1 = skipSet_(d);
+      return jsonOut_(r1.ok ? { status: "ok", handled: true, skip: r1.skip || null, cleared: r1.cleared, now: r1.now } : { status: "error", handled: true, code: r1.code, message: r1.message });
+    case "skip_admin":     // 管理者：スキップの一覧・戻す・NG にする
+      var r2 = skipAdmin_(d);
+      return jsonOut_(r2.ok ? { status: "ok", handled: true, result: r2 } : { status: "error", handled: true, code: r2.code || "", message: r2.message });
+    case "hours_get":      // 管理者：時間帯ごとの接続率（チームとリストごと）
+      var b = prevIdxGet_(!!d.force), hs = b.hours || null, lists = [];
+      if (hs && hs.lid) Object.keys(hs.lid).forEach(function (k) {
+        var n = hs.lid[k].reduce(function (s, x) { return s + x[1]; }, 0);
+        var pj = ""; try { pj = lregProjectOf_(k) || ""; } catch (eP) {}
+        lists.push({ lid: k, project: pj, n: n, rows: hs.lid[k] });
+      });
+      lists.sort(function (x, y) { return y.n - x.n; });
+      return jsonOut_({ status: "ok", handled: true, result: { team: hs ? hs.team : [], lists: lists.slice(0, 12), days: hs ? hs.days : HOURS_DAYS, since: hs ? hs.since : "", at: b.at, scanned: b.scanned, capped: b.capped } });
+    case "zoom_status":
+      return jsonOut_({ status: "ok", handled: true, result: zoomStatus_() });
+    case "zoom_sync":
+      var zs = zoomSync_({ days: d.days });
+      return jsonOut_({ status: "ok", handled: true, result: { sync: zs, status: zoomStatus_() } });
+    case "zoom_trigger":
+      if (d.on && !zoomCfg_()) return jsonOut_({ status: "error", handled: true, code: "zoom_cfg", message: "先に Zoom の鍵（スクリプト プロパティ）を入れてください" });
+      var on = zoomTriggerSet_(!!d.on);
+      try { logAudit("Zoom の自動取り込み", "管理者", on ? "15分ごと" : "止める", ""); } catch (eA) {}
+      return jsonOut_({ status: "ok", handled: true, result: zoomStatus_() });
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// v115: エディタから実行する自己点検（ログに PASS/FAIL を出す。シートは変更しない）
+// ═══════════════════════════════════════════════════════════════════════
+function v115SelfTest() {
+  var t = [];
+  function ok(name, cond) { t.push([name, !!cond]); }
+  ok("版は v115", GAS_VERSION === "v115");
+  ok("名簿の設定に 石井和子（093）・石河巧（095）", CONFIG.ROSTER.some(function (m) { return m.pin === "093" && normName_(m.name) === "石井和子"; }) && CONFIG.ROSTER.some(function (m) { return m.pin === "095" && normName_(m.name) === "石河巧"; }));
+  var v = rosterValidateConfig_(CONFIG);
+  ok("名簿の設定に誤りがない（PIN・氏名・タブ名の重複なし）", v.ok);
+  ok("削除したアカウント（坂上 093・浜田 095）と、新しい方は別人として扱う", !acctDeletedList_().some(function (a) { return CONFIG.ROSTER.some(function (m) { return m.pin === a.pin && normName_(m.name) === normName_(a.name); }); }));
+  ok("skip_set は、管理者専用に入っていない", !ADMIN_ONLY_TYPES["skip_set"]);
+  ok("skip_admin・zoom_* ・hours_get は管理者専用", !!ADMIN_ONLY_TYPES["skip_admin"] && !!ADMIN_ONLY_TYPES["zoom_sync"] && !!ADMIN_ONLY_TYPES["zoom_status"] && !!ADMIN_ONLY_TYPES["zoom_trigger"] && !!ADMIN_ONLY_TYPES["hours_get"]);
+  var now = Date.parse("2026-11-24T15:00:00+09:00");
+  ok("スキップ：あとで＝2時間後", skipUntil_("later", now) === now + 7200000);
+  ok("スキップ：きょうはかけない＝あしたの 9:00", skipUntil_("tomorrow", now) === Date.parse("2026-11-25T09:00:00+09:00"));
+  ok("スキップ：確認＝管理者が戻すまで", skipUntil_("check", now) === 0);
+  ok("架電の時間帯の読み方", callHoursNorm_("9:30～12:00、13:00-17:30") === "09:30-12:00,13:00-17:30" && callHoursNorm_("x") === "" && callHoursNorm_("13-12") === "");
+  var rl = rulesNorm_({});
+  ok("架電ルールの初期値（時間帯・Zoom は使わない／掛け直しの時間帯は変えない）", rl.callHours.on === false && rl.zoom.on === false && rl.recall.diffHour === false && rl.order === "strict");
+  ok("E.164 → 国内の番号", zoomDomestic_("+81312345678") === "0312345678" && zoomDomestic_("+819012345678") === "09012345678");
+  var it = zoomItem_({ call_history_uuid: "u1", call_id: "c1", start_time: "2026-11-24T01:00:00Z", duration: 75, direction: "outbound", callee_did_number: "+81312345678", call_result: "answered" });
+  ok("Zoom の通話履歴の1件を読む", it.id === "u1" && it.sec === 75 && it.start === Date.parse("2026-11-24T01:00:00Z") && it.to === "+81312345678");
+  var H = { team: {}, lid: {}, since: "2026-01-01" };
+  hoursAdd115_(H, ["", "2026/11/20", "10:15", "", "", "", "断り"], { lid: -1 });
+  hoursAdd115_(H, ["", "2026/11/20", "10:40", "", "", "", "不在"], { lid: -1 });
+  hoursAdd115_(H, ["", "2026/11/20", "14:05", "", "", "", "アポ獲得"], { lid: -1 });
+  var hr = hoursRows115_(H.team);
+  ok("時間帯ごとの接続率を数える", hr.length === 2 && hr[0][0] === 10 && hr[0][1] === 2 && hr[0][2] === 1 && hr[1][3] === 1);
+  var pass = t.filter(function (x) { return x[1]; }).length;
+  t.forEach(function (x) { Logger.log((x[1] ? "PASS " : "FAIL ") + x[0]); });
+  Logger.log("v115 自己点検: " + pass + " / " + t.length);
   return { pass: pass, total: t.length, failed: t.filter(function (x) { return !x[1]; }).map(function (x) { return x[0]; }) };
 }

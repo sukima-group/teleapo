@@ -1,5 +1,11 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v115
+// 川嶋メソッド テレアポ管理 — GAS完全版 v116
+// v116: ⑴ アカウントの追加：阿部竜彦（097）。PIN 097 は以前の方（藪内亜希）と同じだが、名前で区別するため前の方のデータは付かない。
+//       ⑵ 再架電の約束（コールバック）の管理。「再架電予定」の右に ID・PIN・予定（時刻）・完了日時・完了のしかた の5列。
+//          架電の結果が届いたら、その人・その番号の前の予定を「完了」。新しい予定を入れたら前の予定は「完了（かけた）」か「置き換え」。
+//          予定から7日たってもかけていない予定は「期限切れ」。同期（fetch_state）は予定ごとの ID・時刻・状態を返す（cbV:116）。
+//          管理者：cb_admin（人ごとの未対応・期限超過・時間どおりの割合・期限超過の一覧・古い予定の整理）。
+//          （本番では完了がサーバーに届かず、全員の予定が「未対応」のまま増えていた。片山さん 549件など）
 // v115: ⑴ アカウントの追加：石井和子（093）・石河巧（095）。PIN は以前の方（坂上 093・浜田 095）と同じだが、v108 から名前で区別しているため、前の方のデータは付かない。
 //       ⑵ スキップに理由と戻す時刻（あとで＝2時間後／きょうはかけない＝あしたの朝／番号・会社が違う＝管理者が確認）。「スキップ記録」シートに残し、同期で返す。
 //       ⑶ 時間帯ごとの接続率（直近60日・全員の架電結果）。前回の結果の索引と同じ読み方の中で数え、prev_get・hours_get で返す。
@@ -142,7 +148,9 @@ var CONFIG = {
     { pin: "114", name: "片山佳代", sh: "片山", email: "katayama.sukimagroup@gmail.com", folderId: "" },
     // v115: 追加。PIN 093・095 は以前の方（坂上順子・浜田敏幸。v110 で削除）と同じだが、名前で区別するため前の方のデータは付かない
     { pin: "093", name: "石井和子", sh: "石井", email: "kazuo.sukimagroup@gmail.com", folderId: "" },
-    { pin: "095", name: "石河巧", sh: "石河", email: "", folderId: "" }
+    { pin: "095", name: "石河巧", sh: "石河", email: "", folderId: "" },
+    // v116: 追加。PIN 097 は以前の方（藪内亜希）と同じだが、名前で区別するため前の方のデータは付かない
+    { pin: "097", name: "阿部竜彦", sh: "阿部", email: "tatsuhiko.sukimagroup@gmail.com", folderId: "" }
   ],
   // v110: 削除したアカウント。ここに書いた「PIN と氏名の両方が一致する」名簿・暗証番号・各設定の行を、デプロイ後に自動で削除する
   //       （名簿の正は「アポインター名簿」シートのため、上の ROSTER から外すだけでは消えない）。架電結果・勤怠などの業務の記録は残す
@@ -237,7 +245,7 @@ var CONFIG = {
 var SHEET_ID = CONFIG.SHEET_ID;
 var ADMIN_SHEET_ID = CONFIG.ADMIN_SHEET_ID;
 // v95: この GAS がどの版で、どの機能に対応しているか
-var GAS_VERSION = "v115";
+var GAS_VERSION = "v116";
 var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
   "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run",
   "ext_prepare","pl_dashboard","pl_ledger","pl_projects","pl_bank","pl_quality","pl_bank_drive","jp_holidays",   // v105-107: 収支・損益・銀行明細
@@ -248,7 +256,8 @@ var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_s
   "ext_one_row","company_calendar","sv_absence","dial_rules","recall_server","pin_rows",   // v112
   "recall_async",   // v113
   "prev_get", "order_strict", "filled_pick",   // v114
-  "roster_v115", "skip_reason", "call_hours", "hours_stats", "zoom_phone"];   // v115
+  "roster_v115", "skip_reason", "call_hours", "hours_stats", "zoom_phone",   // v115
+  "roster_v116", "cb_v116"];   // v116
 // 名簿（稼働中）→ PIN・氏名・姓・メール。起動時に「アポインター名簿」シートの内容で置き換わる（rosterApply_）
 var PIN_MAP = {}, FULL_NAME_MAP = {}, STAFF_EMAILS = {};
 (function () {
@@ -516,6 +525,9 @@ function doPostRoute_(d) {
     // v112: 会社スケジュール・SV不在・架電ルール・設定シートの整理（連携の操作の前には、連携設定の余分な行を片付ける）
     // v114: 前回の結果（prev_get）
     // v115: スキップの理由・時間帯の接続率・Zoom Phone
+    // v116: 再架電の約束（callback・cb_done・cb_admin。架電の結果が届いたら前の予定を完了に）
+    var v116Res = v116Handle_(d);
+    if (v116Res) return v116Res;
     var v115Res = v115Handle_(d);
     if (v115Res) return v115Res;
     var v114Res = v114Handle_(d);
@@ -664,27 +676,8 @@ function doPostRoute_(d) {
         }
       } catch (e) { result.appos = []; result.apposError = String(e); }
 
-      // 5. 再架電 (cb)
-      try {
-        var cbSh = ss2.getSheetByName("再架電予定");
-        result.cb = [];
-        if (cbSh && cbSh.getLastRow() > 1) {
-          var cbRows = cbSh.getDataRange().getValues();
-          for (var i = 1; i < cbRows.length; i++) {
-            if (nameMatches(cbRows[i][1])) {
-              result.cb.push({
-                regAt: formatDateKey(cbRows[i][0]),
-                schedule: cbRows[i][2] || "",
-                co: cbRows[i][3] || "",
-                ph: cbRows[i][4] || "",
-                pe: cbRows[i][5] || "",
-                memo: cbRows[i][6] || "",
-                done: String(cbRows[i][7]) === "完了"
-              });
-            }
-          }
-        }
-      } catch (e) { result.cb = []; result.cbError = String(e); }
+      // 5. 再架電 (cb)   v116: 予定ごとの ID・予定の時刻・状態（完了・置き換え・期限切れ）を返す。未対応の分と、直近14日に終わった分
+      try { result.cb = cbForClient116_(d.pin); result.cbV = 116; } catch (e) { result.cb = []; result.cbError = String(e); }
 
       // v28: NGリスト (全アポインター共有) - 最新2000件
       try {
@@ -11317,7 +11310,9 @@ var ADMIN_ONLY_TYPES = (function () {
    // v112
    "cal_list cal_save cal_cancel cal_shift_fix rules_get rules_set pin_rows_audit pin_rows_repair " +
    // v115
-   "skip_admin hours_get zoom_status zoom_sync zoom_trigger ").split(" ").forEach(function (t) { if (t) o[t] = true; });
+   "skip_admin hours_get zoom_status zoom_sync zoom_trigger " +
+   // v116
+   "cb_admin ").split(" ").forEach(function (t) { if (t) o[t] = true; });
   return o;
 })();
 
@@ -16706,6 +16701,9 @@ function v112SetupCheck() {
   Logger.log("⑧ v115 の自己点検（アカウント・スキップ・時間帯・Zoom）: " + (t115.pass === t115.total ? "すべて合格" : "不合格 " + t115.failed.join("・")));
   try { var r115 = rosterLoad_(true); Logger.log("⑨ 名簿（稼働中）: " + r115.active.map(function (m) { return m.name + "（" + m.pin + "）"; }).join("・")); } catch (eR) {}
   Logger.log("⑩ Zoom Phone の通話履歴: " + (zoomCfg_() ? "鍵あり（管理者の画面から取り込めます）" : "鍵なし（使うときは、スクリプト プロパティに ZOOM_ACCOUNT_ID・ZOOM_CLIENT_ID・ZOOM_CLIENT_SECRET を入れる）"));
+  var t116 = v116SelfTest();
+  Logger.log("⑪ v116 の自己点検（アカウント・再架電の約束）: " + (t116.pass === t116.total ? "すべて合格" : "不合格 " + t116.failed.join("・")));
+  try { var c116 = cbSummary116_(); Logger.log("⑫ 再架電の予定: 全部 " + c116.rows + "行・未対応 " + c116.open + "件（うち古い形 " + c116.legacyOpen + "件・予定から7日たった " + c116.expired + "件）。管理者の画面「📞 再架電の約束」の「古い予定の整理」で片付けられます"); } catch (eC) {}
 }
 
 
@@ -17019,7 +17017,7 @@ function v114Handle_(d) {
 function v114SelfTest() {
   var t = [];
   function ok(name, cond) { t.push([name, !!cond]); }
-  ok("版は v114", GAS_VERSION === "v114");
+  ok("版は v114 以降", Number(String(GAS_VERSION).replace(/\D/g, "")) >= 114);   // v116: 新しい版でも合格
   ok("prev_get は、管理者専用に入っていない", !ADMIN_ONLY_TYPES["prev_get"]);
   ok("結果の値をそろえる", prevResKey_("  不要・NG　 ") === "不要・NG");
   ok("日付の表示", prevDateText_("2026/11/5(木)") === "2026/11/05" && prevDateText_("") === "");
@@ -17454,7 +17452,7 @@ function v115Handle_(d) {
 function v115SelfTest() {
   var t = [];
   function ok(name, cond) { t.push([name, !!cond]); }
-  ok("版は v115", GAS_VERSION === "v115");
+  ok("版は v115 以降", Number(String(GAS_VERSION).replace(/\D/g, "")) >= 115);   // v116: 新しい版でも合格
   ok("名簿の設定に 石井和子（093）・石河巧（095）", CONFIG.ROSTER.some(function (m) { return m.pin === "093" && normName_(m.name) === "石井和子"; }) && CONFIG.ROSTER.some(function (m) { return m.pin === "095" && normName_(m.name) === "石河巧"; }));
   var v = rosterValidateConfig_(CONFIG);
   ok("名簿の設定に誤りがない（PIN・氏名・タブ名の重複なし）", v.ok);
@@ -17481,4 +17479,401 @@ function v115SelfTest() {
   t.forEach(function (x) { Logger.log((x[1] ? "PASS " : "FAIL ") + x[0]); });
   Logger.log("v115 自己点検: " + pass + " / " + t.length);
   return { pass: pass, total: t.length, failed: t.filter(function (x) { return !x[1]; }).map(function (x) { return x[0]; }) };
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// v116: ⑴ アカウントの追加：阿部竜彦（097）
+//       ⑵ 再架電の約束（コールバック）の管理
+//          本番の「再架電予定」は、完了がサーバーに届かず、全員の予定が「未対応」のまま増えていた（片山さん 549件など）。
+//          ・予定ごとに ID・PIN・予定の時刻（ミリ秒）を持つ（右に5列：ID・PIN・予定（時刻）・完了日時・完了のしかた）
+//          ・架電の結果が届いたら、その人・その番号の前の予定を「完了（架電：結果）」にする
+//          ・新しい予定を入れたら、同じ番号の前の予定は「完了（かけた）」か「置き換え」にする
+//          ・予定から7日たってもかけていない予定は「期限切れ」
+//          ・管理者：人ごとの未対応・期限超過・時間どおりにかけた割合、期限超過の一覧、古い予定の整理
+// ══════════════════════════════════════════════════════════════════════
+var CB_SHEET116 = "再架電予定";
+var CB_HEAD116 = ["登録日時", "名前", "再架電予定日時", "会社名", "電話番号", "担当者", "メモ", "状態"];
+var CB_COLS116 = ["ID", "PIN", "予定（時刻）", "完了日時", "完了のしかた"];
+var CB_EXPIRE_DAYS116 = 7;                                   // 予定から7日たってもかけていない予定は「期限切れ」
+var CB_EARLY_MS116 = 15 * 60000, CB_LATE_MS116 = 60 * 60000;  // 時間どおり＝予定の15分前〜60分後
+var CB_MIN_GAP_MS116 = 180000;                               // 登録から3分以内に届いた結果では完了にしない（その予定を入れた通話の結果）
+var CB_IDX_KEY116 = "cb116_open_v1";
+
+function cbSheet116_(noCreate) {
+  var ss = SpreadsheetApp.openById(SHEET_ID), sh = ss.getSheetByName(CB_SHEET116);
+  if (!sh && !noCreate) sh = ensureSheet(ss, CB_SHEET116, CB_HEAD116);
+  return sh || null;
+}
+// 予定の時刻（ミリ秒）と「時間未定」か。新しい行は「予定（時刻）」の列。
+// 古い行は「再架電予定日時」（日時のセル、または「11/24 17:00」「11/24 時間未定」の文字。年は登録の年。12月に入れた「1/5」は次の年）
+function cbDue116_(cellC, cellK, regMs) {
+  var noTime = /時間未定/.test(String(cellC == null ? "" : cellC));
+  var k = Number(cellK) || 0;
+  if (k > 1.4e12) return { due: k, noTime: noTime };
+  if (cellC instanceof Date && !isNaN(cellC.getTime())) return { due: cellC.getTime(), noTime: noTime };
+  var s = String(cellC == null ? "" : cellC).trim();
+  var m = s.match(/(?:(\d{4})[\/\-])?(\d{1,2})[\/\-](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (m) {
+    var base = regMs || new Date().getTime();
+    var y = m[1] ? Number(m[1]) : Number(Utilities.formatDate(new Date(base), "Asia/Tokyo", "yyyy"));
+    var hh = m[4] !== undefined ? Number(m[4]) : 18, mm = m[5] !== undefined ? Number(m[5]) : 0;
+    var t = Date.UTC(y, Number(m[2]) - 1, Number(m[3]), hh - 9, mm);
+    if (!m[1] && regMs && t < regMs - 180 * 86400000) t = Date.UTC(y + 1, Number(m[2]) - 1, Number(m[3]), hh - 9, mm);
+    return { due: t, noTime: noTime || m[4] === undefined };
+  }
+  return { due: regMs || 0, noTime: true };
+}
+function cbObj116_(r, rowNo, C) {
+  var at = function (name) { var c = C && C[name]; return c ? r[c - 1] : ""; };
+  var reg = (r[0] instanceof Date) ? r[0].getTime() : (Date.parse(String(r[0] == null ? "" : r[0])) || 0);
+  var dd = cbDue116_(r[2], at("予定（時刻）"), reg), dn = at("完了日時");
+  return {
+    row: rowNo, id: String(at("ID") == null ? "" : at("ID")).trim() || ("L" + rowNo), reg: reg,
+    name: String(r[1] == null ? "" : r[1]).trim(), pin: rosterNormPin_(at("PIN")) || "",
+    due: dd.due, noTime: dd.noTime,
+    co: String(r[3] == null ? "" : r[3]), ph: String(r[4] == null ? "" : r[4]), pe: String(r[5] == null ? "" : r[5]), memo: String(r[6] == null ? "" : r[6]),
+    state: String(r[7] == null ? "" : r[7]).trim() || "未対応",
+    doneAt: (dn instanceof Date) ? dn.getTime() : (Number(dn) || 0), doneHow: String(at("完了のしかた") == null ? "" : at("完了のしかた"))
+  };
+}
+// シートを読む（列が無ければ右に足す）
+function cbRead116_(noCreate) {
+  var sh = cbSheet116_(noCreate);
+  if (!sh) return { sh: null, C: null, rows: [], width: 8 };
+  var C = ensureCols_(sh, CB_COLS116);
+  var width = Math.max(8, Math.max.apply(null, CB_COLS116.map(function (n) { return C[n]; })));
+  var last = sh.getLastRow();
+  if (last < 2) return { sh: sh, C: C, rows: [], width: width };
+  var vals = sh.getRange(2, 1, last - 1, width).getValues();
+  return { sh: sh, C: C, rows: vals.map(function (r, i) { return cbObj116_(r, i + 2, C); }), width: width };
+}
+// いまの状態（未対応のまま予定から7日たったら「期限切れ」）
+function cbEff116_(o, now) {
+  if (o.state && o.state !== "未対応") return o.state;
+  if (o.due && o.due + CB_EXPIRE_DAYS116 * 86400000 < now) return "期限切れ";
+  return "未対応";
+}
+// 端末で使う数の ID（端末が入れた予定は「CB＋ミリ秒」なので、端末の ID と同じ数になる。古い行は「−行番号」）
+function cbNumId116_(id) {
+  var m = /^CB(\d{12,13})/.exec(id); if (m) return Number(m[1]);
+  var l = /^L(\d+)$/.exec(id); if (l) return -Number(l[1]);
+  var h = 0; for (var i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 1000000007;
+  return -(1000000000 + h);
+}
+function cbDisp116_(due, noTime) {
+  if (!due) return "";
+  return Utilities.formatDate(new Date(due), "Asia/Tokyo", "M/d") + (noTime ? " 時間未定" : " " + jstHm_(due));
+}
+function cbClient116_(o, now) {
+  var eff = cbEff116_(o, now);
+  return {
+    id: cbNumId116_(o.id), sid: o.id, reg: o.reg, regAt: o.reg ? jstKey_(o.reg) : "",
+    at: o.due ? new Date(o.due).toISOString() : "", due: o.due || 0, noTime: !!o.noTime, schedule: cbDisp116_(o.due, o.noTime),
+    co: o.co, ph: o.ph, pe: o.pe, memo: o.memo, done: eff !== "未対応", state: eff,
+    doneAt: o.doneAt || (eff === "期限切れ" && o.due ? o.due + CB_EXPIRE_DAYS116 * 86400000 : 0),
+    doneHow: o.doneHow || (eff === "期限切れ" ? "予定から" + CB_EXPIRE_DAYS116 + "日たってもかけていない" : "")
+  };
+}
+function cbWrite116_(sh, C, rowNo, st, atMs, how) {
+  sh.getRange(rowNo, 8).setValue(st);
+  sh.getRange(rowNo, C["完了日時"]).setValue(atMs ? new Date(atMs) : "");
+  sh.getRange(rowNo, C["完了のしかた"]).setValue(how || "");
+}
+// 同期で返す：その人の未対応の予定（期限の近い順・最大300）と、直近14日の完了・置き換え・期限切れ（最大100）
+function cbForClient116_(pin) {
+  var p = rosterNormPin_(pin), now = new Date().getTime(), t = cbRead116_(true), resolve = liveResolver_(), open = [], other = [];
+  t.rows.forEach(function (o) {
+    if (resolve(o.name, o.pin) !== p) return;
+    var eff = cbEff116_(o, now);
+    if (eff === "未対応") open.push(o);
+    else {
+      var when = o.doneAt || (o.due ? o.due + CB_EXPIRE_DAYS116 * 86400000 : 0) || o.reg;
+      if (when > now - 14 * 86400000) other.push(o);
+    }
+  });
+  open.sort(function (a, b) { return (a.due || 0) - (b.due || 0); });
+  other.sort(function (a, b) { return (b.doneAt || b.due || 0) - (a.doneAt || a.due || 0); });
+  return open.slice(0, 300).concat(other.slice(0, 100)).map(function (o) { return cbClient116_(o, now); });
+}
+// 未対応の予定だけの索引 { 電話番号のキー: [{row, id, reg, own}] }（10分。書いたら消す）。架電の結果が届くたびに使う
+function cbIdx116_() {
+  try { var s = cacheGetBig_(CB_IDX_KEY116); if (s) return JSON.parse(s); } catch (e) {}
+  var t = cbRead116_(true), now = new Date().getTime(), resolve = liveResolver_(), idx = {};
+  t.rows.forEach(function (o) {
+    if (cbEff116_(o, now) !== "未対応") return;
+    var pk = phKey_(o.ph); if (!pk) return;
+    (idx[pk] = idx[pk] || []).push({ row: o.row, id: o.id, reg: o.reg, own: resolve(o.name, o.pin) });
+  });
+  try { cachePutBig_(CB_IDX_KEY116, JSON.stringify(idx), 600); } catch (e2) {}
+  return idx;
+}
+function cbIdxClear116_() {
+  try {
+    var c = CacheService.getScriptCache(), n = Number(c.get(CB_IDX_KEY116)) || 0, ks = [CB_IDX_KEY116];
+    for (var i = 0; i < n; i++) ks.push(CB_IDX_KEY116 + "_" + i);
+    c.removeAll(ks);
+  } catch (e) {}
+}
+// 予定を入れる（type:"callback"）。PIN の無い古い画面からの要求は、これまでの処理に任せる（null）
+function cbAdd116_(d) {
+  var p = rosterNormPin_(d.pin);
+  if (!p || !FULL_NAME_MAP[p]) return null;
+  var now = new Date().getTime();
+  var noTime = d.noTime === true || /時間未定/.test(String(d.scheduledAt || ""));
+  var due = Number(d.dueAt) || 0;
+  if (!(due > 1.4e12)) due = cbDue116_(String(d.scheduledAt || ""), "", now).due || now;
+  var id = String(d.cbId || "").replace(/[^\w\-]/g, "").slice(0, 40) || ("CB" + now + String(100 + Math.floor(Math.random() * 900)));
+  var callAt = Number(d.callAt) || 0, pk = phKey_(d.phone);
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(20000); } catch (eL) { return { ok: false, code: "busy", message: "混み合っています。もう一度送ります" }; }
+  var res = null;
+  try {
+    var t = cbRead116_(false), sh = t.sh, C = t.C, resolve = liveResolver_();
+    for (var i = 0; i < t.rows.length; i++) {
+      if (t.rows[i].id !== id) continue;
+      if (!pk || phKey_(t.rows[i].ph) === pk) { res = { ok: true, dup: true, cb: cbClient116_(t.rows[i], now), closed: 0 }; break; }   // 送り直し
+      id = id + "-" + String(100 + Math.floor(Math.random() * 900));                                                                  // 別の会社で同じ ID（時計のずれなど）：ずらす
+      break;
+    }
+    if (!res) {
+      // 同じ人・同じ番号の未対応の予定：この通話の前に入れた予定は「完了（かけた）」、通話の時刻が分からないときは「置き換え」
+      var ch = [];
+      if (pk) t.rows.forEach(function (o) {
+        if (cbEff116_(o, now) !== "未対応" || phKey_(o.ph) !== pk || resolve(o.name, o.pin) !== p) return;
+        if (callAt && o.reg < callAt) ch.push({ o: o, st: "完了", how: "架電：再架電（予定を変更）" });
+        else ch.push({ o: o, st: "置き換え", how: "新しい予定に置き換え" });
+      });
+      ch.forEach(function (c) { cbWrite116_(sh, C, c.o.row, c.st, now, c.how); });
+      var width = t.width, row = [];
+      for (var k = 0; k < width; k++) row.push("");
+      row[0] = new Date(now); row[1] = FULL_NAME_MAP[p];
+      row[2] = noTime ? (Utilities.formatDate(new Date(due), "Asia/Tokyo", "M/d") + " 時間未定") : new Date(due);
+      row[3] = String(d.company || "").slice(0, 120); row[4] = asText_(String(d.phone || "").slice(0, 40));
+      row[5] = String(d.person || "").slice(0, 60); row[6] = String(d.memo || "").slice(0, 300); row[7] = "未対応";
+      row[C["ID"] - 1] = id; row[C["PIN"] - 1] = asText_(p); row[C["予定（時刻）"] - 1] = due;
+      var rowNo = sh.getLastRow() + 1;
+      gridEnsure_(sh, rowNo, width);
+      sh.getRange(rowNo, 1, 1, width).setValues([row]);
+      res = { ok: true, closed: ch.length,
+        cb: cbClient116_({ row: rowNo, id: id, reg: now, name: FULL_NAME_MAP[p], pin: p, due: due, noTime: noTime, co: row[3], ph: String(d.phone || ""), pe: row[5], memo: row[6], state: "未対応", doneAt: 0, doneHow: "" }, now) };
+    }
+  } finally { try { lock.releaseLock(); } catch (eR) {} cbIdxClear116_(); }
+  return res;
+}
+// 架電の結果が届いたら：その人・その番号の、通話の前に入れた未対応の予定を「完了（架電：結果）」にする
+//   callAt（発信した時刻）が無い古い画面は、登録から5分より前の予定だけ
+function cbAutoDone116_(d) {
+  var p = rosterNormPin_(d.pin);
+  if (!p || !FULL_NAME_MAP[p]) return 0;
+  var pk = phKey_(d.phone);
+  if (!pk) return 0;
+  var list = cbIdx116_()[pk];
+  if (!list || !list.length) return 0;
+  var now = new Date().getTime(), callAt = Number(d.callAt) || 0;
+  var hit = list.filter(function (x) { return x.own === p && now - x.reg > CB_MIN_GAP_MS116 && (callAt ? x.reg < callAt : now - x.reg > 300000); });
+  if (!hit.length) return 0;
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(20000); } catch (eL) { return 0; }
+  var n = 0;
+  try {
+    var sh = cbSheet116_(true);
+    if (!sh) return 0;
+    var C = ensureCols_(sh, CB_COLS116), how = "架電：" + (String(d.result || "").replace(/^[^぀-ヿ一-鿿]+/, "").slice(0, 20) || "結果");
+    hit.forEach(function (x) {
+      var st = String(sh.getRange(x.row, 8).getValue() || "").trim() || "未対応";
+      var idCell = String(sh.getRange(x.row, C["ID"]).getValue() || "").trim();
+      if (st !== "未対応" || (idCell || ("L" + x.row)) !== x.id) return;     // もう変わっている・行がずれた
+      cbWrite116_(sh, C, x.row, "完了", now, how); n++;
+    });
+  } finally { try { lock.releaseLock(); } catch (eR) {} if (n) cbIdxClear116_(); }
+  return n;
+}
+// 「✓ 完了にする」（type:"cb_done"）
+function cbDone116_(d) {
+  var p = rosterNormPin_(d.pin);
+  if (!p || !FULL_NAME_MAP[p]) return { ok: false, code: "pin", message: "PIN を確認できません" };
+  var sid = String(d.sid || d.id || ""), reg = Number(d.reg) || 0, now = new Date().getTime();
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(20000); } catch (eL) { return { ok: false, code: "busy", message: "混み合っています。もう一度送ります" }; }
+  try {
+    var t = cbRead116_(true);
+    if (!t.sh) return { ok: false, code: "notfound", message: "再架電の予定が見つかりません" };
+    var resolve = liveResolver_(), hit = null;
+    t.rows.forEach(function (o) { if (!hit && sid && o.id === sid && resolve(o.name, o.pin) === p) hit = o; });
+    if (!hit && d.ph) {   // ID の分からない予定（古い端末で入れた予定）：同じ人・同じ番号・登録の時刻が近い未対応の予定
+      var pk = phKey_(d.ph);
+      t.rows.forEach(function (o) { if (!hit && pk && phKey_(o.ph) === pk && resolve(o.name, o.pin) === p && o.state === "未対応" && (!reg || Math.abs(o.reg - reg) < 120000)) hit = o; });
+    }
+    if (!hit) return { ok: false, code: "notfound", message: "再架電の予定が見つかりません（同期してから、もう一度押してください）" };
+    if (hit.id.charAt(0) === "L" && reg && Math.abs(hit.reg - reg) > 5000) return { ok: false, code: "moved", message: "予定の行が動いています。同期してから、もう一度押してください" };
+    if (hit.state === "未対応") {
+      cbWrite116_(t.sh, t.C, hit.row, "完了", now, "手で完了");
+      hit.state = "完了"; hit.doneAt = now; hit.doneHow = "手で完了";
+    }
+    return { ok: true, cb: cbClient116_(hit, now) };
+  } finally { try { lock.releaseLock(); } catch (eR) {} cbIdxClear116_(); }
+}
+// 予定の結果の種類（直近30日の数え方）：時間どおり・遅れて・早めに（架電で完了）／手で完了／置き換え／期限切れ（かけていない）
+function cbKind116_(o, eff) {
+  if (eff === "置き換え") return "replaced";
+  if (eff === "期限切れ") return "missed";
+  if (eff !== "完了") return "";                    // まだ未対応（期限内）は数えない
+  var t = o.doneAt || 0;
+  if (!/^架電/.test(o.doneHow || "") || !t) return "manual";
+  if (o.noTime) return jstKey_(t) === jstKey_(o.due) ? "onTime" : (t < o.due ? "early" : "late");
+  if (t < o.due - CB_EARLY_MS116) return "early";
+  if (t > o.due + CB_LATE_MS116) return "late";
+  return "onTime";
+}
+// 管理者（type:"cb_admin"）：list（人ごとの数・期限超過の一覧）／clean（古い予定の整理。dry で数えるだけ）
+function cbAdmin116_(d) {
+  var act = String(d.action || "list"), now = new Date().getTime();
+  if (act === "clean") return cbClean116_(d.dry !== false);
+  if (act !== "list") return { ok: false, message: "action が正しくありません" };
+  var t = cbRead116_(true), resolve = liveResolver_(), per = {}, over = [], since = now - 30 * 86400000, open = 0, legacyOpen = 0;
+  Object.keys(FULL_NAME_MAP).forEach(function (p) {
+    per[p] = { pin: p, name: FULL_NAME_MAP[p], open: 0, overdue: 0, d30: { due: 0, onTime: 0, late: 0, early: 0, manual: 0, replaced: 0, missed: 0 } };
+  });
+  t.rows.forEach(function (o) {
+    var eff = cbEff116_(o, now);
+    if (o.state === "未対応") { open++; if (o.id.charAt(0) === "L") legacyOpen++; }
+    var a = per[resolve(o.name, o.pin)];
+    if (!a) return;
+    if (eff === "未対応") {
+      a.open++;
+      if (o.due && o.due < now) { a.overdue++; over.push({ pin: a.pin, name: a.name, co: o.co, ph: o.ph, due: o.due, noTime: o.noTime, memo: String(o.memo || "").slice(0, 60), sid: o.id }); }
+    }
+    if (o.due >= since && o.due <= now) { var k = cbKind116_(o, eff); if (k) { a.d30.due++; a.d30[k]++; } }
+  });
+  over.sort(function (a, b) { return a.due - b.due; });
+  var agents = Object.keys(per).map(function (p) { return per[p]; }).filter(function (a) { return a.open || a.d30.due; });
+  return { ok: true, now: now, agents: agents, overdue: over.slice(0, 50), overdueN: over.length, open: open, legacyOpen: legacyOpen, rows: t.rows.length, expireDays: CB_EXPIRE_DAYS116 };
+}
+// 古い予定の整理（管理者）。行は消さず、「状態」「完了日時」「完了のしかた」を書く。
+//   ① 予定を入れたあと（5分より後）に、同じ人が同じ番号へかけた記録が「架電結果」にある → 完了（架電：結果・その時刻）
+//   ② 同じ人・同じ番号で、まだ残っている予定が2件以上 → いちばん新しい予定を残し、ほかは「置き換え」
+//   ③ 予定から7日たってもかけていない → 期限切れ
+//   架電結果を読むあいだは鍵を使わない（ほかの人の保存を止めない）。書くときだけ鍵を使い、まだ「未対応」の行だけを書く
+function cbClean116_(dry) {
+  var now = new Date().getTime(), t = cbRead116_(true);
+  if (!t.sh || !t.rows.length) return { ok: true, dry: dry, open: 0, done: 0, replaced: 0, expired: 0, remain: 0, scanned: 0 };
+  var resolve = liveResolver_(), open = [], byPh = {}, minReg = now;
+  t.rows.forEach(function (o) {
+    if (o.state !== "未対応") return;
+    o.own = resolve(o.name, o.pin);
+    var pk = phKey_(o.ph);
+    open.push(o);
+    if (pk && o.own) { (byPh[pk] = byPh[pk] || []).push(o); if (o.reg && o.reg < minReg) minReg = o.reg; }
+  });
+  var scanned = 0;
+  if (Object.keys(byPh).length) {
+    crScanSince_(jstKey_(Math.max(minReg, now - 400 * 86400000)), function (r, rowNo, cols) {
+      scanned++;
+      var list = byPh[phKey_(r[4])];
+      if (!list) return true;
+      var tm = epochOk_(r[13]) || callMs_(kanriDateKey_(r[1]), kanriHM_(r[2]));
+      if (!tm) return true;
+      var who = resolve(String(r[0] == null ? "" : r[0]), cols && cols.pin >= 0 ? r[cols.pin] : "");
+      list.forEach(function (o) {
+        if (o.own !== who || tm <= o.reg + 300000) return;     // 予定を入れた通話そのもの（登録から5分以内）は数えない
+        if (!o.hitAt || tm < o.hitAt) { o.hitAt = tm; o.hitRes = String(r[6] == null ? "" : r[6]).replace(/^[^぀-ヿ一-鿿]+/, "").slice(0, 20); }
+      });
+      return true;
+    }, { max: 80000, grace: 1500 });
+  }
+  var plan = [];
+  open.forEach(function (o) { if (o.hitAt) plan.push({ o: o, st: "完了", at: o.hitAt, how: "架電：" + (o.hitRes || "結果") + "（あとから確認）" }); });
+  var groups = {};
+  open.forEach(function (o) { if (o.hitAt) return; var k = (o.own || ("?" + o.name)) + "|" + phKey_(o.ph); (groups[k] = groups[k] || []).push(o); });
+  Object.keys(groups).forEach(function (k) {
+    var g = groups[k];
+    if (g.length < 2 || !phKey_(g[0].ph)) return;
+    g.sort(function (a, b) { return b.reg - a.reg; });
+    for (var i = 1; i < g.length; i++) { g[i].rep = true; plan.push({ o: g[i], st: "置き換え", at: g[0].reg, how: "新しい予定に置き換え（あとから確認）" }); }
+  });
+  open.forEach(function (o) {
+    if (o.hitAt || o.rep) return;
+    if (o.due && o.due + CB_EXPIRE_DAYS116 * 86400000 < now) plan.push({ o: o, st: "期限切れ", at: o.due + CB_EXPIRE_DAYS116 * 86400000, how: "予定から" + CB_EXPIRE_DAYS116 + "日たってもかけていない（あとから確認）" });
+  });
+  var cnt = { done: 0, replaced: 0, expired: 0 };
+  plan.forEach(function (x) { if (x.st === "完了") cnt.done++; else if (x.st === "置き換え") cnt.replaced++; else cnt.expired++; });
+  var written = 0;
+  if (!dry && plan.length) {
+    var lock = LockService.getScriptLock();
+    try { lock.waitLock(30000); } catch (eL) { return { ok: false, code: "busy", message: "混み合っています。少し待ってから、もう一度押してください" }; }
+    try {
+      var sh = t.sh, C = t.C, n = Math.min(sh.getLastRow(), t.rows.length + 1) - 1;
+      var A = sh.getRange(2, 1, n, 1).getValues(), H = sh.getRange(2, 8, n, 1).getValues();
+      var L = sh.getRange(2, C["完了日時"], n, 1).getValues(), M = sh.getRange(2, C["完了のしかた"], n, 1).getValues();
+      plan.forEach(function (x) {
+        var i = x.o.row - 2;
+        if (i < 0 || i >= n) return;
+        if ((String(H[i][0] == null ? "" : H[i][0]).trim() || "未対応") !== "未対応") return;     // 読んだあとで変わった
+        var reg = (A[i][0] instanceof Date) ? A[i][0].getTime() : (Date.parse(String(A[i][0] || "")) || 0);
+        if (Math.abs(reg - x.o.reg) > 2000) return;                                             // 行がずれた
+        H[i][0] = x.st; L[i][0] = new Date(x.at); M[i][0] = x.how; written++;
+      });
+      sh.getRange(2, 8, n, 1).setValues(H);
+      sh.getRange(2, C["完了日時"], n, 1).setValues(L);
+      sh.getRange(2, C["完了のしかた"], n, 1).setValues(M);
+    } finally { try { lock.releaseLock(); } catch (eR) {} cbIdxClear116_(); }
+    try { logAudit("再架電の予定の整理", "管理者", "完了 " + cnt.done + "・置き換え " + cnt.replaced + "・期限切れ " + cnt.expired, "架電結果 " + scanned + "行を確認・" + written + "行を更新"); } catch (eA) {}
+  }
+  return { ok: true, dry: dry, open: open.length, done: cnt.done, replaced: cnt.replaced, expired: cnt.expired, remain: open.length - plan.length, scanned: scanned, written: written };
+}
+
+// ── 要求の入口（v116） ──
+function v116Handle_(d) {
+  switch (d.type) {
+    case "callback": {
+      var r1 = cbAdd116_(d);
+      if (!r1) return null;   // PIN の無い古い画面：これまでの処理（8列だけ書く）
+      return jsonOut_(r1.ok ? { status: "ok", handled: true, cb: r1.cb, closed: r1.closed || 0, dup: !!r1.dup } : { status: "error", handled: true, code: r1.code, message: r1.message });
+    }
+    case "cb_done": {
+      var r2 = cbDone116_(d);
+      return jsonOut_(r2.ok ? { status: "ok", handled: true, cb: r2.cb } : { status: "error", handled: true, code: r2.code, message: r2.message });
+    }
+    case "cb_admin": {
+      var r3 = cbAdmin116_(d);
+      return jsonOut_(r3.ok ? { status: "ok", handled: true, result: r3 } : { status: "error", handled: true, code: r3.code, message: r3.message });
+    }
+    case "callResult": {   // 保存はこれまでの処理。その前に、この番号の前の再架電の予定を「完了」にする
+      try { cbAutoDone116_(d); } catch (eCb) { Logger.log("cbAutoDone116_: " + eCb); }
+      return null;
+    }
+  }
+  return null;
+}
+
+// ── 自己点検（v116） ──
+function v116SelfTest() {
+  var checks = [], ok = function (name, cond) { checks.push({ name: name, pass: !!cond }); };
+  ok("版は v116", GAS_VERSION === "v116");
+  ok("名簿：阿部竜彦（097）", FULL_NAME_MAP["097"] === "阿部竜彦" && PIN_MAP["097"] === "阿部");
+  ok("cb_admin は管理者だけ", !!ADMIN_ONLY_TYPES["cb_admin"]);
+  var reg = Date.UTC(2026, 10, 20, 7, 0);   // 2026-11-20 16:00 JST
+  ok("古い予定の時刻：「11/24 17:00」", cbDue116_("11/24 17:00", "", reg).due === Date.UTC(2026, 10, 24, 8, 0) && !cbDue116_("11/24 17:00", "", reg).noTime);
+  ok("古い予定の時刻：「11/24 時間未定」", cbDue116_("11/24 時間未定", "", reg).noTime === true && cbDue116_("11/24 時間未定", "", reg).due === Date.UTC(2026, 10, 24, 9, 0));
+  ok("古い予定の時刻：12月に入れた「1/5」は次の年", cbDue116_("1/5 10:00", "", Date.UTC(2026, 11, 28, 1, 0)).due === Date.UTC(2027, 0, 5, 1, 0));
+  ok("新しい予定の時刻（ミリ秒の列）", cbDue116_(new Date(0), 1795000000000, reg).due === 1795000000000);
+  ok("端末の ID：CB＋ミリ秒・古い行", cbNumId116_("CB1795000000000") === 1795000000000 && cbNumId116_("L12") === -12);
+  var due = Date.UTC(2026, 10, 24, 6, 0);
+  ok("時間どおり（予定の30分後）", cbKind116_({ doneAt: due + 1800000, due: due, doneHow: "架電：断り" }, "完了") === "onTime");
+  ok("遅れて（予定の2時間後）", cbKind116_({ doneAt: due + 7200000, due: due, doneHow: "架電：断り" }, "完了") === "late");
+  ok("手で完了", cbKind116_({ doneAt: due, due: due, doneHow: "手で完了" }, "完了") === "manual");
+  ok("期限切れ（7日）", cbEff116_({ state: "未対応", due: Date.now() - 8 * 86400000 }, Date.now()) === "期限切れ");
+  var pass = checks.filter(function (c) { return c.pass; }).length;
+  return { pass: pass, total: checks.length, failed: checks.filter(function (c) { return !c.pass; }).map(function (c) { return c.name; }) };
+}
+// 管理者の点検用：再架電の予定の数（導入時の確認のログに出す）
+function cbSummary116_() {
+  var t = cbRead116_(true), now = new Date().getTime(), s = { rows: t.rows.length, open: 0, legacyOpen: 0, expired: 0 };
+  t.rows.forEach(function (o) {
+    if (o.state !== "未対応") return;
+    s.open++;
+    if (o.id.charAt(0) === "L") s.legacyOpen++;
+    if (cbEff116_(o, now) === "期限切れ") s.expired++;
+  });
+  return s;
 }

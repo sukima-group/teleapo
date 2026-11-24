@@ -9719,11 +9719,14 @@ function x115HoursApply(staff,r){
 }
 function x115Rate(row){return row&&row[1]?Math.round(row[2]*100/row[1]):0}
 function x115HourRow(list,h){for(var j=0;j<(list||[]).length;j++)if(list[j][0]===h)return list[j];return null}
-/* つながりやすい時間帯：件数が十分（minN 件以上）で、全体の平均より高い時間帯の上位 2 つ */
+/* 接続率の「確かな下限」（95%の信頼区間の下限・ウィルソンの方法）。件数が少ない時間台は、たまたま高く出ることがあるため割り引いて比べる */
+function x115Lower(c,n){if(!n)return 0;var z=1.96,p=c/n,z2=z*z;return (p+z2/(2*n)-z*Math.sqrt(p*(1-p)/n+z2/(4*n*n)))/(1+z2/n)}
+/* つながりやすい時間帯：件数が十分（minN 件以上）で、全体の平均より接続率が高い時間台を、確かな下限の高い順に 2 つ
+   （本番の記録では、50件しかない12時台が 84% で1位になっていたため。件数の多い 9時台 82%・11時台 80% が上に来る） */
 function x115BestHours(list,minN){
   var n=0,c=0;(list||[]).forEach(function(x){n+=x[1]||0;c+=x[2]||0});
-  var avg=n?c*100/n:0;
-  return (list||[]).filter(function(x){return x[1]>=(minN||20)&&x[1]&&x[2]*100/x[1]>avg}).slice().sort(function(a,b){return x115Rate(b)-x115Rate(a)||b[1]-a[1]}).slice(0,2);
+  var avg=n?c/n:0;
+  return (list||[]).filter(function(x){return x[1]>=(minN||20)&&x[1]&&x[2]/x[1]>avg}).slice().sort(function(a,b){return x115Lower(b[2],b[1])-x115Lower(a[2],a[1])||b[1]-a[1]}).slice(0,2);
 }
 function x115Windows(){
   var w=(X112.rules&&X112.rules.callHours)||null;if(!w||!w.on||!w.windows)return [];
@@ -9919,10 +9922,10 @@ function x115AdminCards(){
   else if(!hr.team||!hr.team.length)h+='<div style="font-size:11px;color:#64748b">まだ記録がありません</div>';
   else{
     var best=x115BestHours(hr.team,20).map(function(b){return b[0]});
-    h+='<table class="x115HrTbl" style="width:100%;border-collapse:collapse;margin-top:4px;font-size:11px"><tr style="color:#64748b"><th style="text-align:left">時間</th><th style="text-align:right">件数</th><th style="text-align:left;padding-left:6px">つながった（出た）</th><th style="text-align:right">アポ</th></tr>';
+    h+='<table class="x115HrTbl" style="width:100%;border-collapse:collapse;margin-top:4px;font-size:11px"><tr style="color:#64748b"><th style="text-align:left">時間</th><th style="text-align:right">件数</th><th style="text-align:left;padding-left:6px">つながった（出た）</th><th style="text-align:right">アポ（率）</th></tr>';
     hr.team.forEach(function(x){var p=x115Rate(x),isB=best.indexOf(x[0])>=0;
-      h+='<tr style="'+(isB?"background:#ecfdf5;":"")+'"><td>'+x[0]+'時台'+(isB?' ★':'')+'</td><td style="text-align:right">'+x[1]+'</td><td style="padding-left:6px">'+x115Bar(p,isB?"#059669":"#94a3b8")+' '+p+'%</td><td style="text-align:right">'+x[3]+'</td></tr>'});
-    h+='</table><div style="font-size:10px;color:#64748b;margin-top:3px">つながった＝アポ・再架電・断り・その他（相手が出た）。★＝20件以上かけた時間台のうち、全体の平均より接続率が高いもの（上位2つ）。リストごとの数は、アポインターの画面に「このリスト」として出ます</div>';
+      h+='<tr style="'+(isB?"background:#ecfdf5;":"")+'"><td>'+x[0]+'時台'+(isB?' ★':'')+'</td><td style="text-align:right">'+x[1]+'</td><td style="padding-left:6px">'+x115Bar(p,isB?"#059669":"#94a3b8")+' '+p+'%</td><td style="text-align:right">'+x[3]+(x[1]>=20?'（'+(Math.round(x[3]*1000/x[1])/10)+'%）':'')+'</td></tr>'});
+    h+='</table><div style="font-size:10px;color:#64748b;margin-top:3px">つながった＝アポ・再架電・断り・その他（相手が出た）。★＝20件以上かけた時間台のうち、全体の平均より接続率が高いもの（上位2つ。件数の少ない時間台は割り引いて比べます）。アポの率は20件以上の時間台だけ。リストごとの数は、アポインターの画面に「このリスト」として出ます</div>';
   }
   h+='</div>';
   return h;

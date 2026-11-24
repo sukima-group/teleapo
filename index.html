@@ -85,6 +85,11 @@ kbd{display:inline-block;padding:1px 6px;border:1px solid #cbd5e1;border-bottom-
 /* ==========================================================================
    川嶋メソッド テレアポ管理 PWA  v32 (15分刻みシフト + 再架電保存バグ修正 + 管理者シフトExcel取得)
    ==========================================================================
+   v115 変更（2026-11-24。詳しくは README.md）:
+   - ⑴ アカウントの追加：石井和子（093）・石河巧（095）
+   - ⑵ スキップに理由と戻す時刻（あとで＝2時間後／きょうはかけない＝あしたの朝／番号・会社が違う＝管理者が確認／その他）。サーバーに残し、管理者が見られる
+   - ⑶ 時間帯ごとの接続率（直近60日・全員）と、架電の時間帯（管理者が決める。外では知らせる）。不在の掛け直しを前回と違う時間帯に（選べる）
+   - ⑷ Zoom Phone で発信（管理者が「使う」にしたとき）。Zoom Phone の通話履歴の取り込み（管理者の画面）
    v114 変更（2026-11-23。詳しくは README.md）:
    - ⑴ 前回の結果（前回なんて断られたか）：架電のカード・通話の画面・リストに出す（元シートの結果・メモ／全員の架電記録／この端末の履歴の、いちばん新しいもの）
    - ⑵ 元シートの順番どおりに架電する：次の架電先は「いちばん上の、まだ架電していない行」（v113 までは「いまの行の次」から探していて、手前の行が残っていた）
@@ -211,7 +216,9 @@ var CONFIG={
     {id:"s101",nm:"藤田直美",pin:"101",sh:"藤田"},
     {id:"s110",nm:"田中久美子",pin:"110",sh:"田中"},
     {id:"s112",nm:"中村花林",pin:"112",sh:"中村"},
-    {id:"s114",nm:"片山佳代",pin:"114",sh:"片山"}
+    {id:"s114",nm:"片山佳代",pin:"114",sh:"片山"},
+    {id:"s093",nm:"石井和子",pin:"093",sh:"石井"},   /* v115 */
+    {id:"s095",nm:"石河巧",pin:"095",sh:"石河"}      /* v115 */
   ],
   /* v110: 削除したアカウント。端末に残っている名簿の控え・その人のデータ・ログイン状態を消し、この PIN ではログインできなくする */
   DELETED_ACCOUNTS:[{pin:"093",nm:"坂上順子"},{pin:"095",nm:"浜田敏幸"}],
@@ -231,7 +238,7 @@ var SHIFT_NOTIFY_TO = CONFIG.NOTIFY.SHIFT_TO;
 var DAILY_REPORT_TO = CONFIG.NOTIFY.DAILY_REPORT_TO;  /* v14: 退勤レポート通知先 */
 
 /* v26: 起動時キャッシュクリア - 旧バージョンのキャッシュを強制削除 */
-var APP_VERSION="v114";
+var APP_VERSION="v115";
 /* v35: 会社ロゴ(スキマ) 埋め込み - オフラインでも表示 */
 var LOGO="data:image/png;base64,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";
 (function(){
@@ -2626,6 +2633,7 @@ function loadUser(id){
   skipped=skipLoad(id);
   callCtx=null;autoDialCtx=null;
   try{rebuildCalled();if(!asAppointer)callCtx=loadCallCtx()}catch(eRc){}
+  try{x115Restore(id)}catch(eX15){}   /* v115: 理由つきのスキップ・接続率・発信のアプリ */
   restorePos(true);   /* v53: 続きから再開 */
   setTimeout(function(){try{fetchRecSelf();fetchRecUploadStatus();fetchRecPending();fetchKpi(U.pin)}catch(e){}},1800);   /* v65/v82/v87/v98 */
   setTimeout(function(){try{pickupSharedRecordings()}catch(e){}},2400);   /* v82: 共有からの受け取り */
@@ -3545,6 +3553,7 @@ function applyServerState(staff,d,opts,cb){
     /* v110: 架電済みの印を作り直してから、位置を決める（位置は「まだ架電していない行」を基準にするため、履歴の反映より後） */
     if(U&&U!=="admin"&&U.id===staff.id&&d.list!==undefined){
       try{rebuildCalled()}catch(eRb){}
+      try{x115ServerApply(staff,d)}catch(eX15){}   /* v115: 理由つきのスキップ（ほかの端末・管理者の分も） */
       if(rows.length&&posPlan==="top"){
         var f0=firstUncalled();ci=f0>=0?f0:0;
         try{skipSave()}catch(eSk){}
@@ -4400,7 +4409,7 @@ function doAutoDial(){
     a.click();
     setTimeout(function(){try{document.body.removeChild(a)}catch(e){}},1200);
   }catch(e){
-    try{window.location.href="tel:"+autoDialPhone}catch(e2){}
+    try{x115Go(autoDialPhone)}catch(e2){}
   }
 }
 /* v41: 保存タップのジェスチャで次の番号へ即発信 (Android確実・追加タップ0回) */
@@ -4420,7 +4429,7 @@ function chainDialNext(){
   autoDialCtx=ctxOf(ci);   /* v110 */
   markDialStarted();  /* 発信状態を初期化 (このタップ自体が発信ジェスチャ) */
   flash("📞 発信: "+autoDialCo);
-  try{window.location.href="tel:"+autoDialPhone}catch(e){}
+  try{x115Go(autoDialPhone)}catch(e){}
   return true;
   if(pcDialMode){ setTimeout(function(){ pcBeginCall(); },80); }
 }
@@ -4502,10 +4511,12 @@ function skipAutoDial(){
   if(autoDialTimer){clearInterval(autoDialTimer);autoDialTimer=null}
   stopRepeatBeep();
   autoDialEndAt=0;autoDialPausedRemain=0;autoDialReady=false;autoTryAt=0;
-  skipped[ci]=true;skipSave();
+  /* v115: オートコール中のスキップも、理由を選んでから */
+  x115SkipOpen(ci,function(){
   var moved=goNext();
   if(moved){flash("⏭ スキップ→次の番号へ");startAutoDialCountdown()}
   else{flash("✅ リスト完了");AUTO_MODE=false;sv("autoMode-"+U.id,false);releaseWake();render()}
+  });
 }
 function stopAutoDial(){
   AUTO_MODE=false;sv("autoMode-"+U.id,false);
@@ -6511,8 +6522,8 @@ function setupKbd(){
     if(V==="home"){
       if(ev.key==="n"||ev.key==="N"||ev.key==="ArrowRight"){if(ci<rows.length-1){ci++;render()}}
       else if(ev.key==="p"||ev.key==="P"||ev.key==="ArrowLeft"){if(ci>0){ci--;render()}}
-      else if(ev.key==="s"||ev.key==="S"){if(rows[ci]){skipped[ci]=true;skipSave();flash("⏭ スキップ");goNext();render()}}
-      else if(ev.key===" "||ev.key==="Enter"){ev.preventDefault();var ph=rows[ci]&&gf(rows[ci],"ph");if(ph){onPhoneTap();window.location.href="tel:"+telPhone(ph)}}
+      else if(ev.key==="s"||ev.key==="S"){if(rows[ci])x115SkipOpen(ci)}   /* v115 */
+      else if(ev.key===" "||ev.key==="Enter"){ev.preventDefault();var ph=rows[ci]&&gf(rows[ci],"ph");if(ph){onPhoneTap();x115Go(telPhone(ph))}}
       else if(ev.key==="c"||ev.key==="C"){if(!callCtx||ctxIndex(callCtx)!==ci)setCallCtx(ctxOf(ci));V="call";ck={};tsec=0;selRes=null;bousou=[];endStep="";clearInterval(tref);trReset();tref=setInterval(function(){tsec++;var el=document.getElementById("tmr");if(el)el.textContent=timerStr(tsec)},1000);lockScreen();render()}
       else if(ev.key==="l"||ev.key==="L"){V="list";render()}
       else if(ev.key==="/"){ev.preventDefault();V="list";listSearch="";render();setTimeout(function(){var el=document.getElementById("listSearch");if(el)el.focus()},100)}
@@ -7901,6 +7912,7 @@ function admTopCards(){
       h+='<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-top:1px solid #f1f5f9;font-size:11.5px;flex-wrap:wrap"><b style="min-width:70px">'+htmlEsc(m.name)+'</b><span style="background:'+c[0]+';color:'+c[1]+';border-radius:10px;padding:1px 7px;font-weight:800;font-size:10.5px">'+m.state+'</span><span style="color:#64748b">今日 送信'+m.sentToday+'件／架電'+m.callsToday+'件'+(m.pending?'・待ち'+m.pending+'件':'')+(m.lastScanAt?'・最終 '+htmlEsc(String(m.lastScanAt).slice(5)):'')+'</span>'+(m.lastError?'<span style="color:#b91c1c;width:100%">⚠️ '+htmlEsc(m.lastError)+'</span>':'')+'</div>'});
     h+='<div style="font-size:10px;color:#94a3b8;margin-top:4px">「未接続」の人は、本人のスマホでこのアプリを開くと「はじめの設定」が自動で出ます（出ないときは、ホームの「🎙 はじめの設定を始める」）。赤い字は、録音が見つからない通話が続いている知らせです。</div></div>';
   }
+  try{h+=x115AdminCards()}catch(eX15){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v115 のカードを表示できませんでした：'+htmlEsc(String(eX15&&eX15.message||eX15))+'</div>'}   /* v115: スキップ・時間帯・Zoom */
   try{h+=x114AdminCards()}catch(eX14){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v114 のカードを表示できませんでした：'+htmlEsc(String(eX14&&eX14.message||eX14))+'</div>'}   /* v114: 架電の順番・順番の点検 */
   try{h+=x112AdminCards()}catch(eX12){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v112 のカードを表示できませんでした：'+htmlEsc(String(eX12&&eX12.message||eX12))+'</div>'}   /* v112: 会社スケジュール・SV不在・架電ルール・設定シートの整理 */
   try{h+=x111AdminCards()}catch(eX11){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v111 のカードを表示できませんでした：'+htmlEsc(String(eX11&&eX11.message||eX11))+'</div>'}   /* v111: アポイント台帳・架電報告書・案件別の進み具合 */
@@ -8989,6 +9001,7 @@ function x112RecallState(c){
   if(!r||!c)return "ready";        /* ルールを使わない・サーバーが古い版のとき：これまでどおり、不在の先すべて */
   if((c.n||1)>=r.max)return "capped";
   if(c.at&&x112Now()-c.at<r.minHours*3600000)return "wait";
+  if(r.diffHour&&c.at&&x112Hm(c.at).slice(0,2)===x112Hm(x112Now()).slice(0,2))return "wait";   /* v115: 前回と同じ時間台は避ける */
   return "ready";
 }
 function x112RecallStat(){
@@ -8999,7 +9012,7 @@ function x112RecallStat(){
     if(repass&&repass.lid===listLid&&c.at>=repass.at)continue;     /* このもう一巡で、もうかけた */
     var st=x112RecallState(c);
     o[st]++;
-    if(st==="wait"&&r){var t=c.at+r.minHours*3600000;if(!o.nextAt||t<o.nextAt)o.nextAt=t}
+    if(st==="wait"&&r){var t=c.at+r.minHours*3600000;if(t<=x112Now()){var nw=x112Now();t=nw+3600000-((nw+9*3600000)%3600000)}if(!o.nextAt||t<o.nextAt)o.nextAt=t}   /* v115: 時間台を避けて待つときは、次の時間台の始まり */
   }
   return o;
 }
@@ -9320,10 +9333,11 @@ function x114PrevFetch(staff){
     if(!U||U==="admin"||U.id!==staff.id)return;
     if(Date.now()-(Number(X114._pvAt[staff.id])||0)<1200000)return;
     X114._pvAt[staff.id]=Date.now();
-    directGasPost({type:"prev_get",pin:staff.pin||staff.id},150000).then(function(r){
+    directGasPost({type:"prev_get",pin:staff.pin||staff.id,lid:listLid||""},150000).then(function(r){
       if(!r||r.status!=="ok")return;
       if(r.prevSrc){X114.pv=r.prevSrc;sv("pv114-"+staff.id,r.prevSrc)}
       if(r.prevHist){X114.ph=r.prevHist;X114.phAt=Number(r.prevHistAt)||Date.now();sv("ph114-"+staff.id,X114.ph);sv("pha114-"+staff.id,X114.phAt)}
+      try{x115HoursApply(staff,r)}catch(eX15h){}   /* v115 */
       X114._lm=null;
       x112Redraw();
     }).catch(function(){X114._pvAt[staff.id]=Date.now()-1080000});   /* 取れなかったときは、2分たてばまた取りに行ける */
@@ -9443,6 +9457,7 @@ function x114NextLine(){
   var ex=x114Excluded(),parts=[];
   if(ex.ng)parts.push("NG "+ex.ng);if(ex.appo)parts.push("アポ済み "+ex.appo);if(ex.skip)parts.push("スキップ "+ex.skip);
   if(parts.length)h+='<div style="margin-top:4px;font-size:10.5px;color:#64748b">飛ばす行：'+parts.join("・")+'件（理由はリストで確認できます）</div>';
+  try{h+=x115Lines()}catch(eX15l){}   /* v115 */
   return h;
 }
 /* ── 管理者：取込で「結果ごとに選ぶ」 ── */
@@ -9517,6 +9532,400 @@ function x114AdminCards(){
       h+='<div class="x114Gap" style="display:flex;gap:8px;align-items:center;padding:5px 0;border-top:1px solid #f1f5f9;font-size:11.5px"><div style="min-width:76px;font-weight:800">'+htmlEsc(x.st.nm||"")+'</div><div style="flex:1;color:#334155">架電済み '+g.done+'／'+g.rows+'件・前回の結果あり '+g.prevN+'件'+(g.gaps?'<br><span style="color:#b45309;font-weight:800">⚠ 手前に未架電 '+g.gaps+'件（'+(g.firstGap+1)+'件目 '+htmlEsc(g.firstCo.slice(0,18))+' から）</span>':'<br><span style="color:#047857">✓ 飛ばしている行はありません</span>')+(g.exN?'<br><span style="color:#64748b;font-size:10.5px">ほかに、NG・アポ済みで飛ばす行 '+g.exN+'件（数に入れていません）</span>':'')+'</div></div>'});
   }
   return h+'</div>';
+}
+/* ══════════════════════════════════════════════════════════════════════
+   v115: ⑴ スキップに理由と戻す時刻（あとで＝2時間後／きょうはかけない＝あしたの朝／番号・会社が違う＝管理者が確認／その他）
+         ⑵ 時間帯ごとの接続率（直近60日・全員の架電結果）と、架電の時間帯（管理者が決める。外では知らせる）
+         ⑶ Zoom Phone で発信（管理者が「使う」にしたとき。PC は Zoom のアプリで自動発信、スマホは番号をコピーして Zoom を開く）
+         ⑷ 管理者：スキップの確認・時間帯ごとの接続率・Zoom Phone の通話履歴の取り込み
+   ══════════════════════════════════════════════════════════════════════ */
+var X115={items:{},hours:null,dial:"tel",_idx:null,_idxSig:"",_migMsg:"",
+  adm:{sk:null,skBusy:false,skAt:0,hr:null,hrBusy:false,hrAt:0,zoom:null,zBusy:false,zAt:0,setBusy:false,chDraft:null,chFocus:false,chCaret:null,err:""}};
+var X115_KINDS=[
+  {k:"later",i:"⏰",l:"あとで",s:"2時間後にリストへ戻す"},
+  {k:"tomorrow",i:"📅",l:"きょうはかけない",s:"あしたの朝 9:00 に戻す"},
+  {k:"check",i:"⚠",l:"番号・会社が違う・重複",s:"管理者が確認するまで戻さない"},
+  {k:"other",i:"📝",l:"その他（理由を書く）",s:"あしたの朝 9:00 に戻す"}
+];
+function x115Now(){try{return x112Now()}catch(e){return Date.now()}}
+function x115Kind(k){for(var j=0;j<X115_KINDS.length;j++)if(X115_KINDS[j].k===k)return X115_KINDS[j];return null}
+/* 戻す時刻（サーバーと同じ決め方。あしたの 9:00＝日本時間） */
+function x115Until(kind,now){
+  if(kind==="later")return now+7200000;
+  if(kind==="check")return 0;
+  var d=new Date(now+9*3600000+86400000);
+  return Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate(),0,0,0);
+}
+function x115When(ms){
+  if(!ms)return "管理者の確認待ち";
+  var now=x115Now();
+  var same=x112Key(ms)===x112Key(now);
+  return (same?"きょう ":(x112Key(ms)===x112Key(now+86400000)?"あした ":x112Key(ms).slice(5).replace("-","/")+" "))+x112Hm(ms)+" に戻ります";
+}
+function x115ItemKey(lid,src,ph,co){return (lid||"")+"#"+(src||("k:"+normPh(ph||"")+"|"+normCo(co||"")))}
+function x115Save(){if(U&&U!=="admin")sv("sk115-"+U.id,X115.items)}
+/* 行を探すための索引（元行・会社） */
+function x115Index(){
+  var sig=(listLid||"")+"|"+rows.length+"|"+(listStamp||0);
+  if(X115._idx&&X115._idxSig===sig)return X115._idx;
+  var bySrc={},byKey={};
+  for(var i=0;i<rows.length;i++){var r=rows[i];if(!r)continue;var s=String(gf(r,"src")||"");if(s&&bySrc[s]===undefined)bySrc[s]=i;var k=normPh(gf(r,"ph")||"")+"|"+normCo(gf(r,"co")||"");if(byKey[k]===undefined)byKey[k]=i}
+  X115._idx={bySrc:bySrc,byKey:byKey};X115._idxSig=sig;
+  return X115._idx;
+}
+function x115Find(it,idx,again){
+  if(!it)return -1;
+  if(it.lid&&listLid&&it.lid!==listLid)return -1;
+  idx=x115Index();   /* 渡された索引が古くても、いまの索引を使う（作り直しは1回だけ） */
+  var k=normPh(it.ph||"")+"|"+normCo(it.co||""),stale=false;
+  var i=it.src?idx.bySrc[String(it.src)]:undefined;
+  if(i!==undefined){var ri=rows[i];
+    if(!ri||String(gf(ri,"src")||"")!==String(it.src))stale=true;
+    else if(!it.ph||normPh(gf(ri,"ph")||"")===normPh(it.ph||""))return i}
+  var j=idx.byKey[k];
+  if(j!==undefined){var rj=rows[j],kj=rj?normPh(gf(rj,"ph")||"")+"|"+normCo(gf(rj,"co")||""):"";
+    if(kj!==k)stale=true;else if(!stale)return j}
+  /* 同じ件数のまま行が並び替わったとき（索引が古い）は、作り直して探し直す */
+  if(stale&&!again){X115._idxSig="";return x115Find(it,null,true)}
+  return -1;
+}
+/* いま効いているスキップか（架電したら終わり。確認待ちは管理者が戻すまで） */
+function x115Active(it,i,now){
+  if(!it||it.gone)return false;
+  if(it.lid&&listLid&&it.lid!==listLid)return false;
+  if(it.kind!=="check"&&!((Number(it.until)||0)>now))return false;
+  if(i>=0){try{var c=calledInfo(i);if(c&&c.at&&c.at>(Number(it.at)||0))return false}catch(e){}}
+  return true;
+}
+/* スキップの印（skipped）を、理由つきのスキップから付け直す。戻す時刻が来た行は、リストへ戻す */
+function x115Rebuild(){
+  if(!U||U==="admin"||!rows.length)return 0;
+  var now=x115Now(),idx=x115Index(),ch=0;
+  Object.keys(X115.items).forEach(function(k){
+    var it=X115.items[k],i=x115Find(it,idx);
+    if(i<0){if(it.gone||(it.kind!=="check"&&now-(Number(it.until)||0)>3*86400000))delete X115.items[k];return}
+    var act=x115Active(it,i,now);
+    if(act&&!skipped[i]){skipped[i]=true;ch++}
+    else if(!act&&it.applied&&skipped[i]){delete skipped[i];ch++}
+    it.applied=act;
+    if(!act&&it.kind!=="check"&&now-(Number(it.until)||0)>3*86400000)delete X115.items[k];   /* 3日たった記録は端末から消す */
+  });
+  if(ch){try{skipSave()}catch(e){}x115Save()}
+  return ch;
+}
+function x115RowItem(i){
+  var idx=x115Index(),now=x115Now(),hit=null;
+  Object.keys(X115.items).forEach(function(k){var it=X115.items[k];if(!hit&&x115Find(it,idx)===i&&x115Active(it,i,now))hit=it});
+  return hit;
+}
+/* 端末に控えた理由つきのスキップを読む。v114 までの「理由のないスキップ」は、1回だけリストへ戻す */
+function x115Restore(id){
+  X115.items=ld("sk115-"+id)||{};X115._idx=null;
+  X115.hours=ld("hr115-"+id)||null;
+  X115.dial=ld("dial115-"+id)||"tel";
+  if(!ld("sk115mig-"+id)){
+    var n=0,idx=x115Index();
+    var keep={};Object.keys(X115.items).forEach(function(k){var i=x115Find(X115.items[k],idx);if(i>=0)keep[i]=1});
+    Object.keys(skipped).forEach(function(k){var i=+k;if(!skipped[k]||keep[i]||!rows[i])return;try{if(isNG(gf(rows[i],"ph")))return}catch(e){}delete skipped[k];n++});
+    sv("sk115mig-"+id,1);
+    if(n){try{skipSave()}catch(e2){}X115._migMsg="↩ 理由のないスキップ "+n+"件を、リストへ戻しました（これからは、スキップのときに理由を選びます）";setTimeout(function(){if(X115._migMsg){flash(X115._migMsg);X115._migMsg=""}},1500)}
+  }
+  x115Rebuild();
+}
+/* 同期の返事から：サーバーに記録されているスキップ（ほかの端末でした分・管理者が戻した分も反映） */
+function x115ServerApply(staff,d){
+  if(!d||d.skips===undefined||!U||U==="admin"||U.id!==staff.id)return;
+  var now=x115Now(),srv={};
+  (d.skips||[]).forEach(function(s){var k=x115ItemKey(s.lid,s.src,s.ph,s.co);srv[k]=1;var old=X115.items[k]||{};
+    X115.items[k]={id:s.id,lid:s.lid,src:s.src,ph:s.ph,co:s.co,kind:s.kind,reason:s.reason,until:Number(s.until)||0,at:Number(s.at)||0,applied:!!old.applied}});
+  Object.keys(X115.items).forEach(function(k){var it=X115.items[k];if(srv[k])return;
+    if(it.pend&&now-(Number(it.at)||0)<15*60000)return;            /* まだサーバーに届いていない（送っている途中）ものは残す */
+    it.gone=true;});                                                /* サーバーに無い＝戻した・期限が来た */
+  x115Rebuild();
+  Object.keys(X115.items).forEach(function(k){if(X115.items[k].gone&&!X115.items[k].applied)delete X115.items[k]});
+  x115Save();
+}
+/* ── スキップの理由を選ぶ画面 ── */
+function x115SkipOpen(i,after){
+  if(!U||U==="admin"||!rows[i])return;
+  X115._after=after||null;X115._skipI=i;
+  /* 開いている間に同期でリストが並び替わっても、開いたときの会社をスキップする（元行・電話番号・会社名で探し直す） */
+  X115._skipIt={lid:listLid||"",src:Number(gf(rows[i],"src"))||0,ph:gf(rows[i],"ph")||"",co:gf(rows[i],"co")||""};
+  var old=document.getElementById("x115SkipBox");if(old)old.remove();
+  var r=rows[i],h='<div style="background:#fff;border-radius:16px 16px 0 0;width:100%;max-width:520px;padding:14px 14px 18px;box-shadow:0 -6px 24px rgba(15,23,42,.25)">';
+  h+='<div style="font-size:15px;font-weight:800;color:#92400e">⏭ スキップの理由を選んでください</div>';
+  h+='<div style="font-size:12px;color:#475569;margin-top:3px">'+(i+1)+'件目 '+htmlEsc(String(gf(r,"co")||"").slice(0,30))+'</div>';
+  h+='<div style="font-size:10.5px;color:#64748b;margin-top:3px">理由と戻す時刻は、管理者にも見えます。戻す時刻が来たら、元シートの順番どおりの位置に戻ります</div>';
+  X115_KINDS.forEach(function(k){
+    h+='<button data-x115="skipKind" data-v="'+k.k+'" style="display:block;width:100%;text-align:left;margin-top:7px;padding:11px 12px;border:1.5px solid '+(k.k==="check"?"#fca5a5":"#fcd34d")+';border-radius:11px;background:'+(k.k==="check"?"#fef2f2":"#fffbeb")+';font-family:inherit">';
+    h+='<span style="font-size:14px;font-weight:800;color:#1e293b">'+k.i+' '+k.l+'</span><br><span style="font-size:11px;color:#64748b">'+k.s+'</span></button>';
+  });
+  h+='<textarea id="x115SkipNote" placeholder="理由のメモ（「その他」は必ず書いてください。番号・会社が違うときも、わかれば書いてください）" style="display:block;width:100%;box-sizing:border-box;margin-top:8px;height:52px;padding:8px;border:1px solid #cbd5e1;border-radius:9px;font-size:12px;font-family:inherit"></textarea>';
+  h+='<button data-x115="skipCancel" style="display:block;width:100%;margin-top:8px;padding:10px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;color:#475569;font-size:13px;font-weight:700;font-family:inherit">やめる（スキップしない）</button></div>';
+  var box=document.createElement("div");
+  box.id="x115SkipBox";
+  box.style.cssText="position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9990;display:flex;align-items:flex-end;justify-content:center";
+  box.innerHTML=h;
+  document.body.appendChild(box);
+}
+function x115SkipClose(){var b=document.getElementById("x115SkipBox");if(b)b.remove()}
+function x115SkipChoose(kind){
+  var i=X115._skipI,want=X115._skipIt;
+  if(want){
+    var c0=rows[i],same=!!c0&&(listLid||"")===want.lid&&(Number(gf(c0,"src"))||0)===want.src&&normPh(gf(c0,"ph")||"")===normPh(want.ph)&&normCo(gf(c0,"co")||"")===normCo(want.co);
+    if(!same){var j=x115Find(want);if(j<0){x115SkipClose();X115._after=null;flash("↩ リストが新しくなったため、スキップしませんでした。もう一度選んでください");render();return}i=j}
+  }
+  var r=rows[i];if(!r){x115SkipClose();return}
+  var noteEl=document.getElementById("x115SkipNote"),note=noteEl?String(noteEl.value||"").trim().slice(0,200):"";
+  if(kind==="other"&&!note){if(noteEl){noteEl.style.borderColor="#dc2626";noteEl.focus()}flash("📝 「その他」は理由を書いてください");return}
+  var now=x115Now(),k=x115Kind(kind),src=gf(r,"src")||"",ph=gf(r,"ph")||"",co=gf(r,"co")||"";
+  var key=x115ItemKey(listLid,src,ph,co);
+  X115.items[key]={id:"",lid:listLid||"",src:Number(src)||0,ph:ph,co:co,kind:kind,reason:k.l+(note?"："+note:""),until:x115Until(kind,now),at:now,pend:true,applied:true};
+  skipped[i]=true;try{skipSave()}catch(e){}x115Save();
+  try{gasPost({type:"skip_set",pin:U.pin,name:U.nm,lid:listLid||"",src:Number(src)||0,co:co,ph:ph,kind:kind,note:note},function(res){
+    try{if(res&&res.status==="ok"&&res.skip){var it=X115.items[key];if(it){it.id=res.skip.id;it.until=Number(res.skip.until)||0;it.reason=res.skip.reason||it.reason;it.pend=false;x115Save()}}}catch(e){}
+  })}catch(e2){}
+  x115SkipClose();vib(30);
+  flash("⏭ スキップ："+k.l+"（"+x115When(X115.items[key].until)+"）");
+  var after=X115._after;X115._after=null;
+  if(typeof after==="function")after();else{goNext();render()}
+}
+/* 自分のスキップをやめる（リストへ戻す） */
+function x115Unskip(i){
+  var idx=x115Index(),n=0;
+  Object.keys(X115.items).forEach(function(k){var it=X115.items[k];if(x115Find(it,idx)!==i)return;it.gone=true;n++;
+    try{gasPost({type:"skip_set",pin:U.pin,name:U.nm,kind:"clear",lid:it.lid||listLid||"",src:it.src||0,ph:it.ph||"",co:it.co||""})}catch(e){}});
+  delete skipped[i];try{skipSave()}catch(e2){}x115Rebuild();x115Save();
+  flash("↩ スキップをやめました（"+(i+1)+"件目はリストに戻ります）");render();
+}
+/* 「スキップ全解除」：理由つきのスキップも、すべてやめる */
+function x115ClearAll(){
+  if(!U||U==="admin")return;
+  var n=Object.keys(X115.items).length;
+  Object.keys(X115.items).forEach(function(k){X115.items[k].gone=true});
+  if(n){try{gasPost({type:"skip_set",pin:U.pin,name:U.nm,kind:"clear",all:true,lid:listLid||""})}catch(e){}}
+  x115Save();
+}
+/* リストの行に出す：スキップの理由と戻す時刻 */
+function x115RowSkip(i){
+  var it=x115RowItem(i);if(!it)return "";
+  return '<div class="x115RowSkip" style="margin:4px 0 0 38px;font-size:10.5px;color:'+(it.kind==="check"?"#b91c1c":"#92400e")+';font-weight:700">⏭ スキップ中：'+htmlEsc(String(it.reason||"").slice(0,40))+'・'+x115When(Number(it.until)||0)+
+    ' <a href="#" data-x115="unskip" data-i="'+i+'" style="margin-left:4px;color:#2563eb;font-weight:800">↩ スキップをやめる</a></div>';
+}
+/* ── 時間帯ごとの接続率・架電の時間帯 ── */
+function x115HoursApply(staff,r){
+  if(!r||!r.hours||!staff||!staff.id)return;
+  X115.hours=r.hours;sv("hr115-"+staff.id,r.hours);
+}
+function x115Rate(row){return row&&row[1]?Math.round(row[2]*100/row[1]):0}
+function x115HourRow(list,h){for(var j=0;j<(list||[]).length;j++)if(list[j][0]===h)return list[j];return null}
+/* つながりやすい時間帯：件数が十分（minN 件以上）で、全体の平均より高い時間帯の上位 2 つ */
+function x115BestHours(list,minN){
+  var n=0,c=0;(list||[]).forEach(function(x){n+=x[1]||0;c+=x[2]||0});
+  var avg=n?c*100/n:0;
+  return (list||[]).filter(function(x){return x[1]>=(minN||20)&&x[1]&&x[2]*100/x[1]>avg}).slice().sort(function(a,b){return x115Rate(b)-x115Rate(a)||b[1]-a[1]}).slice(0,2);
+}
+function x115Windows(){
+  var w=(X112.rules&&X112.rules.callHours)||null;if(!w||!w.on||!w.windows)return [];
+  return String(w.windows).split(",").map(function(s){var m=s.match(/^(\d{2}):(\d{2})-(\d{2}):(\d{2})$/);return m?[(+m[1])*60+(+m[2]),(+m[3])*60+(+m[4])]:null}).filter(Boolean);
+}
+function x115Hm(m){return pad(Math.floor(m/60))+":"+pad(m%60)}
+/* いまが架電の時間帯の外なら、次の時間帯を返す（中なら null） */
+function x115OutOfHours(){
+  var w=x115Windows();if(!w.length)return null;
+  var d=new Date(x115Now()+9*3600000),m=d.getUTCHours()*60+d.getUTCMinutes();
+  for(var j=0;j<w.length;j++)if(m>=w[j][0]&&m<w[j][1])return null;
+  var nx=null;for(var k=0;k<w.length;k++)if(w[k][0]>m){nx=w[k][0];break}
+  return {next:nx!==null?x115Hm(nx):"あした "+x115Hm(w[0][0]),text:w.map(function(x){return x115Hm(x[0])+"〜"+x115Hm(x[1])}).join("・")};
+}
+/* 進捗の帯に足す行：架電の時間帯・時間帯ごとの接続率・理由つきスキップ */
+function x115Lines(){
+  if(!U||U==="admin")return "";
+  try{x115Rebuild()}catch(eR){}
+  var h="",oh=x115OutOfHours();
+  if(oh)h+='<div class="x115Hours" style="margin-top:6px;padding:6px 8px;border-radius:8px;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;font-size:11.5px;font-weight:800">🕘 いまは架電の時間帯の外です（'+htmlEsc(oh.text)+'）。次は '+htmlEsc(oh.next)+' から</div>';
+  var hs=X115.hours;
+  if(hs&&hs.team&&hs.team.length){
+    var hNow=+x112Hm(x115Now()).slice(0,2),t=x115HourRow(hs.team,hNow),l=x115HourRow(hs.list,hNow),best=x115BestHours(hs.team,20);
+    var parts=[];
+    if(t&&t[1]>=10)parts.push('いま '+hNow+'時台 <b>'+x115Rate(t)+'%</b>'+(l&&l[1]>=10?'（このリスト '+x115Rate(l)+'%）':''));
+    if(best.length)parts.push('つながりやすい：'+best.map(function(b){return b[0]+'時台 '+x115Rate(b)+'%'}).join('・'));
+    if(parts.length)h+='<div class="x115Rate" style="margin-top:5px;font-size:10.5px;color:#0f766e">📈 接続率（直近'+(hs.days||60)+'日・全員）：'+parts.join('｜')+'</div>';
+  }
+  var now=x115Now(),idx=x115Index(),cnt={};
+  Object.keys(X115.items).forEach(function(k){var it=X115.items[k],i=x115Find(it,idx);if(i>=0&&x115Active(it,i,now)){var kk=x115Kind(it.kind);cnt[kk?kk.l:it.kind]=(cnt[kk?kk.l:it.kind]||0)+1}});
+  var ks=Object.keys(cnt);
+  if(ks.length)h+='<div class="x115SkipSum" style="margin-top:4px;font-size:10.5px;color:#92400e">⏭ スキップ中（理由つき）：'+ks.map(function(k){return htmlEsc(k)+' '+cnt[k]}).join('・')+'件（戻る時刻はリストで確認できます）</div>';
+  return h;
+}
+/* ── Zoom Phone で発信 ── */
+function x115ZoomOn(){return !!(X112.rules&&X112.rules.zoom&&X112.rules.zoom.on)}
+function x115IsPC(){try{return !!pcDialMode||isPCEnv()}catch(e){return false}}
+function x115E164(n){var t=String(n||"").replace(/[^\d+]/g,"");if(t.charAt(0)==="+")return t;if(t.charAt(0)==="0")return "+81"+t.slice(1);return t}
+function x115ZoomUrl(n){return "zoomphonecall://"+x115E164(n)}
+function x115DialSel(){
+  if(!x115ZoomOn()||!U||U==="admin")return "";
+  var on=X115.dial==="zoom",btn=function(v,t,a){return '<button data-x115="dial" data-v="'+v+'" style="flex:1;padding:7px 6px;border:1.5px solid '+(a?"#2563eb":"#cbd5e1")+';border-radius:8px;background:'+(a?"#eff6ff":"#fff")+';color:'+(a?"#1d4ed8":"#475569")+';font-size:11.5px;font-weight:800;font-family:inherit">'+t+'</button>'};
+  var h='<div class="x115Dial" style="margin-top:6px"><div style="font-size:10.5px;color:#64748b;margin-bottom:3px">発信のアプリ（この端末）</div><div style="display:flex;gap:6px">'+btn("tel","📱 電話",!on)+btn("zoom","🟦 Zoom Phone",on)+'</div>';
+  if(on)h+='<div style="font-size:10px;color:#1d4ed8;margin-top:3px">'+(x115IsPC()?"発信ボタンで Zoom のアプリが開き、そのまま発信します（Zoom にログインしておいてください）":"スマホは Zoom の決まりで、アプリから直接は発信できません。発信ボタンで番号をコピーして Zoom を開きます → Zoom の「電話」で貼り付けて発信してください")+'</div>';
+  return h+'</div>';
+}
+function x115ZoomMobile(num){
+  var t=String(num||"").replace(/[^\d]/g,"");
+  try{if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t)}catch(e){}
+  flash("📋 "+fmtPhone(t)+" をコピーしました。Zoom の「電話」で貼り付けて発信してください");
+  setTimeout(function(){try{window.location.href=/Android/i.test(navigator.userAgent)?"intent://#Intent;scheme=zoomus;package=us.zoom.videomeetings;end":"zoomus://"}catch(e2){}},350);
+}
+/* プログラムから発信するとき（キーボード・オートコール・再架電のお知らせ）。Zoom を選んでいれば Zoom へ */
+function x115Go(num){
+  var t=String(num||"").replace(/[^\d+]/g,"");
+  if(x115ZoomOn()&&X115.dial==="zoom"&&t.replace(/\D/g,"").length>=9){
+    if(x115IsPC()){window.location.href=x115ZoomUrl(t);return}
+    x115ZoomMobile(t);return;
+  }
+  window.location.href="tel:"+t;
+}
+/* 画面の発信ボタン（tel: のリンク）を押したとき：Zoom を選んでいれば、行き先を Zoom に変える（診断用の短い番号はそのまま） */
+document.addEventListener("click",function(e){
+  try{
+    if(!U||U==="admin"||X115.dial!=="zoom"||!x115ZoomOn())return;
+    var a=e.target&&e.target.closest?e.target.closest('a[href^="tel:"]'):null;if(!a)return;
+    var num=String(a.getAttribute("href")||"").slice(4);if(num.replace(/\D/g,"").length<9)return;
+    if(x115IsPC()){var z=x115ZoomUrl(num);a.setAttribute("href",z);setTimeout(function(){try{if(a.getAttribute("href")===z)a.setAttribute("href","tel:"+num)}catch(_){}},2000);return}
+    e.preventDefault();x115ZoomMobile(num);
+  }catch(err){}
+},true);
+document.addEventListener("click",function(e){
+  var el=e.target&&e.target.closest?e.target.closest("[data-x115]"):null;
+  if(!el)return;
+  var a=el.getAttribute("data-x115"),v=el.getAttribute("data-v")||"";
+  e.preventDefault();
+  if(a==="skipKind"){x115SkipChoose(v);return}
+  if(a==="skipCancel"){x115SkipClose();X115._after=null;return}
+  if(a==="unskip"){x115Unskip(+el.getAttribute("data-i"));return}
+  if(a==="dial"){X115.dial=v==="zoom"?"zoom":"tel";if(U&&U!=="admin")sv("dial115-"+U.id,X115.dial);flash(X115.dial==="zoom"?"🟦 この端末は Zoom Phone で発信します":"📱 この端末は電話アプリで発信します");render();return}
+  if(a==="admReload"){x115AdmLoad(true);return}
+  if(a==="admSave"){x115AdmSave(v);return}
+  if(a==="skRel"||a==="skNg"){x115AdmSkip(a==="skNg"?"ng":"release",el.getAttribute("data-id")||"");return}
+  if(a==="zSync"){x115AdmZoom("sync");return}
+  if(a==="zTrig"){x115AdmZoom(v==="on"?"on":"off");return}
+});
+/* ── 管理者 ── */
+/* 架電の時間帯の入力：打った文字・カーソルの位置を覚える（描き直しで消えないように） */
+document.addEventListener("input",function(e){var t=e.target;if(t&&t.id==="x115ChWin"){X115.adm.chDraft=t.value;try{X115.adm.chCaret=t.selectionStart}catch(eC){}}});
+document.addEventListener("focusin",function(e){var t=e.target;if(t&&t.id==="x115ChWin")X115.adm.chFocus=true});
+document.addEventListener("focusout",function(e){var t=e.target;if(t&&t.id==="x115ChWin"&&t.isConnected!==false){X115.adm.chFocus=false;try{X115.adm.chCaret=t.selectionStart}catch(eC){}}});
+function x115AdmLoad(force){
+  if(!admTok||U!=="admin")return;
+  var A=X115.adm,now=Date.now();
+  if((force||!A.sk||now-A.skAt>300000)&&!A.skBusy){A.skBusy=true;A.skAt=now;
+    directGasPost({type:"skip_admin",action:"list"},60000).then(function(r){A.skBusy=false;A.sk=(r&&r.result)||null;render()}).catch(function(e){A.skBusy=false;A.skAt=0;A.err=String(e&&e.message||e).slice(0,80);render()})}
+  if((force||!A.hr||now-A.hrAt>900000)&&!A.hrBusy){A.hrBusy=true;A.hrAt=now;
+    directGasPost({type:"hours_get"},150000).then(function(r){A.hrBusy=false;A.hr=(r&&r.result)||null;render()}).catch(function(){A.hrBusy=false;A.hrAt=0;render()})}
+  if((force||!A.zoom||now-A.zAt>300000)&&!A.zBusy){A.zBusy=true;A.zAt=now;
+    directGasPost({type:"zoom_status"},30000).then(function(r){A.zBusy=false;A.zoom=(r&&r.result)||null;render()}).catch(function(){A.zBusy=false;A.zAt=0;render()})}
+  if(force)render();
+}
+function x115AdmRules(){return (X112.rulesAdm&&X112.rulesAdm.rules)||null}
+function x115AdmSave(what){
+  if(X115.adm.setBusy||!admTok)return;
+  var r=x115AdmRules()||{},body={};
+  if(what==="chOn"||what==="chOff"||what==="chSave"){
+    var inp=document.getElementById("x115ChWin"),win=X115.adm.chDraft!==null?String(X115.adm.chDraft).trim():(inp?String(inp.value||"").trim():((r.callHours&&r.callHours.windows)||""));
+    body.callHours={on:what==="chOff"?false:(what==="chOn"?true:!!(r.callHours&&r.callHours.on)),windows:win};
+  }else if(what==="zOn"||what==="zOff")body.zoom={on:what==="zOn"};
+  else if(what==="dhOn"||what==="dhOff")body.recall={diffHour:what==="dhOn"};
+  else return;
+  X115.adm.setBusy=true;render();
+  directGasPost({type:"rules_set",rules:body},60000).then(function(res){
+    X115.adm.setBusy=false;
+    if(res&&res.result&&res.result.rules){if(X112.rulesAdm)X112.rulesAdm.rules=res.result.rules;else X112.rulesAdm={rules:res.result.rules,board:null}}
+    if(body.callHours){X115.adm.chDraft=null;X115.adm.chFocus=false}
+    vib([40,30,40]);flash("✅ 保存しました。アポインターの画面には、2分以内に反映されます");render();
+  }).catch(function(err){X115.adm.setBusy=false;flash("⚠️ 保存できませんでした："+htmlEsc(String(err&&err.message||err).slice(0,120)));render()});
+}
+function x115AdmSkip(action,id){
+  if(!id||X115.adm.setBusy)return;
+  X115.adm.setBusy=true;render();
+  directGasPost({type:"skip_admin",action:action,id:id},60000).then(function(){
+    X115.adm.setBusy=false;flash(action==="ng"?"🚫 NG に登録しました（その行は架電しません）":"↩ 架電に戻しました（アポインターの次の同期で、リストに戻ります）");x115AdmLoad(true);
+  }).catch(function(err){X115.adm.setBusy=false;flash("⚠️ "+htmlEsc(String(err&&err.message||err).slice(0,120)));render()});
+}
+function x115AdmZoom(act){
+  if(X115.adm.zBusy)return;
+  X115.adm.zBusy=true;render();
+  var p=act==="sync"?{type:"zoom_sync",days:2}:{type:"zoom_trigger",on:act==="on"};
+  directGasPost(p,act==="sync"?300000:60000).then(function(r){
+    X115.adm.zBusy=false;var res=(r&&r.result)||{};
+    X115.adm.zoom=res.status||res;
+    if(act==="sync"&&res.sync)flash((res.sync.ok?"✅ ":"⚠️ ")+htmlEsc(String(res.sync.message||"").slice(0,140)));
+    else flash(act==="on"?"✅ 15分ごとに Zoom の通話履歴を取り込みます":"■ 自動の取り込みを止めました");
+    render();
+  }).catch(function(err){X115.adm.zBusy=false;flash("⚠️ "+htmlEsc(String(err&&err.message||err).slice(0,140)));render()});
+}
+function x115Bar(p,c){return '<span style="display:inline-block;height:8px;width:'+Math.max(2,Math.min(100,p))*0.9+'px;background:'+c+';border-radius:3px;vertical-align:middle"></span>'}
+function x115AdminCards(){
+  if(!admTok||U!=="admin")return "";
+  x115AdmLoad(false);
+  var A=X115.adm,r=x115AdmRules(),h='',BTN='padding:6px 10px;border:1.5px solid #cbd5e1;border-radius:8px;background:#fff;font-size:11.5px;font-weight:800;font-family:inherit;color:#334155';
+  h+='<div id="x115Card" style="background:#fff;border:1.5px solid #c7d2fe;border-radius:14px;padding:12px;margin-bottom:12px">';
+  h+='<div style="display:flex;align-items:center;gap:6px"><b style="flex:1;color:#3730a3;font-size:14px">🧩 スキップ・架電の時間帯・Zoom Phone（v115）</b><button data-x115="admReload" style="'+BTN+'">🔄</button></div>';
+  /* 架電の時間帯・掛け直し・Zoom の設定 */
+  if(r){
+    var ch=r.callHours||{on:false,windows:""},zo=r.zoom||{on:false},dh=!!(r.recall&&r.recall.diffHour);
+    var sw=function(on,a,b,t){return '<button data-x115="admSave" data-v="'+(on?b:a)+'" '+(A.setBusy?"disabled ":"")+'style="'+BTN+';border-color:'+(on?"#059669":"#cbd5e1")+';background:'+(on?"#ecfdf5":"#fff")+';color:'+(on?"#047857":"#475569")+'">'+(on?"✓ ":"")+t+'：'+(on?"使う":"使わない")+'</button>'};
+    h+='<div style="margin-top:8px;font-size:12px;font-weight:800;color:#334155">🕘 架電の時間帯</div>';
+    h+='<div style="font-size:10.5px;color:#64748b">決めた時間の外では、アポインターの画面に「時間帯の外です」と出ます（発信は止めません）。例：09:30-12:00,13:00-17:30</div>';
+    /* 入力中の文字は、画面が描き直されても消さない（裏の読み込みで描き直しても、打った時間が残る） */
+    var chVal=A.chDraft!==null?A.chDraft:(ch.windows||"");
+    if(A.chFocus)setTimeout(function(){var el=document.getElementById("x115ChWin");if(el&&document.activeElement!==el){try{el.focus();var c=A.chCaret==null?el.value.length:A.chCaret;el.setSelectionRange(c,c)}catch(eF){}}},0);
+    h+='<div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap"><input id="x115ChWin" value="'+htmlEsc(chVal)+'" style="flex:1;min-width:170px;padding:6px 8px;border:1px solid #cbd5e1;border-radius:8px;font-size:12px;font-family:monospace">'+
+      '<button data-x115="admSave" data-v="chSave" style="'+BTN+'">時間を保存</button>'+sw(!!ch.on,"chOn","chOff","時間帯")+'</div>';
+    h+='<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+sw(dh,"dhOn","dhOff","不在の掛け直しを前回と違う時間帯に")+'</div>';
+    h+='<div style="font-size:10.5px;color:#64748b;margin-top:2px">同じ時間に掛け直しても出ないことが多いため、前回と同じ時間台（例：10時台）は避けて、次の時間台に回します</div>';
+    h+='<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+sw(!!zo.on,"zOn","zOff","Zoom Phone で発信")+'</div>';
+    h+='<div style="font-size:10.5px;color:#64748b;margin-top:2px">「使う」にすると、アポインターの画面に「発信のアプリ：電話／Zoom Phone」が出ます（端末ごとに選びます）</div>';
+  }else h+='<div style="font-size:11px;color:#64748b;margin-top:6px">設定を読み込んでいます…</div>';
+  /* Zoom Phone の通話履歴 */
+  var z=A.zoom;
+  h+='<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #c7d2fe;font-size:12px;font-weight:800;color:#334155">🟦 Zoom Phone の通話履歴の取り込み</div>';
+  if(!z)h+='<div style="font-size:11px;color:#64748b">'+(A.zBusy?"確認しています…":"確認できませんでした（🔄）")+'</div>';
+  else if(!z.configured){
+    h+='<div class="x115ZoomSetup" style="font-size:10.5px;color:#475569;line-height:1.6;margin-top:3px">まだ設定されていません。使うときは：① Zoom の管理者が Zoom App Marketplace で「Server-to-Server OAuth」アプリを作り、権限（スコープ）に <code>'+htmlEsc(z.scope||"")+'</code> を入れる ② Apps Script の「プロジェクトの設定 → スクリプト プロパティ」に '+(z.props||[]).map(function(p){return "<code>"+htmlEsc(p)+"</code>"}).join("・")+' を入れる（鍵は画面にもシートにも出しません）③ ここで「今すぐ取り込む」</div>';
+  }else{
+    var L=z.last;
+    h+='<div style="font-size:11px;color:#334155;margin-top:3px">✓ 設定済み'+(L?'／最後の取り込み：'+htmlEsc(x112Key(L.at).slice(5).replace("-","/")+" "+x112Hm(L.at))+' '+(L.ok?"✅":"⚠️")+' '+htmlEsc(String(L.message||"").slice(0,140)):"")+'</div>';
+    h+='<div style="display:flex;gap:6px;margin-top:5px;flex-wrap:wrap"><button data-x115="zSync" '+(A.zBusy?"disabled ":"")+'style="'+BTN+'">'+(A.zBusy?"取り込み中…":"今すぐ取り込む（2日分）")+'</button>'+
+      '<button data-x115="zTrig" data-v="'+(z.trigger?"off":"on")+'" style="'+BTN+';border-color:'+(z.trigger?"#059669":"#cbd5e1")+'">'+(z.trigger?"✓ 自動（15分ごと）：止める":"自動で取り込む（15分ごと）")+'</button></div>';
+    h+='<div style="font-size:10px;color:#64748b;margin-top:2px">取り込んだ通話は「Zoom通話履歴」シートに入り、同じ電話番号・20分以内の架電結果の行に「Zoom通話秒・Zoom結果」を書きます</div>';
+  }
+  /* スキップの確認 */
+  var sk=A.sk,act=sk?sk.list.filter(function(x){return x.active}):[];
+  h+='<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #c7d2fe;font-size:12px;font-weight:800;color:#334155">⏭ スキップ中の行（理由つき）'+(sk?'：'+act.length+'件':'')+'</div>';
+  if(!sk)h+='<div style="font-size:11px;color:#64748b">'+(A.skBusy?"読み込んでいます…":"読み込めませんでした（🔄）")+'</div>';
+  else if(!act.length)h+='<div style="font-size:11px;color:#047857">✓ いまスキップ中の行はありません（直近7日の記録 '+sk.list.length+'件）</div>';
+  else{
+    act.sort(function(a,b){return (a.kind==="check"?0:1)-(b.kind==="check"?0:1)||a.until-b.until});
+    act.slice(0,30).forEach(function(s){
+      h+='<div class="x115SkRow" style="margin-top:5px;padding:6px 8px;border-radius:8px;background:'+(s.kind==="check"?"#fef2f2":"#fffbeb")+';font-size:11px;color:#334155">';
+      h+='<b>'+htmlEsc(s.name)+'</b>：'+htmlEsc(String(s.co||"").slice(0,24))+'（元行 '+(s.src||"?")+'）<br><span style="color:'+(s.kind==="check"?"#b91c1c":"#92400e")+';font-weight:700">'+htmlEsc(String(s.reason||"").slice(0,60))+'</span>・'+(s.until?htmlEsc(x112Key(s.until).slice(5).replace("-","/")+" "+x112Hm(s.until))+" に戻る":"確認待ち");
+      h+='<div style="display:flex;gap:6px;margin-top:4px"><button data-x115="skRel" data-id="'+htmlEsc(s.id)+'" style="'+BTN+'">↩ 架電に戻す</button>'+(s.kind==="check"&&s.ph?'<button data-x115="skNg" data-id="'+htmlEsc(s.id)+'" style="'+BTN+';border-color:#fca5a5;color:#b91c1c">🚫 NG にする</button>':'')+'</div></div>';
+    });
+  }
+  /* 時間帯ごとの接続率 */
+  var hr=A.hr;
+  h+='<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #c7d2fe;font-size:12px;font-weight:800;color:#334155">📈 時間帯ごとの接続率（直近'+(hr&&hr.days||60)+'日・全員）</div>';
+  if(!hr)h+='<div style="font-size:11px;color:#64748b">'+(A.hrBusy?"数えています（数十秒かかることがあります）…":"読み込めませんでした（🔄）")+'</div>';
+  else if(!hr.team||!hr.team.length)h+='<div style="font-size:11px;color:#64748b">まだ記録がありません</div>';
+  else{
+    var best=x115BestHours(hr.team,20).map(function(b){return b[0]});
+    h+='<table class="x115HrTbl" style="width:100%;border-collapse:collapse;margin-top:4px;font-size:11px"><tr style="color:#64748b"><th style="text-align:left">時間</th><th style="text-align:right">件数</th><th style="text-align:left;padding-left:6px">つながった（出た）</th><th style="text-align:right">アポ</th></tr>';
+    hr.team.forEach(function(x){var p=x115Rate(x),isB=best.indexOf(x[0])>=0;
+      h+='<tr style="'+(isB?"background:#ecfdf5;":"")+'"><td>'+x[0]+'時台'+(isB?' ★':'')+'</td><td style="text-align:right">'+x[1]+'</td><td style="padding-left:6px">'+x115Bar(p,isB?"#059669":"#94a3b8")+' '+p+'%</td><td style="text-align:right">'+x[3]+'</td></tr>'});
+    h+='</table><div style="font-size:10px;color:#64748b;margin-top:3px">つながった＝アポ・再架電・断り・その他（相手が出た）。★＝20件以上かけた時間台のうち、全体の平均より接続率が高いもの（上位2つ）。リストごとの数は、アポインターの画面に「このリスト」として出ます</div>';
+  }
+  h+='</div>';
+  return h;
 }
 var X111={apl:null,aplBusy:false,aplSyncBusy:false,rep:null,repBusy:false,opt:{preset:"month",from:"",to:"",project:"",showMemo:true,showCaller:false,detail:"all"},res:null,resBusy:false,pdf:null,pdfBusy:false,board:null,boardBusy:false,open:{},edit:{}};
 var X111_CARD='background:#fff;border-radius:14px;padding:12px;margin-bottom:12px;border:1.5px solid ';
@@ -12264,6 +12673,7 @@ else if(V==="home"&&!isA){
       h+='<div style="font-size:30px;font-weight:800;color:#fff;letter-spacing:2px;font-family:monospace;margin-top:4px">'+fmtP+'</div>';
       h+='<div style="font-size:10px;color:#a7f3d0;margin-top:6px">タップで発信開始 / 通話終了→自動で結果入力 <span class="pc-only">/ PC: <kbd style="background:rgba(255,255,255,.2);color:#fff;border-color:rgba(255,255,255,.4)">Space</kbd></span></div></a>';
       h+='<button id="cpPh" data-cpph="'+telPhone(phone)+'" style="display:block;width:100%;margin-top:6px;padding:9px;border:1px solid #e2e8f0;border-radius:8px;background:#fff;color:#475569;font-size:11px;font-weight:700">📋 番号をコピー（PCで手動ダイヤル用）</button>';
+      try{h+=x115DialSel()}catch(eX15d){}   /* v115: 発信のアプリ（Zoom Phone） */
       } /* v28: NGチェック else 終端 */
     }
     if(!cSk)h+='<button id="sc" style="display:block;width:100%;padding:14px;border:none;border-radius:12px;color:#fff;font-size:15px;font-weight:800;background:linear-gradient(135deg,#10b981,#059669);margin-top:10px">📋 手動でチェックリスト・結果入力</button>';
@@ -13530,7 +13940,7 @@ B("manualDialBtn",function(){
   flash("📞 手入力発信 ("+autoCallCount+"件目)");
   render();
   /* tel: で発信 */
-  try{window.location.href="tel:"+tel}catch(e){}
+  try{x115Go(tel)}catch(e){}
 });
 
 B("sc",function(){
@@ -13571,8 +13981,8 @@ Array.prototype.slice.call(document.querySelectorAll(".afChk")).forEach(function
 B("bk",function(){if(V==="appo"){afDraftClear();advanceAfterCall()}else if(V==="call"&&!CALL_PENDING)dropCallCtx();V="home";unlockScreen();try{afterCallSync()}catch(e){}render()});
 B("pv",function(){if(ci>0){ci--;render()}});
 B("nx",function(){if(ci<rows.length-1){ci++;render()}});
-B("sk",function(){skipped[ci]=true;skipSave();vib(30);flash("⏭ スキップ");goNext();render()});
-B("us",function(){skipped={};skipSave();listDone=false;flash("全解除");render()});
+B("sk",function(){x115SkipOpen(ci)});   /* v115: 理由を選んでからスキップ */
+B("us",function(){try{x115ClearAll()}catch(eX15){}skipped={};skipSave();listDone=false;flash("全解除");render()});
 /* v110: 同期の再試行・手前の未架電へ戻る・不在の先をもう一巡 */
 B("syncRetry",function(){if(!U||U==="admin")return;loading=true;render();loadFromGAS(U,function(ok,info){loading=false;flash(ok?"✅ 同期しました":"⚠️ まだ同期できません（"+String(info||"").slice(0,40)+"）");render()})});
 B("gapBack",function(){var g=nextUncalled(0,ci);if(g>=0){ci=g;savePos();vib(30);flash("↩ "+(gf(rows[ci],"co")||"")+"（"+(ci+1)+"件目）に戻りました");render()}});
@@ -14013,7 +14423,7 @@ B("pcRedial",function(){
     var a2=document.createElement("a");a2.href="tel:"+ph2;a2.style.display="none";
     document.body.appendChild(a2);a2.click();
     setTimeout(function(){try{document.body.removeChild(a2)}catch(e){}},1200);
-  }catch(e){try{window.location.href="tel:"+ph2}catch(e2){}}
+  }catch(e){try{x115Go(ph2)}catch(e2){}}
   pcCallStart=Date.now();tsec=0;vib(40);flash("🔁 かけ直しました");render();
 });
 B("pcCancel",function(){
@@ -14107,7 +14517,7 @@ B("autoQuickStart",function(){
   flash("⚡ オートコール開始");
   sendHeartbeat(true);
   render();
-  try{window.location.href="tel:"+telPhone(ph2)}catch(e){}
+  try{x115Go(telPhone(ph2))}catch(e){}
 });
 B("autoStopBig",function(){
   cancelAutoDial();
@@ -14318,6 +14728,7 @@ if(lst){
         inner+='<div style="font-size:11px;color:#64748b;margin-left:38px">'+(pe?'👤 '+pe:'')+(pe&&ad?' / ':'')+(ad?'📍 '+ad:'')+'</div>';
       }
       try{inner+=x114PrevBox(i,"row")}catch(eX14r){}   /* v114: 前回の結果 */
+      try{inner+=x115RowSkip(i)}catch(eX15r){}   /* v115: スキップの理由と戻す時刻 */
       if(!sk&&!cl){try{var ng114=isNG(ph);if(ng114)inner+='<div style="margin:4px 0 0 38px;font-size:10.5px;color:#b91c1c;font-weight:700">🚫 NG のため飛ばします'+(ng114.reason?'（'+htmlEsc(String(ng114.reason).slice(0,30))+'）':'')+'</div>';else if(hasAppo(row))inner+='<div style="margin:4px 0 0 38px;font-size:10.5px;color:#b45309;font-weight:700">🎯 アポ済みのため飛ばします</div>'}catch(eX14n){}}
       if(ph){
         inner+='<div style="display:flex;align-items:center;gap:6px;margin-top:6px;margin-left:38px">';

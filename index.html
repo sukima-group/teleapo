@@ -85,6 +85,12 @@ kbd{display:inline-block;padding:1px 6px;border:1px solid #cbd5e1;border-bottom-
 /* ==========================================================================
    川嶋メソッド テレアポ管理 PWA  v32 (15分刻みシフト + 再架電保存バグ修正 + 管理者シフトExcel取得)
    ==========================================================================
+   v116 変更（2026-11-25。詳しくは README.md）:
+   - ⑴ アカウントの追加：阿部竜彦（097）
+   - ⑵ 再架電の約束：サーバーの予定（ID・予定の時刻・状態）をそのまま使う。「✓ 完了にする」はサーバーへ。架電の結果を保存したら、その番号の前の予定は完了。予定から7日で期限切れ
+        （v115 までは完了がサーバーに届かず、同期のたびに全部の予定が「未対応」で戻っていた）
+   - ⑶ 管理者：再架電の約束（人ごとの未対応・期限超過・時間どおりの割合・期限超過の一覧・古い予定の整理）
+   - ⑷ Zoom Phone：iPhone は Zoom のアプリから直接発信
    v115 変更（2026-11-24。詳しくは README.md）:
    - ⑴ アカウントの追加：石井和子（093）・石河巧（095）
    - ⑵ スキップに理由と戻す時刻（あとで＝2時間後／きょうはかけない＝あしたの朝／番号・会社が違う＝管理者が確認／その他）。サーバーに残し、管理者が見られる
@@ -218,7 +224,8 @@ var CONFIG={
     {id:"s112",nm:"中村花林",pin:"112",sh:"中村"},
     {id:"s114",nm:"片山佳代",pin:"114",sh:"片山"},
     {id:"s093",nm:"石井和子",pin:"093",sh:"石井"},   /* v115 */
-    {id:"s095",nm:"石河巧",pin:"095",sh:"石河"}      /* v115 */
+    {id:"s095",nm:"石河巧",pin:"095",sh:"石河"},     /* v115 */
+    {id:"s097",nm:"阿部竜彦",pin:"097",sh:"阿部"}    /* v116 */
   ],
   /* v110: 削除したアカウント。端末に残っている名簿の控え・その人のデータ・ログイン状態を消し、この PIN ではログインできなくする */
   DELETED_ACCOUNTS:[{pin:"093",nm:"坂上順子"},{pin:"095",nm:"浜田敏幸"}],
@@ -238,7 +245,7 @@ var SHIFT_NOTIFY_TO = CONFIG.NOTIFY.SHIFT_TO;
 var DAILY_REPORT_TO = CONFIG.NOTIFY.DAILY_REPORT_TO;  /* v14: 退勤レポート通知先 */
 
 /* v26: 起動時キャッシュクリア - 旧バージョンのキャッシュを強制削除 */
-var APP_VERSION="v115";
+var APP_VERSION="v116";
 /* v35: 会社ロゴ(スキマ) 埋め込み - オフラインでも表示 */
 var LOGO="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAKAAAACgCAIAAAAErfB6AAA3RElEQVR42u29eZheV3Em/ladc++3996SWlJrs+RFsiXb8iZZxjsYsMnEgAGHQCbDTMhD5gcJGYeQhSQkBJJhCJAAISRkMg8QMGAwGGywjYmNF2xJlhfJ2tdu9b5/2733VP3+uPfrTS0jyZZtnO88/Wjp/vpb7nurTtVbb9Uh+aLBjCXT/0NOZ/yQZj6WCIDWvq+qAFjjbx3z4Pp6ORbXL8Gre9lZ/4+tsG57r3ILnvSy9fWqddF1I37VuGiZ9MxTsJ9goDTpz3XmY+t3Rz3Iqq+XNMiiSYvVuvm9eqNoAqgeXL1aXXTdcF+dFvwLuKr6ejW56Po6jYvo2ATkRH9aB/iXFvUEyln4vog0Ux3gl3MpoDQn7nWAf/nA1GnAJRZKk3/HjBHJaQC4HlW9NL44sSVKACYFoOIUSsQJ5MoxxkJzbdAKqtVl6xb8yk9NWVWdqpJYpjBwBBhDNQzrLvqXzkGTAAQIIKRGIo81bdO5qpeuUqRe0YQlBOPkImLA8HS3Hntw6KlEX3WAXzInLbXdlxQQk+kdLjz80MRzY5FNy7J5unpxQ2chWzBlRBNqHSimjRWYpbKpA/zKN2fSCuudTw594buDhyswhEIKa5b773j90o1nNzdQL/OQqksBKSVKKnZ6qgATHSfkq6/TkRcZIXGM/jL//LBsr0CMgWCgQvt2BDuGD91wWeHSc/2zFrYvblKqjJgw8tRAAI5OzZDNn91UD6NfGhdNtcyIyTTuPpr6xk+H948KMSBERAQdnYh27Clt2VncewgpFJa0taSYCMKqIDk1I7Z62lLs+poDZQWYqyb73BF7qDc0xgg7hUAVDBCNAyN9erBnfMez44evmP/rr29vNYNMozE2p1DrYxBmfNVxPs0+mpRGA297lxuogg2DiVmZYJJgG8bAGdozRl++t/+7j4yXqDUkckSntgvXFR0vdSxNJjUxQbsODIQggZCClSxghU1McAhU1Bk9UpXb7+95ujcMMzlRS3oqYLHOXEi+6lC8GJvu9C/E2HFkMvv6sbOrLKQQUYUo4KyqUTXsiIQEcApneG9v9ODW4kilRdmf8wnrFvzKWqHyhEs/s3O0bwwRsRAg5BQRcUQkta2RwAQC0Tj03if6Dx/1hPNCnPxQPagPmBMCmBXTv+rrxeewEuZZoRA1Q5X0U3vLZQDEqnHgw0KQWgykyRdFIhHT7qPuyZ1jkc1FDOGYzTIKe4LGyZPPV1e7nx5OA6DkT3Hq+fmuIdrfFwrYKADS2OPOrDQpIAQhdUolh827h4aq2YB9x9MfoicGcH29VFATw1F696Hx/tGI4qRJSWVW0kLTb44KpAx9cnfxse2joW1IDJ5C5QDkXkCaVF8vjm/WmGgkIShg/KLDlt3jA0UVBoSNWIYhZVWn6kTVCasYVUAUjlQoJDoyiieerYyVjbEeAMci7NyJgVW34NOd98a2qI65SrmjA7TzQLUMKJ2oSSkwAXpyz8jhXoFmRcUojIC17qJfEYsBA7VQU0V6V1fQMxgFgKooIoVLstNpPAgoLhKaya6gMvHT/dVnDkbVMA31SSn+qgP8ikiH4xBLYQKk9/TpSMUJ4q3XQeWYaCmOtxlKMToEKEl/GQ8+NX5gyHfIC0hOOBWuA/xSYKyAWDM8oU/tKw9FMMQnFO8kZX4lBQke3155ri/rbCYiUToJB1Jfp8t0QSARMh5Mxpps95DbfWSiqgRmgQpByYGcIjrmdwUkSWlCWZUJpqek9z/Z3ef8EKSJTO8XE1t1gE/3Fkwi6kQc/IPdODqglmqsx4y8N74liObqMyEAhBL45ztLO7sDmEZCihggBtUQPA7GdYBPswlDgcAYM1LWZ/eMTURQC4XjWGmliVaSAKiqRkw1wWVtCVQpTpp4f4/8/OmwjAVKfIKkdB3gl4DgcOz53SPejsPlkCBQVaVJ/SzUAFAp+Fg6v8GSEKbiap1GbDFkPNRHn6oe6Pdhs5GyaCKd1+PXEusAn/ZEmAhh6Pb06r7BMDRQwTSfjFgSzaTrz2m/8bpzM5njyqUIKsCzR0Yf3dIzHqYDR7XqH0Hre/DLYLmsxEoERTHgZ/YUh0tQqendZpLQTT6uW9962VmpXIY0EVNOaXRUHSAKEFFPhX+8bWTviDpuTLiuiMgxCSUVizrALy3MULJlSW/fMzYW6OyWBYCJCFjcyOuWmjRGjNFpDNiMJYAjCNG2ruj+LdUy5cAp0cmyUj3IenlSYBsh3TPqukcwQxepUwgzsP7stnOXZHIoe2YOsCjmNYmEWCx1Teh3Hh18ut+Omzw8G4/MEbZK3rGA1gE+vQas6kXatHtf9fBwpJTsmFM/ZgBYmscV5xYaTNmE1fTxNmBKkiWAyaa2HtIv/bBvT6m14jcFxErimIU8otk1/TrAp3c58oquaX8XxkOJONmSp9mowrnzlvkXr6hk3HBKxVfY43nbJCkWgauI+fGjY//3+z27hzNV0y4oIJblqU5F1ESodzacbgMWY3tK3taB6gRAMKyRTOM2SJAlnLeyYWFT1YaVnG3zzbGlfAGIoKpExjllAqXA5dD/3v1j4bC+9Zr553Y2tGQUbsLpkOFqLatWAtUBPs17sLVH+sq7DweRkDHQJKtRgGKd85IFmQvOa0v5w1whNmzMnP0LJKqdbeay8xft2t2370CVYBzzcEjffWx8x5HqhvMaL1/Xce7Sjo6ss1HftJ27bsGnMbzSSDQ0hcN9lZ6BkNkwc+imvKcClrBueXrVQk+CCiyLIaFj+5AIBBXqaNBf3TjP2zTvoZ8efHzb0KHRcCTCKGhzV/Bcd//9T4xuOMv/1U18wUo/byPjhEShWgf4NEJMbIsRHzxaLLmaKekkuCSqhRw2rvY7siWuRmp8tVaIZgFMIFJWuJxKJxVXL8blN2d2X7rokR2lR5+rbj9UHaqEJcHOAdc3OHHkKL/37Y2XrXJ5mSCtA3w6l6gYPz1eLu7rKpXj1mCJA6Ek51GNlixoWH92LusG4CKxXgSKROUYpUet5MApChu0xKmhhjNzq1bkX3t565ado5ufm9i2t7q7x5XUProvWr05uGBFcx5laFh30acXYTiJXFAqhawgsZERUUDBIEPqE61fM6+jTYwbI04JGSdJ00HSyDKj0AQlVVZAFeKH40001tSSXnlp4fq1C/b1mwefK25+dmB00LU2MGsGmgKFqAdZp28xkQuitpS5cUPh6FB5R1/gHBlix0QMT2R5k15ypmZ4TEMhEVJ2kYqbg8YiwIA8S9aLFBWog5IRB5kwXG7P+m0rGs5dmhm+bF61Qs3NYY77SSIQ1QE+jRswCMSUo/IbLmu0ucIPflJ97kDUXXRjTghsoBeu8s9fFlmJVIlUFSKiIsd9OiYwO1AQE9UEZoDEGS0jLGdgWgsWTazkSELURCN1gE8PurFPJTU63myrb7oke8GK9LP78o/sKO3sLlUmogxFl1/Q0lEgEzgiyyCBxI0Oc7IcCiUmAqkSwFQrJCbTgQmAE+dUiMmA42EgdYBPdxStZEUNqimpNjblV15U2HRey+BEc1CSDLn5rdXGaMAiSOZlaTJuZa5xDaIQ31pmEoXRGTO3pr3etOis9ix1gE8LgwUkhXxSIhEQqatk6GAnpzubstRMUAcpaxTGKh1KSEh1kdbYqxlUFiddRgCxiVXVs1+SFYYozr+mkK4D/FKZs4kIgJY1DBQKYmIH0hgsJSuE8YlqJYDMnNqtUDDgYsW0Hl+OOff36wCfNiMmgU5NJ5zkt4hjBGNZpIKEACUWSKks1WCaD5jmDxTwmD1LqnKir18H+HQnwnPRFbWBWRrDn5QBleHgqpFGyeZ57OgUtZY8W6si/CKt3eRJKXWAXyqLVp0WCs3wqAooCbGdKIfV8HmGYhHH3YJ0/I2/7qJfOUjP4kU0aimOF0PRuLg/V5AMIgYfb16WghxourJaUS/4v2JgT1XKPFasuuNESwRYy8wnPWuHjxOLGa2djjXjq9asjrmVmi9Ci7H+p2pTrnWXEmwQyMhIoCDmuT+/Zw0AkZOzyblctFqFVXKzI8Da/qHTwZjrbkvYFZGTQIqmMnSdnK96opeJgWlK8mQoHEFZoUTyyseZIWUxg6NiQGGcFR1zJ3gpKIJJiupUARYDtbOmqk2hOvOZ5Rg7JiT02Quzw9r0XJrlGOQ4AaMBCPGtTQo4QKFGhUUjY38pho/QYMX0joeAHPtmVeEZZAtk/AgaktMTv7rHAEwCqtYo0RnzIlAboBW3zyiBFZgSWxPANO0+oFM+SURJYtqOarFF/C+YBOOZt1VyO5AKBBRyPDOMHDgiyBRZ+0r21Iz+kcrRopOpgzom719SJc93mZwaGyGU4+RFSnMNOLPHj7ZpmstlARMbAgsTyECtixNwIsCRiIoYp1CAI2J3anexsDhYRY7IE4aAHQVAKRc4SgYtE4imai5EZBLSwBGI00x5UaOq0CppBFZFCAFPy/1fDvs8TupTs42AvL7R0lhZBTTLTxHBF817aE6bjMKGelKRsT3+rpaMzgSM+KkyZ8qBJ1FmoiTVqqlGHKmwUT/N1sLaaiYdNkFSrmpjVRG5k/GLBJAQOeYA2aq0jo7nSqGEsCYbNaaHLY/5rkwqRBx/5qnohLyAnRpbqeYHx7LFKAViIhQyaEqX0iYERgyFENDJvaUXjOnklHY6Lr5QArEjDYx/eLhajiTZTnS671QC2tJ2aXvBk1GjcpxEeDIK0V8AsAJECiJHGhlPvLa9o3bL/vFnn+sb6ANTKqraIKBI1PPISwu4any3aFHu3M6mCxa2LW0OEPVajZ7HLypmzdaMhxyomOxgtf3Onw5v236gHPkRW5Nx8zLV687NXHluUx6jyc7MTKpKCuEwgEt7Y2HDT38ePvTUwTHyg8gxsTXhqoWZX920qLOx6lPVJOHBSw3wCTyKwTrusLs7qMSzG2bmyjGlOS/jt+UZGigpgeaOT0/QghWsLMoIkBoMWh7dTnc82N1bLnQs3jR/XcfCjs5suimdyZAxUSil6vhEabC37+j2I70/++HOs1Kjb75y3nkrG1s8ZlQo3qtr5wyTTjJ4s4enxs63qpkfPtb33cf48uveOn/pqgi2IpWnH3rgGz/a0tnStnp+xZoKoMpI5IcMOGe5sPcw3/7A2OJ112zYuK4CJXBPT8/9d93b0lS9dVOGMDTdISpmXKO5j6aanDo37bSbmHskUporDpqUy2l8/9IJbr+izKOlKB7OYpLbcHqESwztaM435zzR6GR9kD3GjKAEIRbSfm29fbPceX/32k23vPvmt6+7cH3b/PkAG2sBVXFE7CBBGIhzQ8NDOzY/edeX/vFTX7/7La9vu2njvKz0pKhCIIE6RkSwDiyAglhlmi8iJVaAKXL5Zw72rzz/qj/4y09mWlqCiKzPT/zkB3/5339n98HR1Yt8pYjIEVTJJA7OIII9OlSO/PRb3vlbm256nWPL6o0Mdn1w38AzBx4pXdGWd1mSStJxXRt8EVN/BFLRBHOaFVRSomFVBimEkrGErHHT5+TDVUERAEvsCKKxdLKW6v0C3pgp4Gz/CI2XEv/MCszQZJEP7Wznxiw0Lhc7nTT+yZvreJHs3BYM9dnktu2mb9zbe/2b3/O7f/Dx1tZWKARKgBNRCZO7jDnl+wp05pZ2Ll520dpLPvGnH/zaPd9saS1ctqZdTMmSiShSVQOWQDUsWw6FVMhB0mQyjtmSCSSMrJ0I2ophfyHf4PlpKCnDweYaF1cpXXJVTqeCsGooz5wiZlVSJYlCTmebC54vPT+88+u7jxwINU1ixke7D+/ddvlKo5KLaB5l1FCkorH2fGp2ETnnHJFaa8CkqqJiSMmJuFAkhILjMI7I2hyMBzKiEFXmONUGE8NjFVIETsbhKlSLfylhk+jY1Da+zyLH5DXvOzjePVgFGYXjad6dAFE0prBiITfnUqZC5GhazqonZcGT3ahEJjUmTT9/tqdzxVm//b73tba3VgOxTPHoeWPM5KjTuN+VRJyISNSyfOFvf+TDf9K3867H9rWvWFuZGCyOOTZKikZOL2zS+blxll51ofMbJqiw54g/VrS+709Uy34+1dLWQf6AUxERkIGCwYF4FSCy5NQqFUY1c6g3NzKmJAyQkGubZzoWZzZclr3jvru//O93hppxDvmUXLm+cNWGVeOVqGswOxFCjRKRYSZiBqV9yeeRzaWFpFgsVSpaDVSJIJq3Or+RGtLimXEJSyIVMoBt7BlpGBgzFbJVcOyTKQnPYYkzKWRN0JjP5VNVEwXGjVl1TKoUWx7NSk5UlZSgVAz8XQfdQFlhJjeuWhMpQVQzaVq8MGWpDDim6ZM7TjqKjpuMSdnrHuZnd4+/5tbrOzqXR2FkyTAR1JWLlb7evlKxotBIJJvPdCxamMtlRARK1Wpl2crzXveWX//c3/zhv3x//9HuI6NDZNkHoOXqOYvw1tctvWhpk6Vif9D87YdG7n5otFSGZ1OVauj76Fw2un84PH+xJ+oAQxADqGhAVDRe2W8eGBn/wcP9P3zswNgoG8cMVzG6cAGu3nRudyk1UCqL8YiM9SysE8ofHrDf3vrMczvLkcBN3vQKBqWsNjehpbVQrVTHxoLiOIpViAWHyHlYNA/LFzSdf3Z+7YqFrZlqVcLDAw1f+sbu3YdCl4YztaiBAMA5uAhZHw0+li/yVq9sO/+c9jOaChT0sZYTLO3skg8RqRLZdF+R9vaGAQB1MwFOcGxr8Be0pCqlbs8JwGB6nvLRL3DRccNqyH7PsDda5lWrzmXb4AJlo2Ro7+5dX/jsp5/autmFFQONnBhjV5xzzv/4nx84//wLFcLWA7Bs9YU9rvnp+7ve9tabfutX3w72iFAdGvzGP/3TV/9jz8JfWzQ/m3p0O77zcPE1N7/r0tdcS+Jbsn09ff/w9599eu/+8zY0BKFLTb5F30SWJry27aX2f7uja9tBd9VbfuuiizZSCOaw6Ebuu/Puz3zzoZIxN9/67uuvvYFNxtjUgX17v/yFv/vIP2+b37nwnR9494oVZ4ioOHFRJCoAjY2NHzp0ZMdzuwzzBa89a157RypbsBlbGhsNxyeOHjjw+M+3/OjrWzed1XLLtR35dv9bjx/cGa245Y/ePX9JhxNh8pIwWAmQciUaHhof6Tu855kn/+9DW7/z2JF3X7Xw6tVLGAcZERFEwpjkm9yYiVhIkfZ7jsiOrtLxsg4Gli/OthWckZJlhjs51sbOQXOoKpm+kapJNbbNWwaQksQb+h3fuf0bX//Xi89desbypgY/zeDRYvijn9w9PDbx/t//UPuCBQZGHZ56csfwaFhl74ab3n7jf7l18sn3HOr68b//72LgpMB9g5HfPP/md773/As2xD+tjEd3/ejhJ3cecCBYjxgmfjcciOH9fdjx9eee7aJ3f/CPf/2d72nKttViEHau6fbvPdTQ3nTjr77j+qtfGz9buVR85JGHH3v6K+dvXPP2W9/b1t5+7IevlMsjo2PE3NjYmE750y9DpVzqOnTo4R//4PbPf77vG3tvffvGg737V5x31n997/9Hfu54V7NcqowP927b8sg/f+EzX/zOY5454+p1jaY07lGUjCMlMGpT0JSIuOpkx56J7mEHjsPzOHDnyQ3QsjnjjPaMqXriiIySo2MN+Pgs4dx5sKgEkWMv5afSMeccb7n5fEMumzt85CCqQzkYw0ZM1vf8e35w99ZndmVz+eY0fFcujY+f1WZ6x4xxEJEoiojYMJjZWGPZGHUZ30v7rKLOOQkdYJjI8/xqVBEV4/m1g+DIBYEL3XfueWrNurM//NcfveHGG9OcC8KigzIhrAR79+2vhmEum81kMiJRGFQN22q5nM1liSibSUdhVcRp5IgZxKoSU57ptL8gMx+AqtREyUl2k05nzjjr7DOWL+tcuvTjf/z+ux46CL99aHBk9+7d7QuXiCgzq+pkXuR7Xi6XS2f8THbp9Qs7zjx39cf/1+99+Yf3zV+44Kwmz4tKJkkVp9grFVHODg/mtu8ZCiIwH8PfExt17Vk+s6PRQzeDON738cIOp1RR1SjlWYkq1aCU8JykULztlre1NeaefHJzqTgO5zxjA+XVi4qty4d27Nm/beuTi5r4uouXbrhsGZH3pTseYzXMDGZiZoqs4ci5KIhYOZ7HScQm7phUrkpQDUoafy6tTSoHM3kCu3L1hX/00Y9ddc3VikBVrEmxqiL88Y/uvuuO25cuyKctnFOQYWOt9Yw11Wqgqs45VWJiYSViENhYxBseyDlHyQLb5GpI5MTF26F5zRvetOXpbd/+0j9cvP6cPc88+T/f+9/aFy9X9iIBVBgMgog0Nja+/e1v37RpExsLskuXr33X+/7gz97/1P1bR5dcmc2pcjx7klWgJLFX5NDLPdOf3rJ7XGMzOobCsMBZLeacJvFdmZlOoXo/F8CkFtXF7TkKRp54+KGLL7vSGqvqFGhubXvLrb/xllt+vVKtCsEY6yQcGRspTRQPHTryxONPPHDP93qHDje3triwFEbVStyJkczsE2KCEhMbgYojmGnUowJSG0DAmgwJY4BSqczV11z7tre9beOVm1RF4atzkYgLo7vu+LfP/e3H1szzFpy7/KFnhw2ZJLYlAog5fnJiZhCpgpnGRkY2b9mazqTXrDknl88p2BgTq5wOHz68beuTy1csX3XGGV7Kh6pzzpr0hRdffvuXv7ygEP3OzWse3zGwo+vprXvGjvb2YWYbwhOPP/G5z3/u0ssuUxFVXXPeupWrL961//5oU1qJICCi+BOpCIiEqaSpzYcq+4dU45RKp4ZQEsCqBjhveb6zKfBRnanWOFWAiWCIPcLZS3NrV7b+4FvfuO61rzv7wsshIhAXCpyDqu/5ZBgMBXdkFtB8s/KMMy/bcMnVl2/41F999Cvfemjd2kWcyznLACzFJBYZY9gwkTEEVuVkAknCBRhmk0DCMfDMDMWSziW33XZbR0dHUK1Yz1OFsbY8Evzbv/7TVz/30bXt+p6bLnn06e2+KxpC7WSLmlVO44SVCETdXUc/+5lP79+3581vufkDv//72WwBgHPOWrt5y6Mf/N3fW7a083d/74M33vQrEiVVucUrlncsXVgp9qxdvXa4Unq2p79QaOhcunTBggWFXL5QKKTTaedcGIblchk1RVyhsXHVynWPPvOTSjnFeSMSEaAwUKNwjl3km5Eib9veU1QT18+mTzdkwEBaUli1POOlximKprR4LyTIgioblchlZfTNVy3Z97Vdf/IHv/++P/yzDRuvSqXTzAQP02R/QjDOOZGImD32L778qtv+PPMnt/32PY/tmIisZVvDL9Z+JuP5mE3MHE0J0BRa4wLifDseWwDVXEMh11jQSGxMERozMjb0xc9+9qv/9Mk3rS/8j+vPKGT7N6NihEWF4UR1chIgACajChcXWglhWAlHu6LSoTu/97WNr7nymmuujadQARgfHxQM7N0/8s//8vmNGze2NM8PQ2cVjY3NDfMWHC4O3P7g7m8/uG/tJTe+6/qbz1+/vrmxOZPJpFKp+J2GYUhEsTMQwHiptnnzghATRSCfIgrFqGNhR0waaRSYzp/vizbvqVTIMlThQARix2BVVrDq/BZzzhJt9EckqlIyY1hf8B4cBSTkuYkzFy3/tTdf8cXbt/+vD3zw6utvuOjCCzuXLGlqabHG+L5HlpnZ87xCQyGTyUJJiV0UnnvBRa+96da//JM/itIi8dQnEeUIxKIQUXFOhDT+80SKxKoqSkyqHBG6Bo5+4q/++D++8623bpr/7msXNNAg1CMyQBUQwAIOIK65gWkWnKQ12Yy/evXKA71je/buvuqaa0RcMjSStbk1s2B+5+hYf2/P0ZaWBZ7ng+Ap+Sa7be/gll3Va9/wrg9/5OOtDW2ThLaolkplIioUChq55OYCQGSscapOSMhQsncIxdJoLzsRFH760IHecXFeiIiOSWzJJ1q9smHJ/LSGg6dc0bZzlZ0sAMeybeuux7aTNXbXszu3PL2jqalhfmvrwvaWbDqVL+QVooRsQ/Oqs89+2ztuXb7iLBEVkG+91esuEr+hVC07F8ZbsCqDjCgDHnE+YhWOIlKp0anEpiYCA81kbzUh+OEIRNzb1//Qgw9CyquWNRb8EOUS2SajqhQmXSCxOKGmAxGCw7T5rgRolDWs4saLYzRt7qs6cULMqFYqE8UiiFQdlIkA8nYdmLhg/cW/8e73tza0hS6COig//eS2u77/7b6jB4nM62/4L1dc89pMITsZDZu0B9YQKsxMBIKwEFQdiZd94pmhx3aXAkpESjMLfwzRvK+rl2WaCy4sVe2pihbsXNIAK6awf7Dhq/fsO2qXd65ed/OaDZxKdR06uO2Rn7Zz8YxzlxnqJXCoprer96s/uy+fz7/nt99vrRdfLC/lccZEE1WpVAEHVsAAttDQVBK7fziTL6T2Dwx72fZ8vnmysBu3WGGqZU6nSouAqBITqV6wavU//t0X/vdHb/vit7elfm395Svb0lFoPMeGarN1k9Ql9g6xrmiS4CUmdaGnMUMRt/NRPCcQoiayvhqEoqKTElclDoXGi1jccebC+YvVKQsZ6x0+evSzf/e3Tz74zTWL0kPj4ac2Pzp/YeeFl17sxDEYAFsmRgQoJ6y0i2vaJjNQSt+7ZXjfeKhExtGkQqlGg6iDm9/Ga1ekEI2KCDGfGsJzuWjnAjbPduOAtH/443+/8aqrozC0vj840Pupj/35z358T9/AaNYKsyHPL08Us6lMa0ur73muRrge7ekulypRJOMTJa11XjiRSy++9DudZ33+jscW+O6ZXvvmd93SuXiJSKINEU30SKJOEI/DFiUKo5DA1noqwiBrvE2brkt99NN/9dE//T9febD85hXXnd9Z1aKIJBQexwGaITYAKB5/AghRHLgRoBIxiGvUbCJQYkoJ+Q520p/HtQLyCT5grOd5nod4ui+ZQ71dB3dve+sb1l+/cUV3f/ET//jA45sfu+DSiwmUzJNVnirTJYewqCpXOfvErvBn28qlCMSxhE2mCGomQ8qkZ64oLF1grasaBsWHcNBJnzo4t6KDDEpRWSjT2NacSqe9VJpJFy5a8ju//6HFK1ZuffTxifGSGhjmjnOa33rllTe+8U2GoKIgFoS9R/YsaskPenz0aJdzYoxhAaCr16794z/+2Pe/++3hgf7ffMd5N7/11/y0Eec06dVJNi+FU43zK2WyfUe7tm7dumHDhrb29igIjLUSRevWXfQXf/WJT33sQ1/6959otb1kFzoTsAgUKoDB9CMYY48webFrhzSqaGLrM6rBOlnN0dopGYKpJ4ifiwDkPJZIR4sTw9Vy33AxqIJ8owmtpLV0YGopAGE2mcFS6psP9+8ZdMbjwMX1UlOrRDpjFI7aPbr87MaWdMULA1YoSS0gfcFEB4gssGReFuGhHdsfv+Ci9VEkBGVjO5etfN8HbitXKqELY6dhrc2nMwoJxcVFtqA6dvDZx9YvznGuY9eTj/b1dC3o6JR4MIXxLt14xYXrLyFDnp8CVJ1jilWC5Gp9VUIqNOUhR0YHP/nJj2+8/PIP/t4HW1palEICDGPtmvP/8q8/+/G/+ND/u/fh1va2iDOJZxeFQkSjKAIQRVH8j3hnd5EDke95nHhmocnSbs3IeKrXViECidgEimoYlpwEICVmFbeko/OiK66/956vb95xdGystGLNRRsvvSTeZabIxORoZ60V37xS1PIfz9BDO6pFsh5TUtydKiwnkcNZi7LndKZs1O+7uIqtJ6bg+IXC99hnueCMRV5nu3zj3768a+c230sRGweOFEKcyeYaGpoa8g2N+UI2nXEiIsowxnDK83720we2PfLA5avy153d0rX9ibvu/B6zR4ZFIhdWnVSNB2PhXFVcNDn7WlSdipDEwolINVINoaoqUXD08JHPfPrTf/PxD/f07GWOQI7ZSESLlq/+8J9/euGZV9z7sz3lwLhIVWSqdY8YIMMpZqvxIF9VJ0IAW1amKBYiqkps1E5JakchqKhGjgJFRbRKrPmc99SOLVu3PS4SSiQu0my+4QN/+Ecf/IvPXvGm3373+//sI3/zt2eeeeakGlxUw3iunRhoLBJwxuT39OX+3z29R0aMqheENb9ck6uyQpzmPdp0wbxV87xUFJHUjpU8peMH53bRGlWbs2O3XLvgH25/6hO3feQP/uIvzjpvLZgdhBO1TZLTMsWzIlgVgbqnn/rZ33/2k+0pufZsazLVRzr0K5/7TOeijquuf306kwMAsfGnBxOYY1LCKFQlbWyKDYh8k/KsByJlJiLfsw1Nqabm7H0/+Op4f/9tf/ony1augxBZq6HrWLLimmte/93v/rASCJjIgEFgsoY9SwCsNcaYGu9B1hIzVALWMOV5RBYcEYGIUsZCHTRUwPMMEZiEWK3vefBWr+oMZewfPv3xxkLq/AsvNTZroYsWtL/jlreVw5t8Ty1sHEtOXkbfkopTCJOqUKTZAWn46v09T+yrKFIk8aYqmB70K8Tpkvl2/TmpRjOaCh3UTZEFdCpB1qyURFXBKn4wfNnKhuKNrf/6rbtve8+RG255y3mXXdq+qGN+63xDlmE8slAR1UiDgaH+7Tt3PvXUlofu/vdM+cB/feMZixr6QP5vvPGMz9+592Mf+o0HfvQrG65608pVZzU1NafTad/zXeTGRkdsym9samayrBju7w1Hx6xq/+EjR7u7FyxcHDinNr3/4L60m7j5mlXGuG/88O7bfrf//bf96ZrVF6f8LDO50kRxYjSd8cZGR7oOHwrKFREQaHCgb3io17AODO3v6zuSz2VBaozp7Ts8UR5YuqAlY8L+rv0T4yOenwqjiBU9Xd3GRK0t2a6+4aPdXWeuLoZhKeXbnr4jw0P7zl4YXbJu5ffu+NlHf+c3L3/tGy+4+KJFS5YWGpttrlmYxVWiyKmjQq6Z2UDJgPoOH/UU2ZSDK1etjvsLv/1w5a7Hx0pTOsvEHmOKVglgTSvWr8ysWarWDRp1UzY7lT6ejF5VPz9L1GFUiCDOuqJBldr3HGm4/Sfdm7uKlOtM5xe2NDfDciGdyxs/rAZBGBTLxbGJkZGx7rDcffmqws1XLVzWMtYgA75w4C84NNF439bBHzzRNRJmm5oW+36L8bK+70VhODo65qdTLS1NmXQ6bU3vwa7h/uea2/Ldg8V8xxnt8xc4JoX2Hdwzr7zvd9505qIV2Yd2D/3b93cGtHTpkrOyuYzPVBoqHjqww89GYyMVz5t3zjnnMLHxvd6e3gOHn+ro9Pt7K/Nbz25t61CfQ9KDu3YWsPsdN1/86JOHHt1WPOusSxsKuSBy4Xi0Z/vmdeu8q6+98Ctf++ngRPuZ55+jXiiqXUf6xg49+643tl17YeuRPdUHHu3funcw4FSquTMyDUhn2PNUojAMRZDL5o0xBKREju557spV47/1xkITDUSNDT8+3PCn/9L91O4ysYqamIPnafpzwyKiK5vlz965+LUXhumJ3hQ8hZIhsAPkFLjoWQDX7g7SiOA8UpOKtKmv5HUPu4Nd40eOVkdGK1WHqAITwgDWQyZjc3lvUWfTsqWZhQ3VFq9qZdQzIQGhZEIuVFNNR0bc0V45fHB4YGCiUnGRU8+nQr5QDYLRkQoMCEgRzj+n7ew1K587OLDlmUOlYqAGDCxs8a86r231/DRSpXGYw0P2/geP9A84P4cwQFqoc3HL2guWjY+Vt27dMzIauAhk4Pm0em3bsjPSh/cHzzzV6yKKPJRE5zdkr1zXcuaSTH9RHn56cNfOEcsAgUNeMj+/8bKOhmY5cHji0a3Dw9WKEiRC2sN5K9ovXp2al5tAmAldume4emSweqS/1DVYrgo5gWfZ8z1rvZGRcedAQGSwanHTtecUFmRGKWN3Vxr/+mv933lkIpI42uKaWIsAGDAxe0Zs6G7ZkP/Qf5s/j3r8YonZAkoWoJCgLwLAWju0VECwrMTiACKbSquaSEzoKFAvqhJXnGH2PWMMsYnYBKxViSZYhdkqi4KgRpg5nREha9NhVSJnnWoYVZjY83znnKgqkTJYI5/BxgTKTkxQjUSiFCNrNWUcwsBJqOzBZsuhc2rVZiJBxhhjRCQwxjgn4vwwCJXYWmO8smCMyQ8DH0jBmECCtNW8DSkqOrJVTQUVZvJBSiI+B551zhVtuqEiOUfkorgiEnocqRQZISubeFSR8SKnEYwznjCDDBMDxjmJtZchm2wq8oOxIHQjqbbP/2jiX+7s75kAg+NDGGohLoHgqbXsGymdkfM+8lvzXnPBeKpUToVJ/z8bBwpPrcPqWEUHTcbiJApyJtbhVRzYxPOHDYMylE6RipJCVSBKTiDxmZokkBp34IxEKEWs5HTcxFeBJe2HiaiQk3bCmGcAkYqmVImQSwMKI0QCiYiIyDAoUhnNsAogOgyTzI6ySuTgkYEhZDQuJ0sUgBxxNRXHWLDEpOIkiPudogyitJ0Sg0OVRFNMLiilKZgSR6tqFCmEGUyhAOqscZEFWWZ1VSfqNM50ydYOPsqKoOqYfEkvePDp0jfvG+4fN8So9XJFU0J80ohdWlye5JoLGs9dprY47sPnSYOdLivHixFFT2O1QETE8fEgklSEyCmpS0gDqBBpLLdMKJwpdlWJRJM4MJ6wSgxVxM1LCV2E6frhSfF4PAyKBQmtgOSIknhcI6soqQrM5G+KTu98U7U2Hgnn4rOnFBrFTKWpyb9ny9sIUFa1BpGiOiVMjoeoc9IVxgxQNNnyBiWjSqo1RfxUykrOSqplW0/2n+/pOjDslDySpPmTKJFWx59ZjBNXXdHm33Bly/z0cCpiG2fQNNlsd4pdN3ZWEzDPCKhBYkEMCNghruACxCzJRdPkd1Rjrhi1s8kJ4MhgMqdKLqgk0E/vYo5Hf5GtFQli9jeu79V0i7FOXhOaiCZP7ZuJ0XQ6ikigDLUgSaJPmlT61jT+xwakCsCBZHqDsoIAS6qQaPKzCIGVp9ofYgOYGtjPiDw1rXvHs1+959CWXZUwYuJIkieeHAudfBpElLFyw5Vta1dqJhgxFFcwJXmX9EIAfv6+iviVZqZfRmqq6EkCKLba+LhyjX+qxNOv56xeX5qtE6PoF3XnTT1LomygKR/6fH3GJ9ngONd3BYhAz/+EpEm/lIKhoibKT6Dth4/13/vzsWLAMcM2k1mK2V0lJU9107rMmza1+dKlUq2dl/UCPsgJumiQzGjm1kmRvj6PtKBWuJGkfw6EY7CYzbfRHK3kv/iTzeqkVZ5GJetxro5iRt/J7G4/zBqAkxx1IpjqUUhGD85s7KNEUq6GVRz7E5m2Hz0++vUf9x+eoIiMSMxauZkdCaQEw3pGG99ybfuK5jGqjhmOT8F6cZqaT2rKzjTGnp6/gXvmheWZnRNJzGDmwHPu9tm5DfoY5LjmH2TmjaZz9BUeb2QczWqRpsQ/Td1A06ZBxuYen26VTIwgkApMkOr40VPR5+46sqNXQqvi5jhrNL4Iqmi20U3rmzesyKWlz6kjxqnFUy8c4GNbw0+oeZ5m4EGn4HXm7t+axEhf/gkNWrujIniR1/6zHfz3Xz2ytduV46lHx/Z8AgqyRgsk151XeNvl7W1UkUoAw9NPxnlRAJbpe+Nx3WC8z1M0w0TUHaeAcfyRGjWPrTN/OrubVGc6atVpugCABHrCLozmcqrHucVmW47O3Ahp9ozQhGVUgEkoCjVdwcIHthU//92+rd1BidmxxCGLTG9dVAUpETSSS1f6731D09ntQ7ZaJXYgqNKLC/Cp3az1Nc2NKEQlonQ51fbAE+E/3TG4tS8KiY0m53jrzIZoYgZgnVvWQG+7ru38hWKr4zDqSOOy8Iv4/uwvQq72YjJX5DJ3E5ROqW3muDF07u31mJOvddpT0exXoilJzgyL4jkqajpXwPJC7tJYwk5CEFiCUxFEnB9B+31Pus99+8i2I1Fgk2BjmgQjbgu3IBCLFelswm/etOh156cK2gcTRKzg2jxZffEB1ufbb6cupTw/Ks/3VHpyV5fmjoSf50XipO6F+Z0TEXlOHd2tpCYIyfnNQ27Jd37e98U7u7cPOLJETkWnjgCvhZYMWCaxEjaTvv361rde29Qe9VFUFSNGNU7d6UUNKeqzKk96CalSlLiUyPdzbfsncl++u+vfH+w9WgSY1TmaGZJojXZWFpagQPrmq+a947XzW9BvokFNeKPj5+GvdIBfxFvy5Q6YY+Iy5Fihm5+Q+Tv281fuPfqtx0cGHCyTQGenQgl7wKyqGjT7evOGRe+7sWm+7UqF48wxIysnlB/WLfg0LyKoOFUvG6Uau4cL9z8c3vHT7sePlEcskVGRyfyaZsbmJAxyrjWFW29ofdfrmpb7vV4wwjBCdFpH/9gTuGV/Ca47po/YO0Ern5GWT0pckxNMjnlgrMZ0II+4UHUdW57D1+7teWDrWE9ZAmYGaVx/0SmKOf5tQxSBnHMLG/nWq9vfcX1DZ3bQVkdYGQpmN4M40jrAc8djdNLvmKcnvjw9fFOYeFgLM8f3i4LVeM7LjYWFPX24f/PQ9x8c2dUfVGCqxnca1k7WoEkhTlI2MvEp4HJmq3nX6xe+9cpCm+3zwxEDgdQSekqOfmd9GSz4FZ+FHrNjnYgyrVYuJKMzb40YIGOVOAxCS1YBqOVMy1BgdnZ59z098aPH+w/0hIPFuGFCVcIZ9hfXHIk8S1EUsXLeyMVr0v/9+pbXrOEmPcRBQOTiXuHpdTB9qV30DC24vhKhJQAM8QFRDkFxB1StiZaOafmZnWdTjWwmkvg4ZYbGDYoCA2Sto5TT1oHxzJN7iw88Pbj1udKOrmgwTI5sFk34gaSoGeupE0m1daqq2pHVGzc23nrdostaxzXoYa6CwEIJAzKN1yZ90QoMrwoLpripzRI1kjVKlSR1cUjaQTUiklgEn1R65jZkBVhgoCyEyIezuQjpKlJDRdfdV96zr/jIzrFH9o11DQfVuELNxDJVlKIak0pJg7ewkCIgyIVLUzdf2X7DhamV+RGEQ0QOJy+LfOEAm5mfWGZ6PX0l++eIzNFR0zVSUD+TSUWNGTSmJefBhzAi4VA0EIlY4mok1w45IZAQlMgQe9CUOq6IllUGQx4s5XpHc9t3lZ7dO7rr4ER3b3XCxXO44y581uSQ9iTuoniuijKRGKgR9aCLm+zl5zf9yqbWC5dzNhhKV8rkhclmTyIv4VEKduaWFYejOms/o1ck0CRgD0fGRj7/zaNd47B5bsnT0nnpZa3ZeQ02nTLZxnS6gGwWDX7ajzt0YwkXlABRKZcr1apOFHVoNBwsUteQ7O4fPzDY090vPf0Yc3BgD4lgiZPjXUlrbhnJjENIXOATsYrOLG9YnX3DpvYr1jbmediEA5YkbofT2MPMLGm+BBb8y5uUsqhbtiyzbr235fuj+/pdSMhosdEW8wa+z6mc19jqFfKm4FXy1traRRUVKFVCN1GqjJXc+Hg4VnZjAUYrMu5AIAMGk1pYkIoGcJg8WS4u+iIeckfEsfJQmNCap8tWFa6/oPGK8wqLmyZy4XOuHMKCPUWkIPPyXCT9wixvIb9EEFeJy8Ybc+3ffqT01ftGn+tyRWXSFKFikppAkgDxtI8ntX+4Go/o4nniBGZK5HNaq1Fq7eQCjUOh2nG+RBoqk2Y9LG806xanNq7JXnpBy4KGsIFKJhryJUwCvnj81Zzj6fRFLO2/6gBWgoMRNWrzI9z+s+dK920efmp31DcYjAQyEoIQz8WK5XokgrjSKsSiHA82InWJLnBaAQuY3YZLWps7qySqCrChlhRWzPPXnV24ak3TxqWp5kLRUlHDCeuCFNzs8lUd4FMKswyRDzER/DJ7gZ8/0FfZe8g9szfYvL94YLA6PIqxMOGlqCYfFIIkU8dUZ54DOfV3PBY92XWVAA+wgAUa8+ho95Yuzl+yMnXJyvzydsr7RRMVBVVSR+xYxSqsm9n1NRNg0pcoiv3lBjihGInVQchTP1WBOGoYD2zveNgzwl19tOfQ+NHBSndfMDQmIxUZj6hCGirE1RKluTL/OJ8l1RShYClnMK/AZy7ILF6UW7yMVi41i5pTzb7mtOJHE9CKcjzmiAkCUiZwNAvgmcSbah3gkyoBEJSFrAOxOmcI7DFnQrKhQ7nS1DNmj4xUjgyWuodluFLpHQnHi1oqRZUKuUg0TqE40RIZg0zWpn3TkLELmrOLmrML21KLWnVRptrUCJMdt1w2VWddyKRGDYtTDZMMhBTx0MFoBngvI8B4FS0C4OKJ8KokJEzG+DApZS8kipREEImUHQeaCqpcKkVO4qbnaSdrEXzfS6f9TMZaDn0bpn0iFzlX0igUiUBqFB7COFNKmD5NAaTklMO4NDidBpzFs1A9TTplApOTSf0AwyA+VidQIRuPGFdVSM4AZMmmNKNMk1J6JIQUE7MBSAWKCqJAAyjgsxGJB3zEkxGn87gEmpz0e8Kn/NYBPpXgmmWqqkOxELOm1E7qTvEhTAJUiRO6cgbfI1Q7JZ0ITiEUn9WDiFHTtM5WDE8nlmWSBp/GG72IqrD/1ADXwgia7rdpVuyaCL7ITZKOdKy3J8LkDGBILPSdAavOocOlJCk7RkWmdYBf8etFrdfSSwPzfwKAtda6Mlc9iZ5HKxy3wh6bQk0mz4TjJiA64zxVIG6QnJ7dmVqsdXp36/oB0S9/2F+34BclHcRJbIFTIZLOgYeehOc4zoMnp+dJHeDTlk+dwsPoVF6BnicSfAnihrqXfHWv/0wWfHLHxusLfAZ+ZUgk6hb8ak/t6pegDnB91QGurzrA9VUHuL7qANdXHeD6qgNcB7i+6gDXVx3g+qoDXF91gOurDnB91QGuA1xfdYDrqw5wfdUBrq86wPVVB7i+6gDXVx3gOsD1VQe4vuoA11cd4PqqA1xfp7D+fyxv4mclirpIAAAAAElFTkSuQmCC";
 (function(){
@@ -3579,7 +3586,8 @@ function applyServerState(staff,d,opts,cb){
     }
     
     /* 5. 再架電 (cb) */
-    if(d.cb&&d.cb.length>0){
+    if(d.cbV===116){try{x116CbMerge(staff,d)}catch(eX16cb){}}   /* v116: サーバーの予定（ID・予定の時刻・状態）が正。v115 までのサーバーなら下の処理 */
+    else if(d.cb&&d.cb.length>0){
       var localCb=ld("cb-"+staff.id)||[];
       /* 会社名+電話番号で重複排除 (シンプル) */
       var seen={};
@@ -4289,7 +4297,9 @@ function autoRecordAbsentAndNext(dur){
     company:entry.co,phone:entry.ph,person:entry.pe,
     result:"不在",duration:entry.dur,checkedCount:"0/"+CHECKS.length,
     bousou:"なし",bousouArr:[],endStep:"",outText:"",memo:entry.memo,
-    cid:entry.id,srcRow:cx.src||"",listId:cx.lid||"",listStamp:cx.ls||0});   /* v108: 記録ID・元行・リストID／v110: 取込印（どの取込のリストでかけたか） */
+    cid:entry.id,srcRow:cx.src||"",listId:cx.lid||"",listStamp:cx.ls||0,   /* v108: 記録ID・元行・リストID／v110: 取込印（どの取込のリストでかけたか） */
+    callAt:entry.at-(Number(dur)||0)*1000-5000});   /* v116: 発信した時刻（おおよそ） */
+  try{x116CbLocalDone(entry.ph,entry.at-(Number(dur)||0)*1000-5000,"不在")}catch(eX16d){}   /* v116 */
   if(cxI>=0&&cxI<rows.length)ci=cxI;
   clearCallCtx();afterCallRet=cx.ret||null;
   /* 次へ */
@@ -4590,7 +4600,9 @@ function saveCall(skipCbDialog){
     talkSec:tsec,transcript:capTranscript(trText,15000),
     srcRow:cx.src||"",   /* v49: 元スプレッドシートの行番号 */
     listId:cx.lid||"",   /* v108: どのリストからかけた電話か（元シートへの反映をリスト単位にする） */
-    listStamp:cx.ls||0});  /* v110: どの取込のリストでかけたか（取込をはさんだ結果は、サーバーが会社で行を探す） */
+    listStamp:cx.ls||0,   /* v110: どの取込のリストでかけたか（取込をはさんだ結果は、サーバーが会社で行を探す） */
+    callAt:CALL_INIT_AT?CALL_INIT_AT+(CLK_OFF||0):0});   /* v116: 発信した時刻（この時刻より前に入れた再架電の予定を「完了」にする） */
+  try{x116CbLocalDone(cx.ph,CALL_INIT_AT?CALL_INIT_AT+(CLK_OFF||0):0,resLabel)}catch(eX16d){}   /* v116 */
   /* v111: 相手と話した通話（結果が不在・不通以外で、電話アプリに45秒以上いた通話）は、録音ができたかを次の確認で確かめる */
   try{if(raStart111&&entry.r!=="absent"&&entry.r!=="wrong"&&raTalk111>=RA_WATCH_MIN_SEC)raWatchAdd(raStart111,raStart111+raTalk111*1000,entry.co)}catch(eRw){}
   var retAfter=cx.ret||null;
@@ -4846,11 +4858,13 @@ function confirmCB(preset){
     d=new Date(cbCustomDt);if(isNaN(d.getTime())){flash("⚠️ 不正な日時");return}
   }
   var cxb=curCtx();   /* v110: 通話した会社（固定した架電先）で登録する */
-  var entry={id:Date.now(),at:d.toISOString(),noTime:noTime,
+  var entry={id:x116UniqId(Date.now()),at:d.toISOString(),noTime:noTime,state:"未対応",   /* v116: ID がほかの予定と重ならないように。sid（サーバーの ID）は下で付ける */
     co:cxb?cxb.co:"",pe:String(cbPerson||"").trim()||(cxb?cxb.pe:""),ph:cxb?cxb.ph:"",   /* v111: 聞けた担当者のお名前を優先 */
     memo:cbMemo,createdAt:new Date().toISOString(),done:false,rowIdx:(cxb&&typeof cxb.i==="number"&&cxb.i>=0)?cxb.i:ci};
   cbs.unshift(entry);sv("cb-"+U.id,cbs);
-  gasPost({type:"callback",name:U.nm,pin:U.pin,sheet:U.sh,scheduledAt:noTime?(dtJP(d).slice(0,10)+" 時間未定"):dtJP(d),company:entry.co,person:entry.pe,phone:entry.ph,memo:entry.memo});
+  entry.sid="CB"+entry.id;   /* v116 */
+  gasPost({type:"callback",name:U.nm,pin:U.pin,sheet:U.sh,scheduledAt:noTime?(dtJP(d).slice(0,10)+" 時間未定"):dtJP(d),company:entry.co,person:entry.pe,phone:entry.ph,memo:entry.memo,
+    cbId:entry.sid,dueAt:d.getTime(),noTime:noTime,callAt:CALL_INIT_AT?CALL_INIT_AT+(CLK_OFF||0):0});   /* v116: 予定の ID・時刻・この通話を始めた時刻（この通話より前の予定は「完了（かけた）」） */
   showCB=false;
   /* v32: そのまま結果保存も進める (skipCbDialog=true でダイアログ再表示を防ぎ、確実に架電履歴 hist へ記録) */
   selRes="cb";saveCall(true);
@@ -7912,6 +7926,7 @@ function admTopCards(){
       h+='<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-top:1px solid #f1f5f9;font-size:11.5px;flex-wrap:wrap"><b style="min-width:70px">'+htmlEsc(m.name)+'</b><span style="background:'+c[0]+';color:'+c[1]+';border-radius:10px;padding:1px 7px;font-weight:800;font-size:10.5px">'+m.state+'</span><span style="color:#64748b">今日 送信'+m.sentToday+'件／架電'+m.callsToday+'件'+(m.pending?'・待ち'+m.pending+'件':'')+(m.lastScanAt?'・最終 '+htmlEsc(String(m.lastScanAt).slice(5)):'')+'</span>'+(m.lastError?'<span style="color:#b91c1c;width:100%">⚠️ '+htmlEsc(m.lastError)+'</span>':'')+'</div>'});
     h+='<div style="font-size:10px;color:#94a3b8;margin-top:4px">「未接続」の人は、本人のスマホでこのアプリを開くと「はじめの設定」が自動で出ます（出ないときは、ホームの「🎙 はじめの設定を始める」）。赤い字は、録音が見つからない通話が続いている知らせです。</div></div>';
   }
+  try{h+=x116AdminCards()}catch(eX16){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v116 のカードを表示できませんでした：'+htmlEsc(String(eX16&&eX16.message||eX16))+'</div>'}   /* v116: 再架電の約束 */
   try{h+=x115AdminCards()}catch(eX15){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v115 のカードを表示できませんでした：'+htmlEsc(String(eX15&&eX15.message||eX15))+'</div>'}   /* v115: スキップ・時間帯・Zoom */
   try{h+=x114AdminCards()}catch(eX14){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v114 のカードを表示できませんでした：'+htmlEsc(String(eX14&&eX14.message||eX14))+'</div>'}   /* v114: 架電の順番・順番の点検 */
   try{h+=x112AdminCards()}catch(eX12){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v112 のカードを表示できませんでした：'+htmlEsc(String(eX12&&eX12.message||eX12))+'</div>'}   /* v112: 会社スケジュール・SV不在・架電ルール・設定シートの整理 */
@@ -9930,6 +9945,188 @@ function x115AdminCards(){
   h+='</div>';
   return h;
 }
+/* ══════════════════════════════════════════════════════════════════════
+   v116: ⑴ アカウントの追加：阿部竜彦（097）
+         ⑵ 再架電の約束（コールバック）：サーバーの予定（ID・予定の時刻・状態）をそのまま使う。
+            「✓ 完了にする」はサーバーへ。架電の結果を保存したら、その番号の前の予定は完了（サーバーでも）。
+            予定から7日たってもかけていない予定は「期限切れ」（サーバーが決める）
+         ⑶ 管理者：再架電の約束（人ごとの未対応・期限超過・時間どおりの割合・期限超過の一覧・古い予定の整理）
+         ⑷ Zoom Phone：iPhone は Zoom のアプリから直接発信（zoomphonecall。Android は Zoom の決まりで、これまでどおり番号をコピー）
+   ══════════════════════════════════════════════════════════════════════ */
+var X116={adm:{cb:null,cbBusy:false,cbAt:0,clean:null,cleanBusy:false,err:""}};
+function x116Now(){try{return x112Now()}catch(e){return Date.now()}}
+/* 再架電の予定の ID（ミリ秒）。同じ時刻の予定があれば、1つずらす */
+function x116UniqId(n){var used={};(cbs||[]).forEach(function(c){used[c.id]=1});while(used[n])n++;return n}
+function x116Ms(v){var t=typeof v==="number"?v:Date.parse(v||"");return isNaN(t)?0:t}
+function x116Fmt(ms){if(!ms)return "";try{return x112Key(ms).slice(5).replace("-","/").replace(/^0/,"").replace("/0","/")+" "+x112Hm(ms)}catch(e){return ""}}
+/* サーバーの予定 → 端末の形（これまでの画面の関数がそのまま使える形） */
+function x116CbFromSrv(s){
+  return {id:Number(s.id)||0,sid:String(s.sid||""),at:s.at||(s.due?new Date(s.due).toISOString():""),noTime:!!s.noTime,
+    co:s.co||"",pe:s.pe||"",ph:s.ph||"",memo:s.memo||"",reg:Number(s.reg)||0,createdAt:s.reg?new Date(Number(s.reg)).toISOString():"",
+    done:!!s.done,state:s.state||(s.done?"完了":"未対応"),doneAt:Number(s.doneAt)||0,doneHow:s.doneHow||"",srv:true};
+}
+/* 送信待ち（電波が無いときなど）に、再架電の予定・完了・架電の結果が残っているか */
+function x116Pending(){var o={cb:{},busy:false};try{(SQ||[]).forEach(function(it){if(!it)return;if(it.type==="callback"&&it.cbId)o.cb[String(it.cbId)]=1;if(it.type==="callResult"||it.type==="cb_done")o.busy=true})}catch(e){}return o}
+/* 端末で「完了」にした予定（サーバーへ送っている途中。15分覚える。送信待ちが残っている間は、1日まで覚える） */
+function x116DoneLocal(){var m=(U&&U!=="admin"&&ld("cbd116-"+U.id))||{},now=x116Now(),o={},busy=x116Pending().busy;Object.keys(m).forEach(function(k){var age=now-m[k].t;if(age<15*60000||(busy&&age<86400000))o[k]=m[k]});return o}
+function x116MarkDoneLocal(c,how){
+  if(!U||U==="admin"||!c)return;
+  var m=x116DoneLocal(),k=c.sid||("CB"+c.id);m[k]={t:x116Now(),how:how||"手で完了"};sv("cbd116-"+U.id,m);
+}
+/* 同期の返事の再架電：サーバーが正。まだサーバーに届いていない予定（15分以内に入れた・送信待ちに残っている）だけ、端末の分を残す */
+function x116CbMerge(staff,d){
+  var me=(U&&U!=="admin"&&U.id===staff.id),local=ld("cb-"+staff.id)||[],srv=(d.cb||[]).map(x116CbFromSrv),have={},now=x116Now(),dl=me?x116DoneLocal():{},pend=me?x116Pending().cb:{};
+  srv.forEach(function(c){if(c.sid)have[c.sid]=1;have["n"+c.id]=1;
+    var k=c.sid||("CB"+c.id);if(!c.done&&dl[k]){c.done=true;c.state="完了";c.doneHow=dl[k].how;c.doneAt=dl[k].t}});
+  local.forEach(function(c){
+    var sid=c.sid||("CB"+c.id);
+    if(have[sid]||have["n"+c.id])return;
+    var made=x116Ms(c.createdAt);
+    if(!c.srv&&((made&&now-made<15*60000)||pend[sid]))srv.push(c);   /* 送っている途中・送信待ち */
+  });
+  srv.sort(function(a,b){return x116Ms(a.at)-x116Ms(b.at)});
+  if(U&&U!=="admin"&&U.id===staff.id)cbs=srv;
+  sv("cb-"+staff.id,srv);
+}
+/* 架電の結果を保存したとき：その番号の、通話の前に入れた未対応の予定を「完了」にする（サーバーも同じことをする） */
+function x116CbLocalDone(ph,callStart,resLabel){
+  try{
+    if(!U||U==="admin"||!ph||!cbs||!cbs.length)return 0;
+    var k=normPh(ph),n=0,start=Number(callStart)||0;
+    cbs.forEach(function(c){
+      if(c.done||normPh(c.ph)!==k)return;
+      var made=c.reg||x116Ms(c.createdAt);
+      if(made&&x116Now()-made<=3*60000)return;        /* 入れてから3分以内（サーバーと同じ決まり） */
+      if(start&&made&&made>=start)return;            /* この通話の中で入れた予定（新しい再架電）は残す */
+      if(!start&&made&&x116Now()-made<5*60000)return;
+      c.done=true;c.state="完了";c.doneAt=x116Now();c.doneHow="架電："+String(resLabel||"").replace(/^[^぀-ヿ一-鿿]+/,"");n++;
+      x116MarkDoneLocal(c,c.doneHow);   /* サーバーに結果が届くまでの間の同期でも、完了のまま */
+    });
+    if(n)sv("cb-"+U.id,cbs);
+    return n;
+  }catch(e){return 0}
+}
+/* 「✓ 完了にする」：サーバーにも送る（これまでの画面の処理が、端末の印を付ける） */
+document.addEventListener("click",function(e){
+  try{
+    var el=e.target&&e.target.closest?e.target.closest("[data-cbdone]"):null;
+    if(!el||!U||U==="admin")return;
+    var id=parseInt(el.getAttribute("data-cbdone")),c=null;
+    cbs.forEach(function(x){if(x.id===id)c=x});
+    if(!c)return;
+    c.state="完了";c.doneHow="手で完了";c.doneAt=x116Now();
+    x116MarkDoneLocal(c,"手で完了");
+    gasPost({type:"cb_done",pin:U.pin,name:U.nm,sid:c.sid||("CB"+c.id),reg:c.reg||0,ph:c.ph||""});
+  }catch(err){}
+},true);
+/* 再架電の画面：いちばん上に、期限超過の数と決まり */
+function x116CbSummary(){
+  if(!cbs||!cbs.length)return "";
+  var now=x116Now(),open=cbs.filter(function(c){return!c.done}),over=open.filter(function(c){return!c.noTime&&x116Ms(c.at)&&x116Ms(c.at)<now}).length;
+  var exp=cbs.filter(function(c){return c.state==="期限切れ"}).length;
+  var h='<div class="x116CbSum" style="background:#fff;border:1px solid #fde68a;border-radius:10px;padding:8px 10px;margin-bottom:8px;font-size:11px;color:#92400e;line-height:1.6">';
+  h+='📞 未対応 <b>'+open.length+'件</b>'+(over?'（うち <b style="color:#dc2626">⏰ 期限超過 '+over+'件</b>）':'')+(exp?'・期限切れ（直近14日） '+exp+'件':'');
+  h+='<div style="font-size:10px;color:#64748b">その会社に電話をかけて結果を保存すると、自動で「完了」になります（ほかの端末・管理者の画面にも出ます）。予定から7日たってもかけていない予定は「期限切れ」になります</div></div>';
+  return h;
+}
+function x116CbSorted(list){return list.slice().sort(function(a,b){return (x116Ms(a.at)||9e15)-(x116Ms(b.at)||9e15)})}
+function x116CbDoneSorted(list){return list.slice().sort(function(a,b){return (b.doneAt||x116Ms(b.at))-(a.doneAt||x116Ms(a.at))})}
+/* 終わった予定に「どうやって終わったか」を足す */
+function x116CbDecorate(el,c){
+  try{
+    if(!el||!c||!c.done)return el;
+    var st=c.state||"完了",how=c.doneHow||"",at=c.doneAt?x116Fmt(c.doneAt):"";
+    var col=st==="期限切れ"?"#b91c1c":(st==="置き換え"?"#64748b":"#047857");
+    var lab=st==="期限切れ"?"⏰ 期限切れ（かけていない）":(st==="置き換え"?"↪ 新しい予定に置き換え":"✓ "+(how||"完了"));
+    var d=document.createElement("div");
+    d.className="x116CbHow";
+    d.style.cssText="margin-top:6px;font-size:10.5px;font-weight:700;color:"+col;
+    d.textContent=lab+(at&&st!=="期限切れ"?"（"+at+"）":"");
+    el.appendChild(d);
+  }catch(e){}
+  return el;
+}
+
+/* ── Zoom Phone：iPhone は zoomphonecall で直接発信 ── */
+function x116IsIOS(){try{return /iPhone|iPad|iPod/i.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1)}catch(e){return false}}
+function x116Nav(url){window.location.href=url}
+var x116ZoomMobile0=x115ZoomMobile;
+x115ZoomMobile=function(num){
+  if(x116IsIOS()){flash("🟦 Zoom Phone で発信します");try{x116Nav(x115ZoomUrl(num))}catch(e){}return}
+  return x116ZoomMobile0(num);
+};
+var x116DialSel0=x115DialSel;
+x115DialSel=function(){
+  var h=x116DialSel0();
+  if(h&&x116IsIOS())h=h.replace(/スマホは Zoom の決まりで[^<]*/,"iPhone は、発信ボタンで Zoom のアプリが開き、そのまま発信します（Zoom にログインしておいてください）");
+  return h;
+};
+
+/* ── 管理者：再架電の約束 ── */
+function x116AdmLoad(force){
+  if(!admTok||U!=="admin")return;
+  var A=X116.adm,now=Date.now();
+  if((force||!A.cb||now-A.cbAt>300000)&&!A.cbBusy){A.cbBusy=true;A.cbAt=now;
+    directGasPost({type:"cb_admin",action:"list"},90000).then(function(r){A.cbBusy=false;A.cb=(r&&r.result)||null;A.err=(r&&r.status!=="ok")?String(r.message||""):"";render()}).catch(function(e){A.cbBusy=false;A.cbAt=0;A.err=String(e&&e.message||e).slice(0,80);render()})}
+  if(force)render();
+}
+function x116AdmClean(dry){
+  var A=X116.adm;if(A.cleanBusy||!admTok)return;
+  A.cleanBusy=true;render();
+  directGasPost({type:"cb_admin",action:"clean",dry:!!dry},300000).then(function(r){
+    A.cleanBusy=false;var res=(r&&r.result)||null;
+    if(!res){flash("⚠️ "+htmlEsc(String(r&&r.message||"整理できませんでした").slice(0,120)));render();return}
+    A.clean=res;
+    if(!dry){flash("✅ 整理しました：完了 "+res.done+"・置き換え "+res.replaced+"・期限切れ "+res.expired+"件");x116AdmLoad(true)}else render();
+  }).catch(function(err){A.cleanBusy=false;flash("⚠️ "+htmlEsc(String(err&&err.message||err).slice(0,120)));render()});
+}
+function x116Pct(a,b){return b?Math.round(a*100/b)+"%":"—"}
+function x116AdminCards(){
+  if(U!=="admin")return "";
+  try{x116AdmLoad(false)}catch(e){}
+  var A=X116.adm,c=A.cb,BTN="padding:5px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;font-size:11px;font-weight:700;color:#334155;font-family:inherit";
+  var h='<div id="x116Card" style="background:#fff;border:1.5px solid #fcd34d;border-radius:14px;padding:12px;margin-bottom:12px">';
+  h+='<div style="display:flex;align-items:center;gap:6px"><b style="flex:1;color:#92400e;font-size:14px">📞 再架電の約束（v116）</b><button data-x116="reload" style="'+BTN+'">🔄</button></div>';
+  h+='<div style="font-size:10.5px;color:#64748b;margin-top:2px">アポインターが入れた「再架電」の予定です。その会社に電話をかけて結果を保存すると、自動で「完了」になります。予定から'+((c&&c.expireDays)||7)+'日たってもかけていない予定は「期限切れ」。時間どおり＝予定の15分前〜60分後にかけた（時間未定の予定は、その日のうち）</div>';
+  if(!c){h+='<div style="font-size:11px;color:#64748b;margin-top:6px">'+(A.cbBusy?"読み込んでいます…":"読み込めませんでした（🔄）"+(A.err?"："+htmlEsc(A.err):""))+'</div></div>';return h}
+  if(!c.agents.length)h+='<div style="font-size:11px;color:#047857;margin-top:6px">✓ 再架電の予定はありません</div>';
+  else{
+    h+='<table class="x116CbTbl" style="width:100%;border-collapse:collapse;margin-top:6px;font-size:11px"><tr style="color:#64748b"><th style="text-align:left">名前</th><th style="text-align:right">未対応</th><th style="text-align:right">期限超過</th><th style="text-align:right">直近30日：時間どおり</th><th style="text-align:right">遅れて</th><th style="text-align:right">期限切れ</th></tr>';
+    c.agents.forEach(function(a){
+      var d=a.d30,base=d.onTime+d.late+d.early+d.missed;
+      h+='<tr><td>'+htmlEsc(a.name)+'</td><td style="text-align:right">'+a.open+'</td><td style="text-align:right;color:'+(a.overdue?"#dc2626":"#334155")+';font-weight:'+(a.overdue?800:400)+'">'+a.overdue+'</td>';
+      h+='<td style="text-align:right">'+d.onTime+'/'+base+'（'+x116Pct(d.onTime,base)+'）</td><td style="text-align:right">'+d.late+'</td><td style="text-align:right;color:'+(d.missed?"#b91c1c":"#334155")+'">'+d.missed+'</td></tr>';
+    });
+    h+='</table><div style="font-size:10px;color:#64748b;margin-top:2px">直近30日：予定の時刻が直近30日の予定。手で完了 '+c.agents.reduce(function(s,a){return s+a.d30.manual},0)+'件・置き換え '+c.agents.reduce(function(s,a){return s+a.d30.replaced},0)+'件は、割合に入れていません</div>';
+  }
+  if(c.overdue&&c.overdue.length){
+    h+='<div style="margin-top:8px;font-size:12px;font-weight:800;color:#b91c1c">⏰ 期限超過（予定の時刻を過ぎて、まだかけていない）：'+c.overdueN+'件</div>';
+    c.overdue.slice(0,20).forEach(function(o){
+      var lateH=Math.max(0,Math.round((c.now-o.due)/3600000));
+      h+='<div class="x116CbOver" style="margin-top:4px;padding:5px 8px;border-radius:8px;background:#fef2f2;font-size:11px;color:#334155"><b>'+htmlEsc(o.name)+'</b>：'+htmlEsc(String(o.co||"").slice(0,24))+'　予定 '+htmlEsc(x116Fmt(o.due))+(o.noTime?'（時間未定）':'')+'・<span style="color:#b91c1c;font-weight:700">'+(lateH>=48?Math.floor(lateH/24)+'日':lateH+'時間')+'過ぎ</span>'+(o.memo?'<br><span style="color:#64748b">💬 '+htmlEsc(o.memo)+'</span>':'')+'</div>';
+    });
+    if(c.overdueN>20)h+='<div style="font-size:10px;color:#64748b;margin-top:2px">ほか '+(c.overdueN-20)+'件</div>';
+  }
+  /* 古い予定の整理 */
+  if(c.legacyOpen>0||A.clean){
+    h+='<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #fcd34d;font-size:12px;font-weight:800;color:#334155">🧹 古い予定の整理</div>';
+    h+='<div style="font-size:10.5px;color:#64748b">v115 までの予定は、完了がサーバーに届いていなかったため「未対応」のままです（いま '+c.legacyOpen+'件）。整理すると、①予定を入れたあとに同じ人がその番号へかけていれば「完了」、②同じ番号の古い予定は「置き換え」、③予定から7日たってもかけていなければ「期限切れ」にします（行は消しません）</div>';
+    if(A.clean)h+='<div class="x116Clean" style="font-size:11px;color:#1e293b;margin-top:4px;background:#f8fafc;border-radius:8px;padding:5px 8px">'+(A.clean.dry?'整理すると：':'整理しました：')+'完了 <b>'+A.clean.done+'</b>・置き換え <b>'+A.clean.replaced+'</b>・期限切れ <b>'+A.clean.expired+'</b>件（残る未対応 '+A.clean.remain+'件・架電結果 '+A.clean.scanned+'行を確認）</div>';
+    h+='<div style="display:flex;gap:6px;margin-top:5px;flex-wrap:wrap"><button data-x116="cleanDry" '+(A.cleanBusy?"disabled ":"")+'style="'+BTN+'">'+(A.cleanBusy?"数えています…":"件数を数える")+'</button>';
+    if(A.clean&&A.clean.dry&&(A.clean.done+A.clean.replaced+A.clean.expired)>0)h+='<button data-x116="cleanRun" '+(A.cleanBusy?"disabled ":"")+'style="'+BTN+';border-color:#f59e0b;color:#92400e">整理する</button>';
+    h+='</div>';
+  }
+  return h+'</div>';
+}
+document.addEventListener("click",function(e){
+  var el=e.target&&e.target.closest?e.target.closest("[data-x116]"):null;
+  if(!el)return;
+  var a=el.getAttribute("data-x116");
+  e.preventDefault();
+  if(a==="reload"){x116AdmLoad(true);return}
+  if(a==="cleanDry"){x116AdmClean(true);return}
+  if(a==="cleanRun"){x116AdmClean(false);return}
+});
 var X111={apl:null,aplBusy:false,aplSyncBusy:false,rep:null,repBusy:false,opt:{preset:"month",from:"",to:"",project:"",showMemo:true,showCaller:false,detail:"all"},res:null,resBusy:false,pdf:null,pdfBusy:false,board:null,boardBusy:false,open:{},edit:{}};
 var X111_CARD='background:#fff;border-radius:14px;padding:12px;margin-bottom:12px;border:1.5px solid ';
 /* 知らせ（flash）は HTML として表示される。サーバー・台帳・入力欄から来た文字は、文字として出す */
@@ -13031,7 +13228,9 @@ else if(V==="appolist"){
 /* ========== 再架電一覧 ========== */
 else if(V==="cblist"){
   var openCBs=cbs.filter(function(c){return!c.done}),doneCBs=cbs.filter(function(c){return c.done});
+  var x116Sum="";try{x116Sum=x116CbSummary()}catch(eX16s){}   /* v116 */
   h+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><button id="bk" style="background:#f1f5f9;border:none;border-radius:8px;padding:8px 14px;color:#64748b;font-size:12px">← 戻る</button><b style="font-size:15px">📞 再架電予定</b></div>';
+  h+=x116Sum;   /* v116 */
   if(!cbs.length)h+='<div style="text-align:center;padding:40px;color:#94a3b8">予定なし</div>';
   else{
     if(openCBs.length){h+='<div style="font-size:12px;font-weight:700;color:#f59e0b;margin-bottom:6px">未対応 ('+openCBs.length+')</div><div id="cbList"></div>';}
@@ -14836,9 +15035,9 @@ function renderCBItem(c,done){
   return d;
 }
 var cbList=document.getElementById("cbList");
-if(cbList){cbs.filter(function(c){return!c.done}).forEach(function(c){cbList.appendChild(renderCBItem(c,false))})}
+if(cbList){x116CbSorted(cbs.filter(function(c){return!c.done})).forEach(function(c){cbList.appendChild(renderCBItem(c,false))})}   /* v116: 予定の近い順 */
 var cbDoneList=document.getElementById("cbDoneList");
-if(cbDoneList){cbs.filter(function(c){return c.done}).slice(0,20).forEach(function(c){cbDoneList.appendChild(renderCBItem(c,true))})}
+if(cbDoneList){x116CbDoneSorted(cbs.filter(function(c){return c.done})).slice(0,30).forEach(function(c){cbDoneList.appendChild(x116CbDecorate(renderCBItem(c,true),c))})}   /* v116: 新しい順・どうやって終わったか */
 /* v110: 再架電リストの電話番号から発信 → 通話のあと、その会社で結果を入力できる（架電数にも数える） */
 document.querySelectorAll("[data-cbcall]").forEach(function(el){
   el.addEventListener("click",function(){

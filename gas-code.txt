@@ -1,5 +1,13 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v116
+// 川嶋メソッド テレアポ管理 — GAS完全版 v117
+// v117: ⑶ アポの一覧と状態（予定・予定日を過ぎた・キャンセル・ノーショー・無効）。キャンセルなどは件数・報酬に入れない。
+//          管理者がキャンセル・日時の変更をしたら、本人のアプリ（「個人のお知らせ」シート）とメールで知らせる（apo_admin・apo_update・notice_read）。
+//       ⑷ アポの日時の変更（管理者・本人）。「日時の変更」列に記録。アポイント台帳の行も、人が直していなければ直す。
+//       ⑸ おいでん（前日・当日の参加の確認の電話）の結果を「前日おいでん」「当日おいでん」列に残す。アプリのホームで警告。
+//       ⑹ 当日の架電指示：管理者が作って予約送信（「架電指示」シート・5分ごとのトリガー briefTick117。送信元はこのシステムの持ち主）。アプリにも出す。
+//       ⑺ 報酬：契約形態・月の目標（報酬設定シートの右に3列）。アポインターに今月ここまでの報酬と目標までの差（pay_me・暗証番号の確認つき）。
+//       ⑻ 録音の自動保存を必須にする設定（つないでいないスマホでは発信できない・退勤の前に送り終える）。録音なしの理由は管理者へ（rec_bypass）。
+//       ⑽ NG・お断りだった先の番号を出して発信できる設定・お断り/NG も含めたもう一巡（v117_cfg）。
 // v116: ⑴ アカウントの追加：阿部竜彦（097）。PIN 097 は以前の方（藪内亜希）と同じだが、名前で区別するため前の方のデータは付かない。
 //       ⑵ 再架電の約束（コールバック）の管理。「再架電予定」の右に ID・PIN・予定（時刻）・完了日時・完了のしかた の5列。
 //          架電の結果が届いたら、その人・その番号の前の予定を「完了」。新しい予定を入れたら前の予定は「完了（かけた）」か「置き換え」。
@@ -113,11 +121,12 @@ var CONFIG = {
   KANRI_DRIVE_ROOT: "1rR9JXEFWlJMwwb8RAoNqkxey5Wri0g0i",            // 経営管理システムを置くフォルダ
   KANRI_TARGET_DEFAULT: "1XmMisHhmUZOP2lEVO4lwFHwCU5fQfKg6",        // 経営管理システムの生成先（既定）
   REC_ROOT_DEFAULT: "1Hslq_b1D9S5kv2Jb5cTSFVbtmeTGc8CV",            // 録音の保存先（管理者ドライブ）
-  REC_ARCHIVE_FOLDER: "REC_AUTOSAVE_FOLDER_ID_HERE",          // 録音の全体保管庫（v111: 自動保存先と同じフォルダ）
-  // v111: Galaxy A25 の通話録音の自動保存先。端末からここへ直接保存する（「年-月」→「日」のフォルダに「氏名_日付_時刻_電話番号.m4a」）
-  REC_AUTOSAVE_FOLDER: "REC_AUTOSAVE_FOLDER_ID_HERE",
-  // v110 までの自動保存先（「A アポインター毎日の架電音声」）。ここにある録音も、架電記録との紐づけに使う（移動・削除はしない）
-  REC_AUTOSAVE_PREV: ["1P7MOlAg7gRR1X_imtjSjl81MmUUZFQ7V"],
+  REC_ARCHIVE_FOLDER: "1P7MOlAg7gRR1X_imtjSjl81MmUUZFQ7V",    // 録音の全体保管庫（v111〜: 自動保存先と同じフォルダ）
+  // Galaxy A25 の通話録音の自動保存先。端末からここへ直接保存する（「年-月」→「日」のフォルダに「氏名_日付_時刻_電話番号.m4a」）
+  //   v117: ご指定のフォルダ「A アポインター毎日の架電音声」（v110 までと同じ保存先）に戻した
+  REC_AUTOSAVE_FOLDER: "1P7MOlAg7gRR1X_imtjSjl81MmUUZFQ7V",
+  // 以前の自動保存先（v111〜v116 の保存先・v110 までの保存先）。ここにある録音も、架電記録との紐づけに使う（移動・削除はしない）
+  REC_AUTOSAVE_PREV: ["REC_AUTOSAVE_FOLDER_ID_HERE", "1P7MOlAg7gRR1X_imtjSjl81MmUUZFQ7V"],
 
   // ── このGASを実行するアカウント（共有の案内文・録音の送付先の既定に使う） ──
   GAS_OWNER_EMAIL: "hr.ashikaga@gmail.com",
@@ -245,7 +254,7 @@ var CONFIG = {
 var SHEET_ID = CONFIG.SHEET_ID;
 var ADMIN_SHEET_ID = CONFIG.ADMIN_SHEET_ID;
 // v95: この GAS がどの版で、どの機能に対応しているか
-var GAS_VERSION = "v116";
+var GAS_VERSION = "v117";
 var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
   "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run",
   "ext_prepare","pl_dashboard","pl_ledger","pl_projects","pl_bank","pl_quality","pl_bank_drive","jp_holidays",   // v105-107: 収支・損益・銀行明細
@@ -257,7 +266,8 @@ var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_s
   "recall_async",   // v113
   "prev_get", "order_strict", "filled_pick",   // v114
   "roster_v115", "skip_reason", "call_hours", "hours_stats", "zoom_phone",   // v115
-  "roster_v116", "cb_v116"];   // v116
+  "roster_v116", "cb_v116",   // v116
+  "apo_v117", "oiden_v117", "brief_v117", "pay_v117", "rec_v117", "recall_v117"];   // v117
 // 名簿（稼働中）→ PIN・氏名・姓・メール。起動時に「アポインター名簿」シートの内容で置き換わる（rosterApply_）
 var PIN_MAP = {}, FULL_NAME_MAP = {}, STAFF_EMAILS = {};
 (function () {
@@ -526,6 +536,9 @@ function doPostRoute_(d) {
     // v114: 前回の結果（prev_get）
     // v115: スキップの理由・時間帯の接続率・Zoom Phone
     // v116: 再架電の約束（callback・cb_done・cb_admin。架電の結果が届いたら前の予定を完了に）
+    // v117: アポの一覧・変更・おいでん・お知らせ・架電指示・報酬と目標・録音の必須化・NG/お断りの設定
+    var v117Res = v117Handle_(d);
+    if (v117Res) return v117Res;
     var v116Res = v116Handle_(d);
     if (v116Res) return v116Res;
     var v115Res = v115Handle_(d);
@@ -641,8 +654,9 @@ function doPostRoute_(d) {
         result.histScanned = fsScan.scanned;
       } catch (e) { result.hist = []; result.histError = String(e); }
 
-      // 4. アポ (appos)
-      try {
+      // 4. アポ (appos)   v117: 状態（キャンセル・ノーショー・無効）・日時の変更・おいでんの記録も返す（apoV:117）。v116 までの項目はそのまま
+      try { result.appos = apo117ForPin_(d.pin, nameMatches); result.apoV = 117; } catch (e117a) { result.apoV = 0; result.apo117Error = String(e117a); }
+      if (!result.apoV) try {
         var apoSh = ss2.getSheetByName("アポイント");
         result.appos = [];
         if (apoSh && apoSh.getLastRow() > 1) {
@@ -678,6 +692,8 @@ function doPostRoute_(d) {
 
       // 5. 再架電 (cb)   v116: 予定ごとの ID・予定の時刻・状態（完了・置き換え・期限切れ）を返す。未対応の分と、直近14日に終わった分
       try { result.cb = cbForClient116_(d.pin); result.cbV = 116; } catch (e) { result.cb = []; result.cbError = String(e); }
+      // v117: 本人へのお知らせ（アポのキャンセル・日時の変更）・きょうの架電指示・v117 の設定（録音の必須化・おいでん・NG/お断り）
+      try { result.v117 = v117FetchExtras_(d.pin); } catch (e117) { result.v117 = { v: 117, error: String(e117) }; }
 
       // v28: NGリスト (全アポインター共有) - 最新2000件
       try {
@@ -11312,7 +11328,9 @@ var ADMIN_ONLY_TYPES = (function () {
    // v115
    "skip_admin hours_get zoom_status zoom_sync zoom_trigger " +
    // v116
-   "cb_admin ").split(" ").forEach(function (t) { if (t) o[t] = true; });
+   "cb_admin " +
+   // v117
+   "apo_admin brief_admin pay_admin v117_cfg ").split(" ").forEach(function (t) { if (t) o[t] = true; });
   return o;
 })();
 
@@ -16704,6 +16722,10 @@ function v112SetupCheck() {
   var t116 = v116SelfTest();
   Logger.log("⑪ v116 の自己点検（アカウント・再架電の約束）: " + (t116.pass === t116.total ? "すべて合格" : "不合格 " + t116.failed.join("・")));
   try { var c116 = cbSummary116_(); Logger.log("⑫ 再架電の予定: 全部 " + c116.rows + "行・未対応 " + c116.open + "件（うち古い形 " + c116.legacyOpen + "件・予定から7日たった " + c116.expired + "件）。管理者の画面「📞 再架電の約束」の「古い予定の整理」で片付けられます"); } catch (eC) {}
+  var t117 = v117SelfTest();
+  Logger.log("⑬ v117 の自己点検（アポ・架電指示・報酬・設定）: " + (t117.pass === t117.total ? "すべて合格" : "不合格 " + t117.failed.join("・")));
+  try { var s117 = v117Summary_(); Logger.log("⑭ アポ " + s117.apos + "件（キャンセルなど " + s117.cancelled + "件）・架電指示 " + s117.briefs + "件（予約 " + s117.scheduled + "件）・予約送信のトリガー " + (s117.trigger ? "あり" : "なし（はじめて予約したときに作ります）")); } catch (eS) {}
+  try { var a117 = recAutosaveCheck_(true); Logger.log("⑮ 録音の自動保存先（v117：ご指定のフォルダ）: " + (a117.ok ? "「" + a117.name + "」 " + a117.url : "開けません（" + CONFIG.GAS_OWNER_EMAIL + " に編集者で共有してください）") + " ／ " + (a117.message || "")); } catch (eRa) { Logger.log("⑮ 録音の自動保存先: ⚠ " + String(eRa && eRa.message || eRa)); }
 }
 
 
@@ -17849,7 +17871,7 @@ function v116Handle_(d) {
 // ── 自己点検（v116） ──
 function v116SelfTest() {
   var checks = [], ok = function (name, cond) { checks.push({ name: name, pass: !!cond }); };
-  ok("版は v116", GAS_VERSION === "v116");
+  ok("版は v116 以降", Number(String(GAS_VERSION).replace(/\D/g, "")) >= 116);   // v117: 新しい版でも合格
   ok("名簿：阿部竜彦（097）", FULL_NAME_MAP["097"] === "阿部竜彦" && PIN_MAP["097"] === "阿部");
   ok("cb_admin は管理者だけ", !!ADMIN_ONLY_TYPES["cb_admin"]);
   var reg = Date.UTC(2026, 10, 20, 7, 0);   // 2026-11-20 16:00 JST
@@ -17876,4 +17898,801 @@ function cbSummary116_() {
     if (cbEff116_(o, now) === "期限切れ") s.expired++;
   });
   return s;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// v117（2026-11-25）
+//   ⑶ アポの一覧：アポインターごとの一覧と状態（予定・予定日を過ぎた・キャンセル・ノーショー・無効）。キャンセルなどは件数・報酬に入れない
+//      管理者がキャンセル・日時の変更をしたら、本人のアプリ（「個人のお知らせ」）とメールで知らせる
+//   ⑷ アポの日時の変更（管理者・本人）。変更の記録を「日時の変更」列に残し、アポイント台帳の行も直す（人が直していない行だけ）
+//   ⑸ おいでん（前日・当日の参加の確認の電話）：結果（参加OK・日程変更・キャンセル・不在）を「前日おいでん」「当日おいでん」列に残す
+//   ⑹ 当日の架電指示：管理者が作り、日時を決めて予約送信（送信元はこのシステムの持ち主＝CONFIG.GAS_OWNER_EMAIL）。アプリにも出す
+//   ⑺ 報酬：契約形態・月の目標（報酬設定シートの右に3列）。アポインターに今月ここまでの報酬と、目標までの差（暗証番号の確認つき）
+//   ⑻ 録音：自動保存を必須にする設定。録音なしで発信・退勤した理由を管理者へ
+//   ⑽ NG・お断りだった先：番号を出して発信できる設定・お断り/NG も含めたもう一巡の設定
+//   （調べたこと：前日の確認の電話・キャンセルとノーショーの扱い・実施された商談で数える報酬・断られた先を間を置いて回す など。README）
+// ═══════════════════════════════════════════════════════════════════════
+var V117 = {
+  CFG_KEY: "V117_CFG",
+  NOTICE_SHEET: "個人のお知らせ",
+  NOTICE_HEAD: ["ID", "PIN", "名前", "種類", "件名", "本文", "関連", "作成日時", "既読日時", "作成者", "メール"],
+  BRIEF_SHEET: "架電指示",
+  BRIEF_HEAD: ["ID", "状態", "送信予定", "対象日", "宛先PIN", "件名", "内容JSON", "作成者", "作成日時", "送信日時", "結果", "追加の宛先"],
+  BRIEF_FN: "briefTick117",
+  APO_COLS: ["日時の変更", "前日おいでん", "当日おいでん"],
+  CANCEL_HEAD: "取消",
+  PAY_COLS: ["契約形態", "月の目標（円）", "月の目標アポ（件）"],
+  KINDS: ["キャンセル", "ノーショー", "無効"],
+  OIDEN: ["参加OK", "日程変更", "キャンセル", "不在"],
+  CONTRACTS: ["時給", "時給＋成果報酬", "完全成果報酬", "月給（固定）", "月給＋成果報酬", "業務委託（その他）"],
+  LIMITS: { targets: 3, scripts: 6, reports: 30, oiden: 15, contracts: 15 }
+};
+var V117_CFG_DEFAULT = { recForce: true, oidenOn: true, oidenPrevFrom: "09:00", oidenDayFrom: "08:00", ngDial: true, recallAll: true, apoNotifyMail: true };
+
+// ── 設定（スクリプト プロパティ） ──
+function v117Cfg_() {
+  var o = {};
+  try { o = JSON.parse(PropertiesService.getScriptProperties().getProperty(V117.CFG_KEY) || "{}") || {}; } catch (e) { o = {}; }
+  var out = {};
+  Object.keys(V117_CFG_DEFAULT).forEach(function (k) { out[k] = (o[k] === undefined || o[k] === null) ? V117_CFG_DEFAULT[k] : o[k]; });
+  ["recForce", "oidenOn", "ngDial", "recallAll", "apoNotifyMail"].forEach(function (k) { out[k] = out[k] === true || out[k] === "true"; });
+  ["oidenPrevFrom", "oidenDayFrom"].forEach(function (k) { out[k] = v111Hm_(out[k]) || V117_CFG_DEFAULT[k]; });
+  return out;
+}
+function v117CfgSet_(vals) {
+  var cur = v117Cfg_(), changed = [];
+  Object.keys(V117_CFG_DEFAULT).forEach(function (k) {
+    if (!vals || vals[k] === undefined || vals[k] === null) return;
+    var v = typeof V117_CFG_DEFAULT[k] === "boolean" ? (vals[k] === true || vals[k] === "true") : v111Hm_(vals[k]);
+    if (typeof V117_CFG_DEFAULT[k] !== "boolean" && !v) throw new Error("時刻の形が正しくありません（" + k + "：" + vals[k] + "）");
+    if (cur[k] !== v) { cur[k] = v; changed.push(k + "=" + v); }
+  });
+  PropertiesService.getScriptProperties().setProperty(V117.CFG_KEY, JSON.stringify(cur));
+  if (changed.length) { try { logAudit("v117 の設定", "管理者", "アポ・おいでん・録音・NG", changed.join("／")); } catch (e) {} }
+  return { ok: true, cfg: cur, changed: changed };
+}
+
+// ── アプリの暗証番号の確認（アポインター本人の要求。報酬・アポの変更）。auth_check と同じ照合 ──
+function v117AuthOk_(pin, hash) {
+  pin = rosterNormPin_(pin);
+  if (!pin || !hash || !FULL_NAME_MAP[pin]) return false;
+  try {
+    var sh = SpreadsheetApp.openById(SHEET_ID).getSheetByName("アカウント認証");
+    if (!sh || sh.getLastRow() < 2) return false;
+    var rows = sh.getDataRange().getValues(), h = "";
+    for (var i = 1; i < rows.length; i++) {
+      if (rosterNormPin_(rows[i][0]) !== pin || !pinOwnerOk_(pin, rows[i][1])) continue;
+      h = String(rows[i][2] || "");
+    }
+    return !!h && h === String(hash);
+  } catch (e) { return false; }
+}
+function v117Esc_(s, n) { return String(s === null || s === undefined ? "" : s).replace(/\r\n?/g, "\n").trim().slice(0, n || 2000); }
+function v117Url_(s) {
+  var t = String(s === null || s === undefined ? "" : s).trim().slice(0, 500);
+  return /^https?:\/\/[^\s]+$/i.test(t) ? t : (t ? "" : "");
+}
+function v117Email_(s) { var t = String(s || "").trim(); return /^[^@\s,]+@[^@\s,]+\.[^@\s,]+$/.test(t) ? t : ""; }
+function v117NowMs_() { return new Date().getTime(); }
+function v117Md_(dateKey, hm) {
+  if (!dateKey) return "";
+  var p = dateKey.split("-");
+  return Number(p[1]) + "/" + Number(p[2]) + "（" + v111Dow_(dateKey) + "）" + (hm ? " " + hm : "");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ⑶⑷⑸ アポ
+// ═══════════════════════════════════════════════════════════════════════
+// 「取消」列の文字 → { kind, at, reason }（空・「なし」など → null）
+//   v117 の書き方：「取消 2026-11-25【キャンセル】先方都合（管理者）」。収支の画面の書き方「取消 2026-11-25：理由」も読む
+function apo117ParseCancel_(s) {
+  var t = String(s === null || s === undefined ? "" : s).trim();
+  if (!t || /^(no|いいえ|なし|false|0)$/i.test(t)) return null;
+  var kind = (t.match(/【([^】]+)】/) || [])[1] || "キャンセル";
+  if (V117.KINDS.indexOf(kind) < 0) kind = "キャンセル";
+  var at = (t.match(/(\d{4}-\d{2}-\d{2})/) || [])[1] || "";
+  var reason = t.replace(/^取消\s*/, "").replace(/\d{4}-\d{2}-\d{2}/, "").replace(/【[^】]*】/, "").replace(/^[\s：:]+/, "").trim();
+  return { kind: kind, at: at, reason: reason };
+}
+function apo117At_(rec) {
+  if (!rec.meetingDate) return 0;
+  return Date.parse(rec.meetingDate + "T" + (rec.meetingTime || "00:00") + ":00+09:00") || 0;
+}
+// 状態：キャンセル系（kind）／予定／済（予定日を過ぎた）／日時なし
+function apo117Status_(rec, nowMs) {
+  if (rec.cx) return rec.cx.kind;
+  var t = apo117At_(rec);
+  if (!t) return "日時なし";
+  if (!rec.meetingTime) return rec.meetingDate >= jstKey_(nowMs) ? "予定" : "済";
+  return t >= nowMs ? "予定" : "済";
+}
+// 「アポイント」シートを読む（列は見出しで探す。読むだけ＝シートは変えない）
+function apo117Read_() {
+  var ss = SpreadsheetApp.openById(SHEET_ID), sh = ss.getSheetByName(APO_SHEET);
+  var out = { sh: sh, recs: [], hdr: [], width: 0, tz: "Asia/Tokyo", col: {} };
+  if (!sh || sh.getLastRow() < 1) return out;
+  var tz = mainTz_(), width = Math.max(sh.getLastColumn(), APO_BASE_HEADER.length);
+  var hdr = sh.getRange(1, 1, 1, width).getValues()[0].map(function (h) { return String(h === null || h === undefined ? "" : h).trim(); });
+  var cols = {};
+  apoExtraNames_().concat(V117.APO_COLS).forEach(function (n) { var i = hdr.indexOf(n); if (i >= 0) cols[n] = i + 1; });
+  var cc = apoCancelCol_(hdr);
+  out.hdr = hdr; out.width = width; out.tz = tz; out.col = cols; out.cancelCol = cc;
+  if (sh.getLastRow() < 2) return out;
+  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, width).getValues(), resolve = liveResolver_();
+  for (var i = 0; i < vals.length; i++) {
+    var r = vals[i];
+    if (!String(r[5] || "").trim() && !String(r[1] || "").trim()) continue;
+    var rec = apoFromRow_(r, cols, tz, cc);
+    rec.row = i + 2;
+    rec.legacy = !rec.apoId;
+    rec.id = rec.apoId || apoLegacyId_(rec);
+    rec.cancelRaw = cc ? String(r[cc - 1] === null || r[cc - 1] === undefined ? "" : r[cc - 1]) : "";
+    rec.cx = apo117ParseCancel_(rec.cancelRaw);
+    rec.changes = cols["日時の変更"] ? String(r[cols["日時の変更"] - 1] || "") : "";
+    rec.oPrev = cols["前日おいでん"] ? String(r[cols["前日おいでん"] - 1] || "") : "";
+    rec.oDay = cols["当日おいでん"] ? String(r[cols["当日おいでん"] - 1] || "") : "";
+    rec.datetimeRaw = r[12];
+    rec.owner = resolve(rec.reporter, rec.pin) || "";     // 名簿の人（同じ PIN の以前の方の行は、名前が違うので付かない）
+    out.recs.push(rec);
+  }
+  return out;
+}
+// 画面に渡す形
+function apo117Client_(rec, nowMs) {
+  return {
+    id: rec.id, apoId: rec.apoId, row: rec.row, legacy: !!rec.legacy, pin: rec.owner || "", reporter: rec.reporter,
+    date: rec.date, project: rec.project, meetingDate: rec.meetingDate, meetingTime: rec.meetingTime, at: apo117At_(rec),
+    company: rec.company, phone: rec.phone, person: rec.person, gender: rec.gender, role: rec.role, email: rec.email, address: rec.address,
+    personality: rec.personality, handoff: rec.handoff, checks: rec.checks,
+    cancelled: !!rec.cx, cancelKind: rec.cx ? rec.cx.kind : "", cancelReason: rec.cx ? rec.cx.reason : "", cancelAt: rec.cx ? rec.cx.at : "",
+    changes: rec.changes, oPrev: rec.oPrev, oDay: rec.oDay, status: apo117Status_(rec, nowMs)
+  };
+}
+// アポインター本人の一覧（同期）。v116 までの項目（date・meetingDate など）もそのまま入れる
+function apo117ForPin_(pin, nameMatches) {
+  var R = apo117Read_(), now = v117NowMs_(), out = [];
+  R.recs.forEach(function (rec) {
+    var mine = rec.owner ? rec.owner === pin : (nameMatches ? nameMatches(rec.reporter) : false);
+    if (!mine) return;
+    var c = apo117Client_(rec, now);
+    c.datetime = rec.meetingDate ? rec.meetingDate + (rec.meetingTime ? "T" + rec.meetingTime : "") : "";
+    out.push(c);
+  });
+  return out;
+}
+// 列を用意する（書くときだけ）。戻り値：列番号の地図
+function apo117EnsureCols_(sh) {
+  var cols = ensureCols_(sh, apoExtraNames_().concat(V117.APO_COLS));
+  var width = Math.max(sh.getLastColumn(), APO_BASE_HEADER.length);
+  var hdr = sh.getRange(1, 1, 1, width).getValues()[0];
+  var cc = apoCancelCol_(hdr);
+  if (!cc) cc = ensureCols_(sh, [V117.CANCEL_HEAD])[V117.CANCEL_HEAD];
+  cols.cancel = cc;
+  return cols;
+}
+// アポを1件探す（ID → 無ければ、v110 までの行の ID）。company を渡したときは、法人名も同じ行だけ
+function apo117Find_(R, id, company) {
+  for (var i = 0; i < R.recs.length; i++) {
+    var r = R.recs[i];
+    if (r.id !== String(id || "")) continue;
+    if (company !== undefined && company !== null && company !== "" && normCompany_(r.company) !== normCompany_(company)) return null;
+    return r;
+  }
+  return null;
+}
+// 台帳の行も直す（人が直していない行だけ。見つからない・書けないときは、そのまま返す）
+//   action：cancel／restore／reschedule。old＝変更前の { meetingDate, meetingTime }
+function apo117Ledger_(rec, action, old) {
+  try {
+    if (!aplCfg_().on) return "off";
+    var res = v111Lock_(function () {
+      var L = aplOpen_(true, false);
+      if (!L.ok) return "off";
+      var ix = aplIndex_(L);
+      var probe = { apoId: rec.apoId, company: rec.company, meetingDate: old ? old.meetingDate : rec.meetingDate, meetingTime: old ? old.meetingTime : rec.meetingTime };
+      var at = aplFind_(ix, probe);
+      if (at < 0) return "notfound";
+      var cur = ix.vals[at], row = L.hr + 1 + at, cells = {};
+      var st = aplStr_(aplCell_(cur, L.map.status));
+      if (action === "cancel" && L.map.status && (st === "" || st === "予定")) cells[L.map.status] = "取消";
+      if (action === "restore" && L.map.status && st === "取消") cells[L.map.status] = (rec.meetingDate && rec.meetingDate >= jstKey_(v117NowMs_())) ? "予定" : "";
+      if (action === "reschedule") {
+        var dk = v111DateKey_(aplCell_(cur, L.map.meetingDate), L.tz), hm = v111Hm_(aplCell_(cur, L.map.meetingTime), L.tz);
+        // 台帳の日時が、変更前の日時のまま（人が別の日時に直していない）ときだけ書く
+        if (dk === old.meetingDate && (!L.map.meetingTime || !old.meetingTime || hm === old.meetingTime || hm === "")) {
+          if (L.map.meetingDate) cells[L.map.meetingDate] = rec.meetingDate.replace(/-/g, "/");
+          if (L.map.meetingTime && rec.meetingTime) cells[L.map.meetingTime] = rec.meetingTime;
+          if (L.map.dow) cells[L.map.dow] = v111Dow_(rec.meetingDate);
+        } else return "changed";
+      }
+      if (!Object.keys(cells).length) return "same";
+      var w = aplWriteCells_(L.sh, row, cells);
+      return w.rejected && w.rejected.length ? "partial" : "updated";
+    }, 20000, true);
+    return res === V111_NOLOCK ? "busy" : res;
+  } catch (e) { return "error"; }
+}
+// 本人へのお知らせ（アプリ）と、メール（本人の会社 Gmail）
+function notice117Add_(pin, kind, title, body, ref, by, mail) {
+  var id = "NT" + v117NowMs_() + Math.floor(Math.random() * 1000);
+  var sh = ensureSheet(SpreadsheetApp.openById(SHEET_ID), V117.NOTICE_SHEET, V117.NOTICE_HEAD);
+  var email = mail ? (STAFF_EMAILS[pin] || "") : "";
+  sh.appendRow([id, asText_(pin), FULL_NAME_MAP[pin] || "", kind, v111Txt_(title).slice(0, 200), v111Txt_(body).slice(0, 4000), String(ref || "").slice(0, 200),
+    new Date(), "", by || "", email ? email : (mail ? "（メール未登録）" : "")]);
+  var sent = null;
+  if (email) {
+    try {
+      sent = notifyDispatch_("アポの知らせ", [email], "【テレアポ】" + title, body + "\n\n― このメールは、テレアポ業務管理システムから送っています。アプリの「🔔 お知らせ」にも同じ内容が出ています。", ref, "NT-" + id);
+    } catch (e) { sent = { status: "失敗", error: String(e) }; }
+  }
+  return { id: id, mail: email ? (sent ? sent.status : "") : (mail ? "未登録" : "送らない") };
+}
+function notice117ForPin_(pin) {
+  var sh = SpreadsheetApp.openById(SHEET_ID).getSheetByName(V117.NOTICE_SHEET);
+  if (!sh || sh.getLastRow() < 2) return [];
+  var last = sh.getLastRow(), from = Math.max(2, last - 500 + 1);
+  var vals = sh.getRange(from, 1, last - from + 1, V117.NOTICE_HEAD.length).getValues(), out = [];
+  for (var i = vals.length - 1; i >= 0 && out.length < 10; i--) {
+    var r = vals[i];
+    if (rosterNormPin_(r[1]) !== pin || !pinOwnerOk_(pin, r[2]) || (r[8] !== "" && r[8] !== null)) continue;
+    out.push({ id: String(r[0]), kind: String(r[3]), title: String(r[4]), body: String(r[5]), ref: String(r[6]), at: fmtJst_(r[7], "M/d HH:mm") });
+  }
+  return out;
+}
+function notice117Read_(pin, ids) {
+  var sh = SpreadsheetApp.openById(SHEET_ID).getSheetByName(V117.NOTICE_SHEET);
+  if (!sh || sh.getLastRow() < 2) return { ok: true, read: 0 };
+  var want = {}; (ids || []).forEach(function (x) { want[String(x)] = true; });
+  var last = sh.getLastRow(), from = Math.max(2, last - 500 + 1), n = 0;
+  var vals = sh.getRange(from, 1, last - from + 1, 9).getValues();
+  for (var i = 0; i < vals.length; i++) {
+    if (!want[String(vals[i][0])] || rosterNormPin_(vals[i][1]) !== pin) continue;
+    if (vals[i][8] === "" || vals[i][8] === null) { sh.getRange(from + i, 9).setValue(new Date()); n++; }
+  }
+  return { ok: true, read: n };
+}
+// ★アポの変更（管理者・本人）
+//   d = { action: cancel|restore|reschedule|oiden, id, company, kind, reason, date, time, when(prev|day), result, memo, notify, mail }
+//   who = { admin: true } または { pin }
+function apo117Update_(d, who) {
+  var action = String(d.action || "");
+  if (["cancel", "restore", "reschedule", "oiden"].indexOf(action) < 0) return { ok: false, message: "操作が分かりません（" + action + "）" };
+  if (!who.admin && action === "restore") return { ok: false, message: "キャンセルを戻すのは、管理者だけです" };
+  if (!who.admin && action === "cancel") return { ok: false, message: "キャンセルは「おいでん」の結果（キャンセル）で記録してください" };
+  var kind = V117.KINDS.indexOf(String(d.kind || "")) >= 0 ? String(d.kind) : "キャンセル";
+  var reason = v117Esc_(d.reason, 300).replace(/\n/g, " ");
+  var newDate = "", newTime = "";
+  if (action === "reschedule") {
+    newDate = v111DateKey_(d.date); newTime = d.time ? v111Hm_(d.time) : "";
+    if (!newDate) return { ok: false, message: "新しい日付を入れてください" };
+    if (d.time && !newTime) return { ok: false, message: "時刻の形が正しくありません（" + d.time + "）" };
+  }
+  var oWhen = "", oRes = "";
+  if (action === "oiden") {
+    oWhen = d.when === "day" ? "day" : (d.when === "prev" ? "prev" : "");
+    oRes = V117.OIDEN.indexOf(String(d.result || "")) >= 0 ? String(d.result) : "";
+    if (!oWhen || !oRes) return { ok: false, message: "おいでんの結果が分かりません" };
+  }
+  var by = who.admin ? "管理者" : (FULL_NAME_MAP[who.pin] || who.pin);
+  var now = v117NowMs_(), today = jstKey_(now), stamp = Utilities.formatDate(new Date(now), "Asia/Tokyo", "M/d HH:mm");
+  var lockRes = v111Lock_(function () {
+    var R = apo117Read_();
+    if (!R.sh) return { ok: false, message: "「アポイント」シートがありません" };
+    var rec = apo117Find_(R, d.id, d.company);
+    if (!rec) return { ok: false, code: "notfound", message: "そのアポが見つかりません（ほかの人が直したかもしれません。画面を更新してください）" };
+    if (!who.admin && rec.owner !== who.pin) return { ok: false, code: "not_owner", message: "ご自分のアポだけを変えられます" };
+    var cols = apo117EnsureCols_(R.sh), row = rec.row, did = [], old = { meetingDate: rec.meetingDate, meetingTime: rec.meetingTime };
+    // 書く直前に、その行がまだ同じアポか確かめる（行がずれていたら書かない）
+    var width = Math.max(R.sh.getLastColumn(), APO_BASE_HEADER.length);
+    var cur = R.sh.getRange(row, 1, 1, width).getValues()[0];
+    var curId = cols[APO_X.id] ? String(cur[cols[APO_X.id] - 1] === null || cur[cols[APO_X.id] - 1] === undefined ? "" : cur[cols[APO_X.id] - 1]).trim() : "";
+    if ((rec.apoId && curId !== rec.apoId) || normCompany_(cur[5]) !== normCompany_(rec.company))
+      return { ok: false, code: "moved", message: "行の内容が変わっています。画面を更新してから、もう一度お試しください" };
+    function setCell(c, v) { if (c) R.sh.getRange(row, c).setValue(v); }
+    if (action === "cancel" || (action === "oiden" && oRes === "キャンセル")) {
+      var k2 = action === "oiden" ? "キャンセル" : kind, rs = action === "oiden" ? ("おいでん（" + (oWhen === "day" ? "当日" : "前日") + "）で先方より" + (d.memo ? "：" + v117Esc_(d.memo, 200) : "")) : reason;
+      setCell(cols.cancel, "取消 " + today + "【" + k2 + "】" + rs + "（" + by + "）");
+      rec.cx = { kind: k2, at: today, reason: rs + "（" + by + "）" };
+      did.push(k2 + (rs ? "：" + rs : ""));
+    }
+    if (action === "restore") { setCell(cols.cancel, ""); rec.cx = null; did.push("キャンセルを戻す"); }
+    if (action === "reschedule") {
+      var fromTxt = v117Md_(rec.meetingDate, rec.meetingTime) || "（日時なし）", toTxt = v117Md_(newDate, newTime);
+      R.sh.getRange(row, 4, 1, 2).setValues([[newDate, newTime || ""]]);
+      setCell(13, newDate + (newTime ? "T" + newTime : ""));
+      var hist = fromTxt + " → " + toTxt + "（" + stamp + " " + by + (reason ? "：" + reason : "") + "）";
+      var prevH = String(rec.changes || "");
+      setCell(cols["日時の変更"], (hist + (prevH ? "\n" + prevH : "")).slice(0, 1500));
+      // 日時が変わったら、前の日時に向けたおいでんの記録は使わない（変更の記録には残る）
+      if (rec.oPrev) setCell(cols["前日おいでん"], "");
+      if (rec.oDay) setCell(cols["当日おいでん"], "");
+      rec.meetingDate = newDate; rec.meetingTime = newTime; rec.changes = hist + (prevH ? "\n" + prevH : ""); rec.oPrev = ""; rec.oDay = "";
+      did.push("日時の変更 " + fromTxt + " → " + toTxt);
+    }
+    if (action === "oiden") {
+      var cell = oRes + " " + stamp + (d.memo ? "：" + v117Esc_(d.memo, 200).replace(/\n/g, " ") : "") + (who.admin ? "（管理者）" : "");
+      setCell(cols[oWhen === "day" ? "当日おいでん" : "前日おいでん"], cell);
+      if (oWhen === "day") rec.oDay = cell; else rec.oPrev = cell;
+      did.push((oWhen === "day" ? "当日" : "前日") + "おいでん：" + oRes);
+    }
+    return { ok: true, rec: rec, did: did, old: old };
+  }, 20000, true);
+  if (lockRes === V111_NOLOCK) return { ok: false, code: "busy", message: "ほかの処理が書き込み中です。少し待ってから、もう一度お試しください" };
+  if (!lockRes.ok) return lockRes;
+  var rec = lockRes.rec, out = { ok: true, did: lockRes.did, apo: apo117Client_(rec, now) };
+  // 台帳
+  var la = (action === "cancel" || (action === "oiden" && oRes === "キャンセル")) ? "cancel" : (action === "restore" ? "restore" : (action === "reschedule" ? "reschedule" : ""));
+  if (la) out.ledger = apo117Ledger_(rec, la, lockRes.old);
+  try { logAudit("アポの変更（v117）", by, rec.company + "（" + (rec.reporter || "") + "）", lockRes.did.join("・") + (out.ledger ? "／台帳：" + out.ledger : "")); } catch (eA) {}
+  // 知らせる
+  var when = v117Md_(rec.meetingDate, rec.meetingTime), cfg = v117Cfg_();
+  if (who.admin && d.notify !== false && rec.owner && (action === "cancel" || action === "reschedule" || action === "restore")) {
+    var title = action === "cancel" ? "アポが" + kind + "になりました：" + rec.company : (action === "reschedule" ? "アポの日時が変わりました：" + rec.company : "キャンセルが取り消されました：" + rec.company);
+    var body = rec.company + (rec.person ? "（" + rec.person + " 様）" : "") + "\n" +
+      (action === "reschedule" ? "変更前：" + v117Md_(lockRes.old.meetingDate, lockRes.old.meetingTime) + "\n変更後：" + when : "商談：" + when) + "\n" +
+      (action === "cancel" ? "種類：" + kind + "（件数・報酬には入りません）\n" : "") + (reason ? "理由：" + reason + "\n" : "") + "（" + by + "）";
+    out.notice = notice117Add_(rec.owner, action === "cancel" ? kind : (action === "reschedule" ? "日時の変更" : "キャンセルの取り消し"), title, body, rec.id, by, d.mail !== false && cfg.apoNotifyMail);
+  }
+  // 本人がキャンセル・日時の変更を記録したら、管理者へメールで知らせる
+  if (!who.admin && (action === "reschedule" || (action === "oiden" && (oRes === "キャンセル" || oRes === "日程変更")))) {
+    try {
+      notifyDispatch_("アポの変更", [DAILY_REPORT_TO], "【アポの変更】" + by + "：" + rec.company + "（" + lockRes.did.join("・") + "）",
+        "アポインター：" + by + "\n法人名：" + rec.company + (rec.person ? "（" + rec.person + " 様）" : "") + "\n商談：" + when + "\n内容：" + lockRes.did.join("・") +
+        (out.ledger ? "\nアポイント台帳：" + ({ updated: "直しました", same: "変更なし", notfound: "行が見つかりません（手で直してください）", changed: "人が直した日時のため、直していません", off: "使っていません", busy: "あとで直してください", partial: "一部の列を直せませんでした", error: "直せませんでした" }[out.ledger] || out.ledger) : ""),
+        rec.id, "APOCHG-" + rec.id + "-" + now);
+    } catch (eN) {}
+  }
+  return out;
+}
+// 管理者：アポの一覧（月・商談日で）と人ごとの数
+//   d = { month: "yyyy-mm", by: "meeting"|"acquired" }
+function apo117Admin_(d) {
+  var now = v117NowMs_(), today = jstKey_(now), ym = plMonthKey_(d.month) || today.slice(0, 7), byAcq = d.by === "acquired";
+  var tomorrow = v111AddDays_(today, 1);
+  var R = apo117Read_(), list = [], people = {}, soon = [];
+  R.recs.forEach(function (rec) {
+    var c = apo117Client_(rec, now), key = byAcq ? (rec.date || "") : (rec.meetingDate || rec.date || "");
+    // 本日・明日の商談（おいでんの確認）は、月に関係なく出す
+    if (!c.cancelled && (rec.meetingDate === today || rec.meetingDate === tomorrow)) soon.push(c);
+    if (key.slice(0, 7) !== ym) return;
+    list.push(c);
+    var p = c.pin || ("?" + c.reporter);
+    if (!people[p]) people[p] = { pin: c.pin, name: FULL_NAME_MAP[c.pin] || c.reporter || "（不明）", total: 0, valid: 0, cancel: 0, noshow: 0, invalid: 0, held: 0, upcoming: 0 };
+    var P = people[p];
+    P.total++;
+    if (c.cancelled) { if (c.cancelKind === "ノーショー") P.noshow++; else if (c.cancelKind === "無効") P.invalid++; else P.cancel++; }
+    else { P.valid++; if (c.status === "済") P.held++; else if (c.status === "予定") P.upcoming++; }
+  });
+  list.sort(function (a, b) { var ka = (a.meetingDate || "") + (a.meetingTime || ""), kb = (b.meetingDate || "") + (b.meetingTime || ""); return ka === kb ? a.row - b.row : (ka < kb ? -1 : 1); });
+  soon.sort(function (a, b) { return a.at - b.at; });
+  var arr = Object.keys(people).map(function (k) { var P = people[k]; var done = P.held + P.cancel + P.noshow; P.showRate = done ? Math.round(P.held / done * 100) : null; return P; });
+  arr.sort(function (a, b) { return (a.pin || "zzz") < (b.pin || "zzz") ? -1 : 1; });
+  return { month: ym, by: byAcq ? "acquired" : "meeting", today: today, list: list, people: arr, soon: soon, cfg: v117Cfg_(), total: list.length };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ⑹ 当日の架電指示（作る・予約する・送る・アプリに出す）
+// ═══════════════════════════════════════════════════════════════════════
+function brief117Norm_(o) {
+  o = o || {};
+  function s(v, n) { return v117Esc_(v, n || 2000); }
+  function arr(a, n) { return (Array.isArray(a) ? a : []).slice(0, n); }
+  function item(x) {
+    x = x || {};
+    return { project: s(x.project, 100), at: s(x.at, 60), company: s(x.company, 120), person: s(x.person, 80), phone: s(x.phone, 40),
+      email: s(x.email, 120), reUrl: v117Url_(x.reUrl) || s(x.reUrl, 300) };
+  }
+  var out = {
+    project: s(o.project, 100), kind: ["WEB", "訪問", "その他"].indexOf(o.kind) >= 0 ? o.kind : "WEB", product: s(o.product, 200), summary: s(o.summary),
+    company: s(o.company), meetingBy: s(o.meetingBy), naming: s(o.naming), phoneAns: s(o.phoneAns, 500), mailAns: s(o.mailAns, 500), priceAns: s(o.priceAns, 1000),
+    targets: arr(o.targets, V117.LIMITS.targets).map(function (x) { return s(x, 120); }).filter(function (x) { return x; }), targetNote: s(o.targetNote),
+    listUrl: s(o.listUrl, 500), listNote: s(o.listNote, 1000),
+    scripts: arr(o.scripts, V117.LIMITS.scripts).map(function (x) { x = x || {}; return { name: s(x.name, 80), url: s(x.url, 500) }; }).filter(function (x) { return x.name || x.url; }),
+    schedUrl: s(o.schedUrl, 500), schedRange: s(o.schedRange, 300), schedRule: s(o.schedRule, 1000),
+    reports: arr(o.reports, V117.LIMITS.reports).map(function (x) { return s(x, 200); }).filter(function (x) { return x; }),
+    audioTo: s(o.audioTo, 200),
+    oiden: arr(o.oiden, V117.LIMITS.oiden).map(item).filter(function (x) { return x.company || x.person || x.phone; }),
+    contracts: arr(o.contracts, V117.LIMITS.contracts).map(item).filter(function (x) { return x.company || x.person || x.phone; }),
+    notes: s(o.notes, 3000)
+  };
+  return out;
+}
+// 送る文（添付のメールの形）
+function brief117Text_(o, dateKey) {
+  var L = [], n = function (s) { return String(s || "").trim(); };
+  function sec(title, body) { if (n(body)) { L.push(""); L.push(title); L.push(n(body)); } }
+  L.push("■ 本日の架電先");
+  L.push("案件名：" + (n(o.project) || "（未入力）"));
+  var kindTxt = o.kind === "訪問" ? "訪問アポ（訪問しての商談）" : (o.kind === "WEB" ? "WEB 商談のアポ（Zoom など）" : "その他");
+  L.push(""); L.push("【案件概要】");
+  if (n(o.product)) L.push("商材：" + n(o.product));
+  L.push("アポの種類：" + kindTxt);
+  if (n(o.summary)) L.push(n(o.summary));
+  sec("【会社情報】", o.company);
+  sec("【商談者について】", o.meetingBy);
+  sec("■ 名乗りルール（必ず遵守）", o.naming);
+  sec("【電話番号を聞かれた場合】", o.phoneAns);
+  sec("【メールアドレスを聞かれた場合】", o.mailAns);
+  sec("【金額を聞かれたとき】", o.priceAns);
+  if ((o.targets || []).length || n(o.targetNote)) {
+    L.push(""); L.push("■ 架電先・ターゲット（呼び出す役職者）");
+    (o.targets || []).forEach(function (t, i) { L.push(["①", "②", "③"][i] + " " + t); });
+    if (n(o.targetNote)) L.push(n(o.targetNote));
+  }
+  if (n(o.listUrl) || n(o.listNote)) { L.push(""); L.push("■ 架電リスト"); if (n(o.listUrl)) L.push(n(o.listUrl)); if (n(o.listNote)) L.push(n(o.listNote)); }
+  if ((o.scripts || []).length) { L.push(""); L.push("■ トークスクリプト"); o.scripts.forEach(function (x) { L.push("▼" + (x.name || "スクリプト")); if (x.url) L.push(x.url); }); }
+  if (n(o.schedUrl) || n(o.schedRange) || n(o.schedRule)) {
+    L.push(""); L.push("■ アポ日時の調整");
+    if (n(o.schedUrl)) L.push("【日程調整URL】" + "\n" + n(o.schedUrl));
+    if (n(o.schedRange)) L.push("【ご案内する日程の範囲】" + n(o.schedRange));
+    if (n(o.schedRule)) L.push("【入力ルール】" + "\n" + n(o.schedRule));
+  }
+  if ((o.reports || []).length) { L.push(""); L.push("■ アポ取得時の必須報告事項"); o.reports.forEach(function (x, i) { L.push((i + 1) + ". " + x); }); }
+  sec("■ 音声送付先", o.audioTo);
+  function items(title, list) {
+    if (!(list || []).length) return;
+    L.push(""); L.push(title);
+    list.forEach(function (x, i) {
+      L.push((i + 1) + "）" + [x.project ? "＜" + x.project + "＞" : "", x.at, x.company, x.person ? x.person + " 様" : "", x.phone, x.email].filter(function (v) { return v; }).join("　"));
+      if (x.reUrl) L.push("　▶ 日程調整　" + x.reUrl);
+    });
+  }
+  items("■ おいでん（当日参加の確認の電話）", o.oiden);
+  items("■ 契約書回収・アポ取得", o.contracts);
+  sec("■ 事務連絡", o.notes);
+  var subject = "【架電指示】" + (dateKey ? v117Md_(dateKey, "") + " " : "") + (n(o.project) || "本日の架電先");
+  return { subject: subject, body: L.join("\n") + "\n\n― テレアポ業務管理システム（アプリのホームにも同じ内容が出ています）" };
+}
+function brief117Sheet_() { return ensureSheet(SpreadsheetApp.openById(SHEET_ID), V117.BRIEF_SHEET, V117.BRIEF_HEAD); }
+function brief117Rows_() {
+  var sh = SpreadsheetApp.openById(SHEET_ID).getSheetByName(V117.BRIEF_SHEET);
+  if (!sh || sh.getLastRow() < 2) return [];
+  var last = sh.getLastRow(), from = Math.max(2, last - 300 + 1);
+  return sh.getRange(from, 1, last - from + 1, V117.BRIEF_HEAD.length).getValues().map(function (r, i) {
+    var o = {}; try { o = JSON.parse(String(r[6] || "{}")) || {}; } catch (e) { o = {}; }
+    return { row: from + i, id: String(r[0]), status: String(r[1]), sendAt: isDate_(r[2]) ? r[2].getTime() : (Number(r[2]) || 0), date: v111DateKey_(r[3]) || String(r[3] || ""),
+      pins: String(r[4] || ""), subject: String(r[5] || ""), o: o, by: String(r[7] || ""), created: isDate_(r[8]) ? r[8].getTime() : 0,
+      sentAt: isDate_(r[9]) ? r[9].getTime() : 0, result: String(r[10] || ""), extra: String(r[11] || "") };
+  });
+}
+function brief117Pins_(pinsTxt) {
+  var t = String(pinsTxt === null || pinsTxt === undefined ? "" : pinsTxt).replace(/^'/, "").trim();
+  if (t === "ALL" || !t) return Object.keys(FULL_NAME_MAP);
+  return t.split(",").map(function (p) { return rosterNormPin_(p); }).filter(function (p) { return p && FULL_NAME_MAP[p]; });
+}
+function brief117Send_(b, testTo) {
+  var t = brief117Text_(b.o, b.date), res = [], okN = 0;
+  if (testTo) {
+    var r0 = notifyDispatch_("架電指示（テスト）", [testTo], "【テスト】" + t.subject, t.body, b.id, "BRT-" + b.id + "-" + v117NowMs_());
+    return { test: true, to: testTo, status: r0.status };
+  }
+  brief117Pins_(b.pins).forEach(function (pin) {
+    var em = STAFF_EMAILS[pin] || "";
+    if (!em) { res.push(FULL_NAME_MAP[pin] + "：メール未登録（アプリには出ます）"); return; }
+    var r = notifyDispatch_("架電指示", [em], t.subject, t.body, b.id, "BR-" + b.id + "-" + pin);
+    if (r.status === "送信済") okN++;
+    res.push(FULL_NAME_MAP[pin] + "：" + r.status);
+  });
+  String(b.extra || "").split(",").map(v117Email_).filter(function (x) { return x; }).forEach(function (em) {
+    var r = notifyDispatch_("架電指示", [em], t.subject, t.body, b.id, "BR-" + b.id + "-" + em);
+    if (r.status === "送信済") okN++;
+    res.push(em + "：" + r.status);
+  });
+  return { sent: okN, result: res.join("／").slice(0, 2000) };
+}
+// 保存（下書き・予約・いますぐ送る・テスト送信・予約の取り消し）
+function brief117Save_(d) {
+  var action = String(d.action || "draft");
+  var sh = brief117Sheet_(), now = v117NowMs_();
+  if (action === "cancel") {
+    var rows0 = brief117Rows_(), hit = null;
+    rows0.forEach(function (b) { if (b.id === String(d.id)) hit = b; });
+    if (!hit) return { ok: false, message: "見つかりません" };
+    if (hit.status !== "予約") return { ok: false, message: "予約中のものだけ取り消せます（いま：" + hit.status + "）" };
+    sh.getRange(hit.row, 2).setValue("取消");
+    try { logAudit("架電指示の予約を取り消し", "管理者", hit.subject, ""); } catch (e) {}
+    return { ok: true, id: hit.id, status: "取消" };
+  }
+  var o = brief117Norm_(d.o || {});
+  var date = v111DateKey_(d.date) || jstKey_(now);
+  var pins = d.pins === "ALL" ? "ALL" : (Array.isArray(d.pins) ? d.pins : String(d.pins || "").split(",")).map(function (p) { return rosterNormPin_(p); }).filter(function (p) { return p && FULL_NAME_MAP[p]; }).join(",");
+  if (d.pins !== "ALL" && !pins && action !== "draft" && action !== "test") return { ok: false, message: "送る相手（アポインター）を選んでください" };
+  var extra = String(d.extra || "").split(/[,、\s]+/).map(v117Email_).filter(function (x) { return x; }).join(",");
+  var sendAt = Number(d.sendAt) || 0;
+  if (action === "schedule") {
+    if (!sendAt) return { ok: false, message: "送る日時を入れてください" };
+    if (sendAt < now - 60000) return { ok: false, message: "送る日時が過ぎています" };
+  }
+  if (action === "test") {
+    var to = v117Email_(d.testTo) || DAILY_REPORT_TO;
+    var r = brief117Send_({ id: "TEST", o: o, date: date, pins: pins, extra: "" }, to);
+    return { ok: r.status === "送信済", test: true, to: to, status: r.status, preview: brief117Text_(o, date) };
+  }
+  var t = brief117Text_(o, date), id = String(d.id || "") || ("BR" + now);
+  var rows = brief117Rows_(), cur = null;
+  rows.forEach(function (b) { if (b.id === id) cur = b; });
+  if (cur && (cur.status === "送信済" || cur.status === "送信中")) id = "BR" + now;    // 送ったものは書き換えず、新しく作る
+  else if (cur && action !== "draft" && cur.status === "取消") id = "BR" + now;
+  var st = action === "schedule" ? "予約" : (action === "now" ? "送信中" : "下書き");
+  var line = [id, st, sendAt ? new Date(sendAt) : "", date, pins ? asText_(pins) : "", t.subject, JSON.stringify(o), "管理者", new Date(now), "", "", extra];   // 宛先PIN は文字で（"091,101" が数になるのを防ぐ）
+  var rowNo = 0;
+  rows = brief117Rows_();
+  rows.forEach(function (b) { if (b.id === id) rowNo = b.row; });
+  if (rowNo) sh.getRange(rowNo, 1, 1, line.length).setValues([line]);
+  else { sh.appendRow(line); rowNo = sh.getLastRow(); }
+  var out = { ok: true, id: id, status: st, subject: t.subject, preview: t };
+  if (action === "schedule") { try { out.trigger = brief117EnsureTrigger_(); } catch (eT) { out.triggerError = String(eT); } }
+  if (action === "now") {
+    var b = { id: id, o: o, date: date, pins: pins, extra: extra };
+    var s = brief117Send_(b);
+    sh.getRange(rowNo, 2).setValue(s.sent > 0 ? "送信済" : "失敗");
+    sh.getRange(rowNo, 10, 1, 2).setValues([[new Date(), s.result]]);
+    out.status = s.sent > 0 ? "送信済" : "失敗"; out.result = s.result;
+  }
+  try { logAudit("架電指示（" + ({ draft: "下書き", schedule: "予約", now: "送信" }[action] || action) + "）", "管理者", t.subject, (pins === "ALL" ? "全員" : pins) + (sendAt ? "・" + fmtJst_(new Date(sendAt), "M/d HH:mm") : "")); } catch (eA) {}
+  return out;
+}
+// 時間主導トリガー（5分ごと）：送る時刻になった予約を送る
+function briefTick117() {
+  var now = v117NowMs_(), out = { checked: 0, sent: 0 }, sh = null;
+  // 送る分に「送信中」の印を付けるあいだだけロックを取る（送るのはロックの外。通知の記録が同じロックを使うため）
+  var due = v111Lock_(function () {
+    sh = SpreadsheetApp.openById(SHEET_ID).getSheetByName(V117.BRIEF_SHEET);
+    if (!sh) return [];
+    var list = brief117Rows_().filter(function (b) { return b.status === "予約" && b.sendAt && b.sendAt <= now; }).slice(0, 5);
+    list.forEach(function (b) { sh.getRange(b.row, 2).setValue("送信中"); });
+    return list;
+  }, 20000, true);
+  if (due === V111_NOLOCK || !due || !due.length) return out;
+  due.forEach(function (b) {
+    out.checked++;
+    var s = brief117Send_(b);
+    sh.getRange(b.row, 2).setValue(s.sent > 0 ? "送信済" : "失敗");
+    sh.getRange(b.row, 10, 1, 2).setValues([[new Date(), s.result]]);
+    if (s.sent > 0) out.sent++;
+    try { logAudit("架電指示の予約送信", "システム", b.subject, String(s.result || "").slice(0, 300)); } catch (eA) {}
+  });
+  return out;
+}
+function brief117EnsureTrigger_() {
+  var has = false;
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === V117.BRIEF_FN) has = true; });
+  if (!has) ScriptApp.newTrigger(V117.BRIEF_FN).timeBased().everyMinutes(5).create();
+  return !has ? "作りました" : "あります";
+}
+function brief117TriggerOn_() {
+  var has = false;
+  try { ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === V117.BRIEF_FN) has = true; }); } catch (e) {}
+  return has;
+}
+// アプリ：その人あての、きょうの架電指示（送ったもの）
+function brief117ForPin_(pin) {
+  var today = jstKey_(v117NowMs_()), best = null;
+  brief117Rows_().forEach(function (b) {
+    if (b.status !== "送信済" || b.date !== today) return;
+    if (b.pins !== "ALL" && brief117Pins_(b.pins).indexOf(pin) < 0) return;
+    if (!best || b.sentAt >= best.sentAt) best = b;
+  });
+  return best ? { id: best.id, date: best.date, subject: best.subject, o: best.o, sentAt: fmtJst_(new Date(best.sentAt), "M/d HH:mm") } : null;
+}
+function brief117AdminList_() {
+  var rows = brief117Rows_().slice(-40).reverse();
+  var people = Object.keys(FULL_NAME_MAP).sort().map(function (p) { return { pin: p, name: FULL_NAME_MAP[p], email: STAFF_EMAILS[p] || "" }; });
+  return { items: rows.map(function (b) {
+    return { id: b.id, status: b.status, sendAt: b.sendAt ? fmtJst_(new Date(b.sendAt), "yyyy-MM-dd HH:mm") : "", date: b.date, pins: b.pins, subject: b.subject,
+      sentAt: b.sentAt ? fmtJst_(new Date(b.sentAt), "M/d HH:mm") : "", result: b.result, extra: b.extra, o: b.o };
+  }), people: people, from: CONFIG.GAS_OWNER_EMAIL, trigger: brief117TriggerOn_(), limits: V117.LIMITS, testTo: DAILY_REPORT_TO };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ⑺ 報酬：契約形態・月の目標／アポインター本人の、今月ここまでの報酬
+// ═══════════════════════════════════════════════════════════════════════
+function pay117Sheet_() { var ss = plEnsure_(); return ss.getSheetByName(PL_SHEET.pay); }
+// 報酬設定の行に、契約形態・目標をつけて読む（PIN ごとに、その月に有効な行）
+function pay117Rows_(ym) {
+  var sh = pay117Sheet_(), out = {};
+  if (!sh || sh.getLastRow() < 2) return out;
+  var width = sh.getLastColumn(), vals = sh.getRange(1, 1, sh.getLastRow(), width).getValues();
+  var hdr = vals[0].map(function (h) { return String(h || "").trim(); });
+  var ci = V117.PAY_COLS.map(function (n) { return hdr.indexOf(n); });
+  var pays = [];
+  for (var i = 1; i < vals.length; i++) {
+    var r = vals[i], pin = rosterNormPin_(r[0]);
+    if (!pin || !pinOwnerOk_(pin, r[1])) continue;
+    pays.push({ pin: pin, name: String(r[1] || ""), from: plMonthKey_(r[2]), monthly: plNum_(r[3]), hourly: plNum_(r[4]), perAppo: plNum_(r[5]),
+      plannedDays: plNum_(r[6]), note: String(r[7] || ""), type: ci[0] >= 0 ? String(r[ci[0]] || "").trim() : "",
+      target: ci[1] >= 0 ? plNum_(r[ci[1]]) : 0, targetAppos: ci[2] >= 0 ? plNum_(r[ci[2]]) : 0, row: i + 1 });
+  }
+  var pins = {}; pays.forEach(function (p) { pins[p.pin] = true; });
+  Object.keys(pins).forEach(function (pin) { out[pin] = plPayFor_(pays, pin, ym || jstKey_(v117NowMs_()).slice(0, 7)); });
+  return out;
+}
+// 契約形態（空欄なら、金額から決める）
+function pay117Type_(p) {
+  if (p && p.type && V117.CONTRACTS.indexOf(p.type) >= 0) return p.type;
+  if (!p || p.missing) return "";
+  if (p.monthly > 0) return p.perAppo > 0 ? "月給＋成果報酬" : "月給（固定）";
+  if (p.hourly > 0) return p.perAppo > 0 ? "時給＋成果報酬" : "時給";
+  if (p.perAppo > 0) return "完全成果報酬";
+  return "";
+}
+function pay117Set_(p) {
+  var type = String(p.type || "").trim();
+  if (type && V117.CONTRACTS.indexOf(type) < 0) return { ok: false, message: "契約形態が分かりません（" + type + "）" };
+  var r = plSetPay(p);
+  var sh = pay117Sheet_(), cols = ensureCols_(sh, V117.PAY_COLS);
+  var vals = sh.getDataRange().getValues(), from = plMonthKey_(p.from), row = 0;
+  for (var i = 1; i < vals.length; i++) { if (rosterNormPin_(vals[i][0]) === r.pin && plMonthKey_(vals[i][2]) === from) { row = i + 1; break; } }
+  if (row) {
+    sh.getRange(row, cols[V117.PAY_COLS[0]]).setValue(type);
+    sh.getRange(row, cols[V117.PAY_COLS[1]]).setValue(plNum_(p.target) || "");
+    sh.getRange(row, cols[V117.PAY_COLS[2]]).setValue(plNum_(p.targetAppos) || "");
+  }
+  try { logAudit("契約形態・目標", "管理者", FULL_NAME_MAP[r.pin] || r.pin, (type || "（金額から）") + "／目標 " + (plNum_(p.target) || 0) + "円・" + (plNum_(p.targetAppos) || 0) + "件"); } catch (e) {}
+  return { ok: true, pin: r.pin, from: from, row: row };
+}
+function pay117Admin_() {
+  var ym = jstKey_(v117NowMs_()).slice(0, 7), rows = pay117Rows_(ym);
+  return { month: ym, contracts: V117.CONTRACTS, members: Object.keys(FULL_NAME_MAP).sort().map(function (pin) {
+    var p = rows[pin] || { missing: true, monthly: 0, hourly: 0, perAppo: 0, plannedDays: 0, target: 0, targetAppos: 0, note: "", from: "" };
+    return { pin: pin, name: FULL_NAME_MAP[pin], from: p.from || "", type: pay117Type_(p), typeSet: p.type || "", monthly: p.monthly || 0, hourly: p.hourly || 0,
+      perAppo: p.perAppo || 0, plannedDays: p.plannedDays || 0, target: p.target || 0, targetAppos: p.targetAppos || 0, note: p.note || "", missing: !!p.missing };
+  }) };
+}
+// 本人の今月（1日〜きょう）の報酬。収支の画面と同じ計算（時給×実働、成果×アポ（キャンセルなどは除く）、月給は出勤した日の日割り）
+function pay117Compute_(pin, todayKey) {
+  var bss = plEnsure_(), main = SpreadsheetApp.openById(SHEET_ID);
+  var settings = plReadSettings_(bss), projects = plReadProjects_(bss), pays = plReadPays_(bss);
+  var name = FULL_NAME_MAP[pin] || "", sh = PIN_MAP[pin] || "";
+  var member = { pin: pin, name: name, sh: sh, active: true };
+  var ym = todayKey.slice(0, 7), from = ym + "-01";
+  var kN = plPersonKey_(name), kS = plPersonKey_(sh);
+  var appos = plNormAppos_(plSheetVals_(main, "アポイント"));
+  appos.forEach(function (a) { a.cls = plClassifyAppo_(a, projects, settings); });
+  var mineA = appos.filter(function (a) { return a.reporter === kN || (kS && a.reporter === kS); });
+  var att = plNormAttendance_(plSheetVals_(main, "勤怠")).filter(function (r) { return r.name === kN || (kS && r.name === kS); });
+  var calls = [], resolve = liveResolver_();
+  try {
+    crScanSince_(from, function (r, rowNo, cols) {
+      var who = resolve(String(r[0] || "").trim(), cols.pin >= 0 ? r[cols.pin] : "");
+      if (who !== pin) return true;
+      var dk = plDateKey_(r[1]);
+      if (!dk || dk < from || dk > todayKey) return true;
+      calls.push({ name: kN, d: dk, t: plMinutes_(r[2]), rid: mapResultLabelToId(r[6]) });
+      return true;
+    }, { max: 80000, grace: 600 });
+  } catch (eC) {}
+  var shifts = plNormShifts_(plSheetVals_(main, "シフト明細")).filter(function (s) { return s.pin === pin; });
+  var ctx = { from: from, to: todayKey, members: [member], att: att, calls: calls, appos: mineA, pays: pays, shiftIdx: plShiftIndex_(shifts),
+    settings: settings, kpiTargets: {}, mix: plMix_(appos, todayKey, settings) };
+  var sessions = plSessions_(ctx);
+  var m = plMemberMonth_(member, sessions, ym, todayKey, ctx);
+  var cancelled = 0, kinds = {};
+  mineA.forEach(function (a) { if (a.cancelled && a.d.slice(0, 7) === ym) { cancelled++; var k = (apo117ParseCancel_(a.cancelNote) || {}).kind || "キャンセル"; kinds[k] = (kinds[k] || 0) + 1; } });
+  var p117 = pay117Rows_(ym)[pin] || {};
+  var earned = (m.costHourly || 0) + (m.costCommission || 0) + (m.costFixed || 0);
+  var fc = m.forecast || {}, forecast = (fc.costHourly || 0) + (fc.costCommission || 0) + (fc.costFixed || 0);
+  var prog = plMonthProgress_(ym, todayKey), left = Math.max(0, prog.total - prog.elapsed);
+  var target = p117.target || 0, gap = target > 0 ? Math.max(0, target - earned) : null;
+  var needAppos = (gap && m.pay.perAppo > 0) ? Math.ceil(gap / m.pay.perAppo) : null;
+  var needHours = (gap && m.pay.hourly > 0) ? Math.ceil(gap / m.pay.hourly * 10) / 10 : null;
+  var tA = p117.targetAppos || 0;
+  return {
+    ym: ym, asOf: todayKey, name: name, type: pay117Type_(p117.pin ? p117 : (m.pay.missing ? null : m.pay)), missing: !!m.pay.missing,
+    rates: { hourly: m.pay.hourly || 0, perAppo: m.pay.perAppo || 0, monthly: m.pay.monthly || 0 },
+    days: m.days, hours: m.hours, appos: m.appos, cancelled: cancelled, cancelKinds: kinds,
+    parts: { hourly: m.costHourly || 0, commission: m.costCommission || 0, fixed: m.costFixed || 0 },
+    earned: earned, forecast: forecast, weekdaysLeft: left,
+    target: target, gap: gap, needAppos: needAppos, needHours: needHours, reached: target > 0 && earned >= target,
+    targetAppos: tA, apposGap: tA > 0 ? Math.max(0, tA - m.appos) : null,
+    perDay: (gap && left > 0) ? Math.ceil(gap / left) : null,
+    estimated: sessions.filter(function (s) { return s.hoursSrc === "推定"; }).length,
+    at: fmtJst_(new Date(), "M/d HH:mm")
+  };
+}
+function pay117Me_(d) {
+  var pin = rosterNormPin_(d.pin);
+  if (!FULL_NAME_MAP[pin]) return { ok: false, message: "名簿にない PIN です" };
+  if (!v117AuthOk_(pin, d.ah)) return { ok: false, code: "auth", message: "暗証番号の確認ができませんでした。いったんログアウトして、もう一度ログインしてください" };
+  var today = jstKey_(v117NowMs_()), key = "pay117:" + pin + ":" + today, cache = null;
+  try { cache = CacheService.getScriptCache(); var c = cache.get(key); if (c && !d.fresh) { var o = JSON.parse(c); o.cached = true; return { ok: true, pay: o }; } } catch (e) {}
+  var r = pay117Compute_(pin, today);
+  try { if (cache) cache.put(key, JSON.stringify(r), 180); } catch (e2) {}
+  return { ok: true, pay: r };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ⑻ 録音：自動保存を必須に。録音なしで発信・退勤した理由
+// ═══════════════════════════════════════════════════════════════════════
+function rec117Bypass_(d) {
+  var pin = rosterNormPin_(d.pin), nm = FULL_NAME_MAP[pin] || "";
+  if (!nm) return { ok: false, message: "名簿にない PIN です" };
+  var kind = d.kind === "clockout" ? "退勤（送れていない録音あり）" : "発信（録音の保存がつながっていない）";
+  var reason = v117Esc_(d.reason, 300).replace(/\n/g, " ") || "（理由なし）";
+  try { logAudit("録音なしで" + (d.kind === "clockout" ? "退勤" : "発信"), nm, kind, reason + (d.pending ? "／送れていない録音 " + d.pending + "件" : "")); } catch (e) {}
+  var today = jstKey_(v117NowMs_());
+  try {
+    notifyDispatch_("録音の保存", [DAILY_REPORT_TO], "【録音】" + nm + "：録音の自動保存をせずに" + (d.kind === "clockout" ? "退勤" : "発信"),
+      "アポインター：" + nm + "（" + pin + "）\n内容：" + kind + "\n理由：" + reason + (d.pending ? "\n送れていない録音：" + d.pending + "件" : "") +
+      "\n端末：" + v117Esc_(d.device, 80) + "\n\n録音フォルダのつなぎ方は、アプリのホームの「🎙 はじめの設定」を本人のスマホで行ってください。",
+      nm + " / " + today, "RECBP-" + pin + "-" + today + "-" + (d.kind === "clockout" ? "co" : "dial"));
+  } catch (e2) {}
+  return { ok: true };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 同期に足すもの・要求の振り分け・自己点検
+// ═══════════════════════════════════════════════════════════════════════
+function v117FetchExtras_(pin) {
+  var out = { v: 117, cfg: v117Cfg_() };
+  try { out.notices = notice117ForPin_(pin); } catch (e1) { out.notices = []; out.noticeError = String(e1); }
+  try { out.brief = brief117ForPin_(pin); } catch (e2) { out.brief = null; out.briefError = String(e2); }
+  return out;
+}
+function v117Handle_(d) {
+  var t = String((d && d.type) || "");
+  function J(o) { return jsonOut_(o); }
+  try {
+    switch (t) {
+      case "apo_admin": return J({ status: "ok", handled: true, result: apo117Admin_(d) });
+      case "apo_update": {
+        var who = ADM_REQ_OK_ ? { admin: true } : null;
+        if (!who) {
+          var pin = rosterNormPin_(d.pin);
+          if (!v117AuthOk_(pin, d.ah)) return J({ status: "ok", handled: true, result: { ok: false, code: "auth", message: "暗証番号の確認ができませんでした。いったんログアウトして、もう一度ログインしてください" } });
+          who = { pin: pin };
+        }
+        return J({ status: "ok", handled: true, result: apo117Update_(d, who) });
+      }
+      case "notice_read": {
+        var pin2 = rosterNormPin_(d.pin);
+        if (!FULL_NAME_MAP[pin2]) return J({ status: "error", handled: true, message: "名簿にない PIN です" });
+        return J({ status: "ok", handled: true, result: notice117Read_(pin2, d.ids || []) });
+      }
+      case "brief_admin": {
+        if (d.action === "list" || !d.action) return J({ status: "ok", handled: true, result: brief117AdminList_() });
+        if (d.action === "preview") { var o = brief117Norm_(d.o || {}); return J({ status: "ok", handled: true, result: { preview: brief117Text_(o, v111DateKey_(d.date) || jstKey_(v117NowMs_())), o: o } }); }
+        return J({ status: "ok", handled: true, result: brief117Save_(d) });
+      }
+      case "pay_admin": {
+        if (d.action === "set") return J({ status: "ok", handled: true, result: pay117Set_(d.pay || {}) });
+        return J({ status: "ok", handled: true, result: pay117Admin_() });
+      }
+      case "pay_me": return J({ status: "ok", handled: true, result: pay117Me_(d) });
+      case "v117_cfg": {
+        if (d.action === "set") return J({ status: "ok", handled: true, result: v117CfgSet_(d.values || {}) });
+        return J({ status: "ok", handled: true, result: { cfg: v117Cfg_(), briefTrigger: brief117TriggerOn_() } });
+      }
+      case "rec_bypass": return J({ status: "ok", handled: true, result: rec117Bypass_(d) });
+      default: return null;
+    }
+  } catch (e) {
+    return J({ status: "error", handled: true, type: t, message: String(e && e.message || e) });
+  }
+}
+function v117SelfTest() {
+  var fails = [], n = 0;
+  function ok(name, cond) { n++; if (!cond) { fails.push(name); Logger.log("  NG " + name); } }
+  ok("版は v117 以降", Number(String(GAS_VERSION).replace(/\D/g, "")) >= 117);
+  ok("取消の文字を読める（v117 の書き方）", (function () { var c = apo117ParseCancel_("取消 2026-11-25【ノーショー】来なかった（管理者）"); return c && c.kind === "ノーショー" && c.at === "2026-11-25" && c.reason === "来なかった（管理者）"; })());
+  ok("取消の文字を読める（収支の画面の書き方）", (function () { var c = apo117ParseCancel_("取消 2026-11-20：重複"); return c && c.kind === "キャンセル" && c.reason === "重複"; })());
+  ok("「なし」は取消ではない", apo117ParseCancel_("なし") === null && apo117ParseCancel_("") === null);
+  ok("架電指示の文（件名・案件名・おいでん）", (function () {
+    var t = brief117Text_(brief117Norm_({ project: "グルメ杵屋", kind: "WEB", targets: ["代表", "事務局長", "施設長", "4つ目"], oiden: [{ project: "グルメ杵屋", at: "11/17 14:00", company: "社会福祉法人福田会", person: "大江", phone: "03-6427-6020" }] }), "2026-11-26");
+    return t.subject.indexOf("グルメ杵屋") >= 0 && t.body.indexOf("■ おいでん") >= 0 && t.body.indexOf("③ 施設長") >= 0 && t.body.indexOf("4つ目") < 0;
+  })());
+  ok("報告事項は30件まで", brief117Norm_({ reports: new Array(40).join("x,").split(",") }).reports.length <= 30);
+  ok("契約形態：金額から決める", pay117Type_({ monthly: 115000, perAppo: 5000 }) === "月給＋成果報酬" && pay117Type_({ hourly: 1150 }) === "時給" && pay117Type_({ perAppo: 20000 }) === "完全成果報酬");
+  ok("設定の既定値", (function () { var c = v117Cfg_(); return typeof c.recForce === "boolean" && /^\d\d:\d\d$/.test(c.oidenPrevFrom); })());
+  ok("管理者だけが使える要求に v117 の管理者の要求が入っている", ["apo_admin", "brief_admin", "pay_admin", "v117_cfg"].every(function (x) { return ADMIN_ONLY_TYPES[x]; }));
+  ok("アポインターの要求（アポの変更・お知らせ・報酬・録音）は、管理者専用に入っていない", ["apo_update", "notice_read", "pay_me", "rec_bypass"].every(function (x) { return !ADMIN_ONLY_TYPES[x]; }));
+  Logger.log("v117 自己点検: " + (n - fails.length) + " / " + n);
+  return { pass: n - fails.length, total: n, failed: fails };
+}
+function v117Summary_() {
+  var out = { apos: 0, cancelled: 0, briefs: 0, scheduled: 0, trigger: brief117TriggerOn_() };
+  try { var R = apo117Read_(); out.apos = R.recs.length; out.cancelled = R.recs.filter(function (r) { return r.cx; }).length; } catch (e) {}
+  try { var B = brief117Rows_(); out.briefs = B.length; out.scheduled = B.filter(function (b) { return b.status === "予約"; }).length; } catch (e2) {}
+  return out;
 }

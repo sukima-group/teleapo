@@ -85,6 +85,11 @@ kbd{display:inline-block;padding:1px 6px;border:1px solid #cbd5e1;border-bottom-
 /* ==========================================================================
    川嶋メソッド テレアポ管理 PWA  v32 (15分刻みシフト + 再架電保存バグ修正 + 管理者シフトExcel取得)
    ==========================================================================
+   v118 変更（2026-11-26。詳しくは README.md）:
+   - ⑴ 実際のアポの取り込み（管理者）：表を貼り付け → 案件名・会社名のゆれをそろえ、重複を除いて入れる（報酬の集計には入れない）
+   - ⑾ 成果報酬の案件（NKT・グルメ杵屋・RIG など）：契約書の回収まで、段階・次の確認の電話・履歴で追う（ホームの「📇」）
+   - ⑿ 案件の設定（別名・成果報酬・外国人の採用の質問・ヒアリング項目）・アポ報告メールをサーバーから・お断りの先の日数
+   - 自動修正：外国人の質問は案件ごと／パソコン・Zoom では録音の設定の案内を出さない／Galaxy A25 の録音フォルダの手順
    v117 変更（2026-11-25。詳しくは README.md）:
    - ⑶ アポの一覧：状態（予定・商談済み・キャンセル・ノーショー・無効）。キャンセルなどは件数に入れない。管理者がキャンセル・日時の変更をしたら本人へお知らせ（アプリ・メール）
    - ⑷ アポの日時の変更（本人・管理者）／⑸ おいでん（商談の前日・当日の参加の確認の電話）の警告と結果
@@ -252,7 +257,7 @@ var SHIFT_NOTIFY_TO = CONFIG.NOTIFY.SHIFT_TO;
 var DAILY_REPORT_TO = CONFIG.NOTIFY.DAILY_REPORT_TO;  /* v14: 退勤レポート通知先 */
 
 /* v26: 起動時キャッシュクリア - 旧バージョンのキャッシュを強制削除 */
-var APP_VERSION="v117";
+var APP_VERSION="v118";
 /* v35: 会社ロゴ(スキマ) 埋め込み - オフラインでも表示 */
 var LOGO="data:image/png;base64,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";
 (function(){
@@ -3615,6 +3620,7 @@ function applyServerState(staff,d,opts,cb){
     }
 
     if(d.v117){try{x117Extras(staff,d.v117)}catch(eX17x){}}   /* v117: お知らせ・きょうの架電指示・設定 */
+    if(d.v118){try{x118Extras(staff,d.v118)}catch(eX18x){}}   /* v118: 案件の設定・成果報酬の案件の要対応・設定 */
     /* v28: NGリスト (全アポインター共有 - サーバーが正) */
     if(d.ngList!==undefined){
       ngList=d.ngList||[];
@@ -5224,7 +5230,7 @@ function sendAppo(force){
     "メール: "+a.email+"\n"+
     "住所: "+a.address+"\n"+
     "人柄: "+a.personality+"\n"+
-    apoChecksText(a)+
+    apoChecksText(a)+(function(){try{return x118HearingTxt(a)}catch(eH){return ""}})()+   /* v118 */
     (String(a.handoff||"").trim()?("\n【商談への引き継ぎ】\n"+a.handoff+"\n"):"")+
     (a.isTokutei?("\n【ヒアリング項目（特定技能外国人）】\n"+
       "外国人雇用: "+(a.gaikokujin||"—")+"\n"+
@@ -5244,10 +5250,12 @@ function sendAppo(force){
     gijinkoku:a.gijinkoku||"",decider:a.decider||"",recSent:a.recSent?"送付済":"未送付",
     company:a.company,person:a.person,gender:a.gender,phone:a.phone,role:a.role,address:a.address,
     datetime:a.datetime,email:a.email,personality:a.personality,reporter:U.nm,date:dateJP(),
-    apoId:apoId,checks:a.checks||{},handoff:a.handoff||"",callCid:a.callCid||"",listId:a.lid||""});   /* v111 */
+    apoId:apoId,checks:a.checks||{},handoff:a.handoff||"",callCid:a.callCid||"",listId:a.lid||"",
+    hearing:(function(){try{return x118HearingTxt(a,true)}catch(eH){return ""}})(),srvMail:(function(){try{return x118SrvMailOn()}catch(eM){return false}})()});   /* v111・v118: ヒアリング・メールはサーバーから */
   AF_HOLD=true;afDraftClear();   /* 送ったので、入力途中の控えを消す（このあとメールの画面へ移っても、控えを作り直さない） */
   vib([60,40,60,40,120]);
-  window.location.href="mailto:"+APPO_MAIL_TO+"?subject="+encodeURIComponent(subj)+"&body="+encodeURIComponent(body);
+  var srv118=false;try{srv118=x118SrvMailOn()}catch(eM8){}
+  if(!srv118)window.location.href="mailto:"+APPO_MAIL_TO+"?subject="+encodeURIComponent(subj)+"&body="+encodeURIComponent(body);   /* v118: システムから送るときは、メールアプリを開かない */
   var apoCo=a.company||"";
   setTimeout(function(){
     af=afBlank();AF_HOLD=false;afDraftClear();
@@ -7936,6 +7944,7 @@ function admTopCards(){
       h+='<div style="display:flex;gap:6px;align-items:center;padding:5px 0;border-top:1px solid #f1f5f9;font-size:11.5px;flex-wrap:wrap"><b style="min-width:70px">'+htmlEsc(m.name)+'</b><span style="background:'+c[0]+';color:'+c[1]+';border-radius:10px;padding:1px 7px;font-weight:800;font-size:10.5px">'+m.state+'</span><span style="color:#64748b">今日 送信'+m.sentToday+'件／架電'+m.callsToday+'件'+(m.pending?'・待ち'+m.pending+'件':'')+(m.lastScanAt?'・最終 '+htmlEsc(String(m.lastScanAt).slice(5)):'')+'</span>'+(m.lastError?'<span style="color:#b91c1c;width:100%">⚠️ '+htmlEsc(m.lastError)+'</span>':'')+'</div>'});
     h+='<div style="font-size:10px;color:#94a3b8;margin-top:4px">「未接続」の人は、本人のスマホでこのアプリを開くと「はじめの設定」が自動で出ます（出ないときは、ホームの「🎙 はじめの設定を始める」）。赤い字は、録音が見つからない通話が続いている知らせです。</div></div>';
   }
+  try{h+=x118AdminCards()}catch(eX18){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v118 のカードを表示できませんでした：'+htmlEsc(String(eX18&&eX18.message||eX18))+'</div>'}   /* v118: 取り込み・成果報酬の案件・案件の設定 */
   try{h+=x117AdminCards()}catch(eX17){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v117 のカードを表示できませんでした：'+htmlEsc(String(eX17&&eX17.message||eX17))+'</div>'}   /* v117: アポ・架電指示・報酬・設定 */
   try{h+=x116AdminCards()}catch(eX16){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v116 のカードを表示できませんでした：'+htmlEsc(String(eX16&&eX16.message||eX16))+'</div>'}   /* v116: 再架電の約束 */
   try{h+=x115AdminCards()}catch(eX15){h+='<div style="font-size:11px;color:#b91c1c;margin-bottom:10px">v115 のカードを表示できませんでした：'+htmlEsc(String(eX15&&eX15.message||eX15))+'</div>'}   /* v115: スキップ・時間帯・Zoom */
@@ -8087,7 +8096,7 @@ function raOnClockIn(){
   if(RA.handle&&RA.perm!=="granted"){
     raPerm(true).then(function(p){render();if(p==="granted"){flash("✅ 通話録音の自動保存を再開しました");raScan("clockin")}else flash("⚠️ 通話録音の自動保存が止まっています。ホームの「🔓 1回タップして再開」を押してください")});
   }else if(RA.handle){raScan("clockin")}
-  else setTimeout(function(){var op=false;try{op=rwMaybeOpen(true)}catch(eRw){}if(!op)flash("🎙 通話録音の自動保存が未設定です。ホームの「📂 録音フォルダをつなぐ」を押してください")},2600);   /* v111: はじめの設定を開く */
+  else if((function(){try{return x118RecUi()}catch(eR8){return true}})())setTimeout(function(){var op=false;try{op=rwMaybeOpen(true)}catch(eRw){}if(!op)flash("🎙 通話録音の自動保存が未設定です。ホームの「📂 録音フォルダをつなぐ」を押してください")},2600);   /* v118: スマホ（Android）だけ */   /* v111: はじめの設定を開く */
 }
 function raResume(){raPerm(true).then(function(p){render();if(p==="granted"){flash("✅ 自動送信を再開しました");raScan("resume")}else flash("⚠️ 許可されませんでした。もう一度押してください")})}
 function raListFiles(){
@@ -8200,7 +8209,7 @@ function raCard(){
     h+='<b>① Galaxy A25 で通話の自動録音をONにする</b>（取扱説明書「通話を録音」）：ホーム画面の「電話」→ 右上の「︙」→「設定」→「通話を録音」→「通話の自動録音」をON（「すべての通話」）。<br>';
     h+='　・「保存先」が表示されるとき（SDカードを入れているとき）は「内部ストレージ」を選んでください。<br>';
     h+='　・「1カ月以上前の録音ファイルを削除」は、ONのままで構いません（保存できた録音は、このアプリがスマホから消します）。<br>';
-    h+='<b>② フォルダをつなぐ（最初の1回）</b>：「📂 録音フォルダをつなぐ」→「内部ストレージ」→「Recordings」→「Call」を開く → 下の「このフォルダを使用」→「許可」。<br>';
+    h+='<b>② フォルダをつなぐ（最初の1回）</b>：「📂 録音フォルダをつなぐ」→「Galaxy A25 5G」（機種によっては「内部ストレージ」）→「Recordings」→「Call」を開く → 下の「このフォルダを使用」→「許可」。<br>';
     h+='<b>③ あとは自動</b>：このアプリを開いている間、電話から戻るたび・3分ごと・出勤と退勤のときに、新しい録音を会社のドライブ（年-月 → 日 のフォルダ）へ保存します。ファイル名は「氏名_日付_時刻_電話番号」です。ドライブで確認できたものだけスマホから消します（確認できないものは消しません）。<br>';
     h+='<b>止まったとき</b>：アプリやスマホを開き直すと、フォルダの許可が外れることがあります。「出勤」を押すと許可の確認が出るので「許可」を選んでください（「アクセスするたびに許可」のような選択肢が出たら、そちら）。出ないときは「🔓 1回タップして再開」を押してください。<br>';
     h+='<b>ご注意</b>：このアプリを閉じている間は保存されません（次に開いたときに、まとめて保存します）。<br>';
@@ -8697,7 +8706,7 @@ function rwView(){
     h+='<button data-rw="next" style="'+btn+'">ON にしました　→ 次へ</button>';
   }else if(RW.step===2){
     h+='<div style="font-size:14px;font-weight:800;color:#0f172a;margin-bottom:2px">② 録音が入るフォルダを、このアプリにつなぐ</div>';
-    h+=li(1,'下の<b>「📂 録音フォルダをつなぐ」</b>を押す（フォルダを選ぶ画面が開きます）')+li(2,'<b>「内部ストレージ」→「Recordings」→「Call」</b>を開く')+li(3,'下の<b>「このフォルダを使用」</b>→<b>「許可」</b>');
+    h+=li(1,'下の<b>「📂 録音フォルダをつなぐ」</b>を押す（フォルダを選ぶ画面が開きます）')+li(2,'<b>「Galaxy A25 5G」→「Recordings」→「Call」</b>を開く（機種によっては「内部ストレージ」。いちばん上で「このフォルダは使用できません」と出ても、そのまま「Recordings」→「Call」まで開けば使えます。「最近」が出たときは、左上の「≡」から「Galaxy A25 5G」を選ぶ）')+li(3,'下の<b>「このフォルダを使用」</b>→<b>「許可」</b>');
     if(RA.handle&&RA.perm!=="granted")h+='<div style="font-size:11.5px;color:#92400e;margin-top:8px;line-height:1.6">フォルダ「'+htmlEsc(RA.folderName||"")+'」はつないでありますが、許可が外れています。下のボタンで許可し直してください。</div><button data-rw="resume" style="'+btn+';background:#f59e0b">🔓 許可し直す</button>';
     else h+='<button data-rw="connect" style="'+btn+'">📂 録音フォルダをつなぐ</button>';
     h+='<button data-rw="back" style="display:block;width:100%;padding:10px;border:none;background:none;color:#64748b;font-size:12px;font-family:inherit;margin-top:4px">← ①に戻る</button>';
@@ -10635,7 +10644,7 @@ function x117CoCheck(){
 }
 function x117ConnBtns(BIG){
   if(RA.handle)return '<button data-x117="gateConnect" style="'+BIG+';background:#1a237e;color:#fff">🔓 1回タップして再開する</button>';
-  return '<button data-x117="gateSetup" style="'+BIG+';background:#1a237e;color:#fff">🎙 はじめの設定を始める（約2分）</button><div style="font-size:10.5px;color:#64748b;margin-top:4px;line-height:1.5">スマホの「通話の自動録音」を ON にして、録音のフォルダ（内部ストレージ › Recordings › Call）をつなぎます。終わったら、もう一度発信を押してください。</div><button data-x117="gateConnect" style="display:block;width:100%;padding:6px;border:none;background:none;color:#64748b;font-size:11px;font-family:inherit;text-decoration:underline;margin-top:2px">📂 案内なしで、フォルダだけをつなぐ</button>';
+  return '<button data-x117="gateSetup" style="'+BIG+';background:#1a237e;color:#fff">🎙 はじめの設定を始める（約2分）</button><div style="font-size:10.5px;color:#64748b;margin-top:4px;line-height:1.5">スマホの「通話の自動録音」を ON にして、録音のフォルダ（Galaxy A25 5G › Recordings › Call）をつなぎます。終わったら、もう一度発信を押してください。</div><button data-x117="gateConnect" style="display:block;width:100%;padding:6px;border:none;background:none;color:#64748b;font-size:11px;font-family:inherit;text-decoration:underline;margin-top:2px">📂 案内なしで、フォルダだけをつなぐ</button>';
 }
 function x117Overlay(){
   var g=X117.gate;if(!g||!U||U==="admin")return "";
@@ -11181,6 +11190,896 @@ document.addEventListener("click",function(e){
     if(a==="cfgSave"){x117AdmCfgSave();return}
   }catch(err){try{console.warn("[v117]",err)}catch(e3){}}
 });
+/* ══════════════════════════════════════════════════════════════════════
+   v118（2026-11-26）
+   ⑴ 実際のアポの取り込み（管理者）：表を貼り付け → 案件名・会社名のゆれをそろえる → 重複を除いて入れる
+   ⑾ 成果報酬の案件（NKT・グルメ杵屋・RIG など）：契約書の回収まで、段階・次の確認の電話・履歴で追う
+      アポインター：ホームの「📇 成果報酬の案件」から発信・記録／管理者：全体・歩留まり・担当の割り当て・履歴の取り込み
+   ⑿ 案件の設定（別名・成果報酬・外国人の採用の質問・ヒアリング項目）・アポ報告メールをサーバーから・お断りの先の日数
+   自動修正：外国人の質問は「出さない」案件では出さない／パソコン・Zoom の人に録音の設定の案内を出さない／
+            Galaxy A25 の録音フォルダの手順（いちばん上は「Galaxy A25 5G」）／取り込んだアポは商談日の位置に並べる
+   ══════════════════════════════════════════════════════════════════════ */
+X117.v118={cfg:ld("cfg118")||null,proj:ld("proj118")||null,crm:null,view:false,list:null,busy:false,err:"",flt:"due",open:"",form:null,saving:false,lastProj:"",
+  adm:{open:{},imp:{text:"",year:"",parsed:null,res:null,busy:false,msg:"",force:{},showAll:false},
+    crm:null,crmBusy:false,crmErr:"",crmTry:0,f:{who:"",st:"open",q:"",proj:""},sel:"",ed:null,saving:false,asg:"",
+    hist:{text:"",items:null,busy:false,msg:""},proj:null,projBusy:false,projErr:"",projEd:null,projSaving:false,
+    cfg:null,cfgEd:null,cfgBusy:false,cfgMsg:""}};
+var X118=X117.v118;
+var X118_ST=["商談前","検討中","契約書の送付","成約（契約書回収）","時期待ち","見送り"];
+var X118_STC={"商談前":["#1d4ed8","#eff6ff","#bfdbfe"],"検討中":["#7c3aed","#f5f3ff","#ddd6fe"],"契約書の送付":["#b45309","#fffbeb","#fcd34d"],"成約（契約書回収）":["#047857","#ecfdf5","#6ee7b7"],
+  "時期待ち":["#0e7490","#ecfeff","#a5f3fc"],"見送り":["#475569","#f1f5f9","#cbd5e1"],"アポ取消":["#b91c1c","#fef2f2","#fca5a5"]};
+var X118_KINDS=[["電話","📞 話せた"],["不在","📵 不在"],["メール","✉️ メール"],["先方から","📥 先方から"],["メモ","📝 メモ"]];
+
+/* ── 小さな道具 ── */
+function x118Z2h(s){return String(s==null?"":s).replace(/[Ａ-Ｚａ-ｚ０-９]/g,function(c){return String.fromCharCode(c.charCodeAt(0)-0xFEE0)}).replace(/[：]/g,":").replace(/[／]/g,"/")}
+function x118Key(s){
+  var t=x118Z2h(s).replace(/[\s　]/g,"");
+  t=t.replace(/㈱|[（(]株[）)]/g,"株式会社").replace(/㈲|[（(]有[）)]/g,"有限会社").replace(/[（(]医[）)]/g,"医療法人").replace(/[（(]福[）)]/g,"社会福祉法人");
+  t=t.replace(/[‐‑‒–—―ー−\-]/g,"ー").replace(/[・･,，.．'’"”`｀（）()【】\[\]「」『』]/g,"");
+  return t.toLowerCase();
+}
+/* 案件名 → 案件の設定（別名・含む で探す。サーバーと同じ考え方） */
+function x118ProjOf(name){
+  var L=X118.proj||[],n=x118Key(name);if(!n||!L.length)return null;
+  for(var i=0;i<L.length;i++){var p=L[i],ks=[p.name].concat(p.aliases||[]);for(var j=0;j<ks.length;j++)if(x118Key(ks[j])===n)return p}
+  var best=null,bl=0;
+  L.forEach(function(p){[p.name].concat(p.aliases||[]).forEach(function(a){var k=x118Key(a);if(!k||k.length<3||n.length<2)return;if((n.indexOf(k)>=0||(n.length>=3&&k.indexOf(n)>=0))&&k.length>bl){best=p;bl=k.length}})});
+  return best;
+}
+function x118Canon(name){var p=x118ProjOf(name);return p?p.name:String(name==null?"":name).replace(/[\s　]+/g," ").trim()}
+function x118Today(){return x117Today()}
+function x118Md(k){if(!k)return "";var p=String(k).slice(0,10).split("-");return (+p[1])+"/"+(+p[2])+(String(k).length>10?" "+String(k).slice(11,16):"")}
+function x118Badge(st){var c=X118_STC[st]||X118_STC["検討中"];return '<span class="x118St" data-st="'+htmlEsc(st)+'" style="display:inline-block;padding:2px 8px;border-radius:9px;border:1px solid '+c[2]+';background:'+c[1]+';color:'+c[0]+';font-size:10.5px;font-weight:800;white-space:nowrap">'+htmlEsc(st==="成約（契約書回収）"?"🎉 成約（契約書回収）":st)+'</span>'}
+function x118DueTxt(x){
+  if(!x)return "";
+  if(x.due==="overdue")return '<b style="color:#b91c1c">⏰ '+htmlEsc(x118Md(x.next))+'（過ぎています）</b>';
+  if(x.due==="today")return '<b style="color:#c2410c">⏰ きょう '+htmlEsc(String(x.next||"").slice(11,16))+'</b>';
+  if(x.due==="unset")return '<span style="color:#7c3aed;font-weight:700">次の確認が未定</span>';
+  if(x.next)return '<span style="color:#475569">次の確認 '+htmlEsc(x118Md(x.next))+'</span>';
+  if(x.eff==="商談前"&&x.meetingDate)return '<span style="color:#1d4ed8">商談 '+htmlEsc(x118Md(x.meetingDate+(x.meetingTime?" "+x.meetingTime:"")))+'</span>';
+  return "";
+}
+function x118Post(body,ms){return directGasPost(body,ms||60000)}
+function x118Msg(r,d){return x117Msg(r,d)}
+
+/* ══════════ 同期 ══════════ */
+function x118Extras(staff,v){
+  if(!v||!U||U==="admin"||U.id!==staff.id)return;
+  if(v.cfg){X118.cfg=v.cfg;sv("cfg118",v.cfg)}
+  if(v.proj){X118.proj=v.proj;sv("proj118",v.proj)}
+  X118.crm=v.crm||null;
+}
+function x118SrvMailOn(){return !!(X118.cfg&&X118.cfg.apoMail===true)}
+
+/* ══════════ アポの入力：案件ごとの確認項目・ヒアリング ══════════ */
+function x118CurProj(){return (typeof af!=="undefined"&&af&&af.project)||""}
+/* 案件名の入力欄の文字を、そのつど af に入れる（確認項目・ヒアリングを、いま入っている案件で出すため） */
+document.addEventListener("input",function(e){var t=e.target;if(t&&t.id==="af_project"&&typeof af!=="undefined"&&af)af.project=t.value},true);
+var x118Checks0=apoChecks;
+apoChecks=function(){
+  var cs=x118Checks0();
+  try{var p=x118ProjOf(x118CurProj());if(p&&p.foreign===false)return []}catch(e){}
+  return cs;
+};
+function x118HearItems(){var p=x118ProjOf(x118CurProj());return (p&&p.hearing)||[]}
+function x118HearHtml(){
+  var it=x118HearItems();if(!it.length)return "";
+  var p=x118ProjOf(x118CurProj()),H=(af&&af.hearing)||{};
+  var h='<div id="afHear" style="border:2px solid #7c3aed;border-radius:12px;padding:10px 12px;margin:0 0 10px;background:#faf5ff">';
+  h+='<div style="font-size:13px;font-weight:800;color:#5b21b6">📋 ヒアリング（'+htmlEsc(p.name)+'）</div>';
+  it.forEach(function(q,i){
+    var v=H[q.label]||"";
+    h+='<div style="margin-top:7px"><div style="font-size:12px;font-weight:800;color:#0f172a;margin-bottom:3px">'+htmlEsc(q.label)+(q.req?' <span style="color:#dc2626;font-size:10.5px">※必須</span>':'')+'</div>';
+    if(q.opts&&q.opts.length){
+      h+='<div style="display:flex;flex-wrap:wrap;gap:5px">';
+      q.opts.forEach(function(o){var on=v===o;h+='<button type="button" class="afHearOpt" data-q="'+i+'" data-o="'+htmlEsc(o)+'" style="padding:8px 11px;border:1.5px solid '+(on?"#7c3aed":"#cbd5e1")+';border-radius:9px;background:'+(on?"#7c3aed":"#fff")+';color:'+(on?"#fff":"#334155")+';font-size:12px;font-weight:700;font-family:inherit">'+htmlEsc(o)+'</button>'});
+      h+='</div>';
+    }else h+='<input class="afHearIn" data-q="'+i+'" value="'+htmlEsc(v)+'" style="width:100%;box-sizing:border-box;padding:9px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:14px">';
+    h+='</div>';
+  });
+  return h+'</div>';
+}
+function x118HearSet(i,val){
+  var it=x118HearItems()[i];if(!it)return;
+  if(!af.hearing||typeof af.hearing!=="object")af.hearing={};
+  af.hearing[it.label]=val;
+  try{afDraftSave()}catch(e){}
+}
+document.addEventListener("input",function(e){var t=e.target;if(t&&t.classList&&t.classList.contains("afHearIn"))x118HearSet(+t.getAttribute("data-q"),t.value)},true);
+document.addEventListener("click",function(e){
+  var b=e.target&&e.target.closest?e.target.closest(".afHearOpt"):null;
+  if(b){var i=+b.getAttribute("data-q"),o=b.getAttribute("data-o"),cur=((af&&af.hearing)||{})[(x118HearItems()[i]||{}).label]||"";x118HearSet(i,cur===o?"":o);try{afReadInputs()}catch(e1){}render();return}
+  var pk=e.target&&e.target.closest?e.target.closest("[data-projpick]"):null;
+  if(pk)setTimeout(x118ProjChanged,30);
+});
+document.addEventListener("change",function(e){var t=e.target;if(t&&t.id==="af_project")x118ProjChanged()},true);
+/* 案件名が変わったら、確認項目・ヒアリングを出し直す（設定の違う案件に変わったときだけ） */
+function x118ProjChanged(){
+  try{
+    if(V!=="appo")return;
+    var p=x118ProjOf(x118CurProj()),k=p?p.name:"";
+    if(k===X118.lastProj)return;
+    X118.lastProj=k;afReadInputs();render();
+  }catch(e){}
+}
+function x118HearMissing(){var H=(af&&af.hearing)||{};return x118HearItems().filter(function(q){return q.req&&!String(H[q.label]||"").trim()})}
+function x118HearingTxt(a,plain){
+  var it=x118HearItems();if(!it.length)return "";
+  var H=(a&&a.hearing)||{},lines=it.map(function(q){return q.label+": "+(String(H[q.label]||"").trim()||"—")});
+  return plain?lines.join("\n"):"\n【ヒアリング（"+x118Canon(x118CurProj())+"）】\n"+lines.join("\n")+"\n";
+}
+var x118Send0=sendAppo;
+sendAppo=function(force){
+  try{
+    if(!AF_HOLD){
+      afReadInputs();
+      var miss=x118HearMissing();
+      if(miss.length){flash("⚠️ ヒアリングの「"+htmlEsc(miss[0].label)+"」を入れてください");vib([100,60,100]);try{var el=document.getElementById("afHear");if(el&&el.scrollIntoView)el.scrollIntoView({block:"center"})}catch(eS){}return}
+    }
+  }catch(e){}
+  return x118Send0(force);
+};
+
+/* ══════════ ホーム：成果報酬の案件（要対応） ══════════ */
+function x118HomeTop(){
+  if(!U||U==="admin")return "";
+  var c=X118.crm;if(!c||!c.n)return "";
+  var h='<div id="x118Home" style="background:#fff;border-radius:14px;padding:11px 12px;margin-bottom:10px;border:2px solid '+(c.due?"#f59e0b":"#c4b5fd")+'">';
+  h+='<div style="display:flex;align-items:center;gap:6px"><b style="flex:1;font-size:13.5px;color:#5b21b6">📇 成果報酬の案件（契約書の回収まで）</b><button data-x118="open" style="'+X117S.btn+'">すべて（'+c.open+'）</button></div>';
+  if(c.due)h+='<div style="font-size:12px;color:#92400e;font-weight:800;margin-top:4px">⏰ 確認の電話の予定 '+c.due+'件</div>';
+  (c.items||[]).slice(0,4).forEach(function(x){h+=x118Row(x,true)});
+  if(c.unset)h+='<div style="font-size:11.5px;color:#7c3aed;margin-top:6px;line-height:1.6">📌 次の確認が未定の案件 <b>'+c.unset+'件</b>　<button data-x118="open" data-v="unset" style="'+X117S.btn+'">予定を入れる</button></div>';
+  if(!c.due&&!c.unset)h+='<div style="font-size:11.5px;color:#047857;margin-top:4px">✓ 予定どおり（次の確認の日に、ここに出ます）</div>';
+  return h+'</div>';
+}
+function x118Row(x,compact){
+  var h='<div class="x118Row" data-id="'+htmlEsc(x.id)+'" style="border-top:1px solid #f1f5f9;padding:7px 0 4px;margin-top:4px">';
+  h+='<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><b style="font-size:13px;color:#0f172a">'+htmlEsc(x.company||"（会社名なし）")+'</b><span style="font-size:10.5px;color:#64748b">'+htmlEsc(x.project||"")+(x.person?"・"+htmlEsc(x.person):"")+'</span>'+x118Badge(x.eff||x.stage)+'</div>';
+  h+='<div style="font-size:11.5px;margin-top:2px">'+x118DueTxt(x)+(x.todo?'　<span style="color:#334155">→ '+htmlEsc(x.todo)+'</span>':'')+'</div>';
+  if(!compact&&x.lastLog)h+='<div style="font-size:11px;color:#64748b;margin-top:2px;line-height:1.5">最後の記録：'+htmlEsc(x.lastLog)+'</div>';
+  h+='<div style="display:flex;gap:6px;margin-top:5px">';
+  if(x.phone)h+='<button data-x118="dial" data-v="'+htmlEsc(x.id)+'" style="'+X117S.btn+';background:#ecfdf5;border-color:#6ee7b7;color:#047857">📞 '+htmlEsc(x.phone)+'</button>';
+  h+='<button data-x118="log" data-v="'+htmlEsc(x.id)+'" style="'+X117S.btn+';background:#f5f3ff;border-color:#c4b5fd;color:#5b21b6">📝 記録する</button></div>';
+  return h+'</div>';
+}
+
+/* ══════════ 一覧と記録（画面いっぱいに開く） ══════════ */
+function x118Load(){
+  if(!U||U==="admin"||X118.busy)return;
+  X118.busy=true;X118.err="";render();
+  x118Post({type:"crm_me",pin:U.pin,ah:x117Ah()},90000).then(function(r){
+    X118.busy=false;var res=r&&r.result;
+    if(!res||!res.ok){X118.err=x118Msg(r,"読み込めませんでした");render();return}
+    X118.list=res.deals||[];
+    var c={n:X118.list.length,open:0,due:0,unset:0,items:[]};
+    X118.list.forEach(function(x){if(x.due==="closed")return;c.open++;if(x.due==="overdue"||x.due==="today"){c.due++;c.items.push(x)}if(x.due==="unset")c.unset++});
+    c.items=c.items.slice(0,8);X118.crm=c;
+    render();
+  }).catch(function(e){X118.busy=false;X118.err=String(e&&e.message||e).slice(0,80);render()});
+}
+function x118Find(id){var L=(X118.list||[]).concat((X118.crm&&X118.crm.items)||[]);for(var i=0;i<L.length;i++)if(L[i]&&L[i].id===id)return L[i];return null}
+function x118OpenView(flt){X118.view=true;X118.flt=flt||"due";X118.form=null;x117Blur();x118Load()}
+function x118Overlay(){
+  if(!X118.view||!U||U==="admin")return "";
+  var L=X118.list,f=X118.flt;
+  var h='<div id="x118Overlay" style="position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:270;display:flex;align-items:flex-start;justify-content:center;padding:10px;overflow:auto"><div style="background:#f8fafc;border-radius:16px;padding:12px;max-width:560px;width:100%;margin:auto 0">';
+  h+='<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px"><b style="flex:1;font-size:15px;color:#5b21b6">📇 成果報酬の案件</b><button data-x118="reload" style="'+X117S.btn+'">🔄</button><button data-x118="close" style="'+X117S.btn+'">✕ 閉じる</button></div>';
+  h+='<div style="font-size:11px;color:#475569;line-height:1.6;margin-bottom:6px">契約書を回収するまで、あなたが追う案件です。電話したら「📝 記録する」で、話した内容と<b>次の確認の日時</b>を残してください（管理者にも見えます）。</div>';
+  if(X118.form)return h+x118FormHtml()+'</div></div>';
+  var cnt={due:0,unset:0,open:0,won:0,lost:0,all:0};
+  (L||[]).forEach(function(x){cnt.all++;if(x.due==="overdue"||x.due==="today")cnt.due++;if(x.due==="unset")cnt.unset++;if(x.due!=="closed")cnt.open++;if(x.eff==="成約（契約書回収）")cnt.won++;if(x.eff==="見送り"||x.eff==="アポ取消")cnt.lost++});
+  h+='<div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">';
+  [["due","⏰ 要対応",cnt.due],["unset","📌 未定",cnt.unset],["open","追っている",cnt.open],["won","🎉 成約",cnt.won],["lost","見送り・取消",cnt.lost],["all","すべて",cnt.all]].forEach(function(b){var on=f===b[0];h+='<button data-x118="flt" data-v="'+b[0]+'" style="'+X117S.btn+(on?';background:#5b21b6;color:#fff;border-color:#5b21b6':'')+'">'+b[1]+' '+b[2]+'</button>'});
+  h+='</div>';
+  if(X118.busy&&!L)return h+'<div style="padding:20px;text-align:center;color:#64748b">読み込んでいます…</div></div></div>';
+  if(X118.err)h+='<div style="font-size:11.5px;color:#b91c1c;margin-bottom:6px">⚠️ '+htmlEsc(X118.err)+'</div>';
+  var show=(L||[]).filter(function(x){
+    if(f==="due")return x.due==="overdue"||x.due==="today";
+    if(f==="unset")return x.due==="unset";
+    if(f==="open")return x.due!=="closed";
+    if(f==="won")return x.eff==="成約（契約書回収）";
+    if(f==="lost")return x.eff==="見送り"||x.eff==="アポ取消";
+    return true;
+  });
+  if(!show.length)h+='<div style="padding:14px;text-align:center;color:#64748b;font-size:12px">'+(f==="due"?"いま確認の電話が必要な案件はありません。":"ここに出る案件はありません。")+'</div>';
+  show.forEach(function(x){
+    h+='<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:6px 10px 8px;margin-bottom:7px">'+x118Row(x,false);
+    var open=X118.open===x.id;
+    h+='<button data-x118="hist" data-v="'+htmlEsc(x.id)+'" style="border:none;background:none;color:#5b21b6;font-size:11px;font-weight:700;padding:4px 0;font-family:inherit">'+(open?"▲ 履歴を閉じる":"▼ 履歴・アポの内容（"+((x.logs||[]).length)+"件）")+'</button>';
+    if(open)h+=x118HistHtml(x);
+    h+='</div>';
+  });
+  return h+'</div></div>';
+}
+function x118HistHtml(x){
+  var h='<div style="font-size:11.5px;color:#334155;line-height:1.6;background:#f8fafc;border-radius:9px;padding:7px 9px;margin-top:3px">';
+  h+='<div>アポ：'+htmlEsc(x118Md(x.meetingDate+(x.meetingTime?" "+x.meetingTime:"")))+' 商談'+(x.reporter?'（取得 '+htmlEsc(x.reporter)+'）':'')+(x.email?'<br>✉️ '+htmlEsc(x.email):'')+'</div>';
+  if(x.handoff)h+='<div style="color:#64748b;white-space:pre-wrap;margin-top:3px">'+htmlEsc(x.handoff)+'</div>';
+  if(x.memo)h+='<div style="margin-top:3px">📌 管理者のメモ：'+htmlEsc(x.memo)+'</div>';
+  (x.logs||[]).forEach(function(l){
+    var d=new Date(l.at),md=(d.getMonth()+1)+"/"+d.getDate();
+    h+='<div style="border-top:1px dashed #e2e8f0;margin-top:5px;padding-top:4px"><b>'+md+'</b> '+htmlEsc(l.kind)+'（'+htmlEsc(l.by||"")+'）'+(l.stage?' '+x118Badge(l.stage):'')+'<div style="white-space:pre-wrap">'+x117Lk(l.text||"")+'</div>'+(l.next?'<div style="color:#64748b">→ 次の確認 '+htmlEsc(x118Md(l.next))+'</div>':'')+'</div>';
+  });
+  if(!(x.logs||[]).length)h+='<div style="color:#94a3b8;margin-top:4px">まだ記録はありません。</div>';
+  return h+'</div>';
+}
+/* 記録の入力 */
+function x118FormOpen(id,kind){
+  var x=x118Find(id);if(!x)return;
+  var nd="",nt="10:00";if(x.next){nd=x.next.slice(0,10);if(x.next.length>10)nt=x.next.slice(11,16)}
+  X118.form={id:id,kind:kind||"電話",text:"",stage:"",nd:"",nt:nt,todo:x.todo||"",cur:nd};
+  X118.view=true;x117Blur();render();
+}
+function x118FormHtml(){
+  var F=X118.form,x=x118Find(F.id);if(!x){X118.form=null;return ""}
+  var h='<div id="x118Form" style="background:#fff;border:2px solid #7c3aed;border-radius:14px;padding:11px">';
+  h+='<div style="font-size:14px;font-weight:800;color:#0f172a">📝 '+htmlEsc(x.company)+'</div><div style="font-size:11px;color:#64748b;margin-bottom:6px">'+htmlEsc(x.project)+(x.person?"・"+htmlEsc(x.person):"")+'　いまの段階 '+x118Badge(x.eff||x.stage)+'</div>';
+  h+='<label style="'+X117S.lab+'">どうでしたか</label><div style="display:flex;gap:5px;flex-wrap:wrap">';
+  X118_KINDS.forEach(function(k){var on=F.kind===k[0];h+='<button data-x118="kind" data-v="'+k[0]+'" style="'+X117S.btn+(on?';background:#7c3aed;color:#fff;border-color:#7c3aed':'')+'">'+k[1]+'</button>'});
+  h+='</div><label style="'+X117S.lab+'">話した内容（先方の言葉・理由など）</label>'+x117Ta("v118.form.text","例：年明けに社内で決めるので、1月の第2週にもう一度電話がほしい",3);
+  h+='<label style="'+X117S.lab+'">段階（変わったときだけ）</label><select data-x117f="v118.form.stage" style="'+X117S.inp+'"><option value="">変えない（'+htmlEsc(x.eff||x.stage)+'）</option>';
+  X118_ST.forEach(function(s){h+='<option value="'+htmlEsc(s)+'"'+(F.stage===s?" selected":"")+'>'+htmlEsc(s)+'</option>'});
+  h+='</select>';
+  h+='<label style="'+X117S.lab+'">次の確認の電話'+(F.cur?'（いまは '+htmlEsc(x118Md(x.next))+'）':'')+'</label><div style="display:flex;gap:6px">'+x117In("v118.form.nd","","date",";flex:1")+x117In("v118.form.nt","","time",";width:110px")+'</div>';
+  h+='<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:5px">';
+  [["1","明日"],["3","3日後"],["7","1週間後"],["14","2週間後"],["30","1か月後"],["ny","年明け"],["clear","予定を消す"]].forEach(function(b){h+='<button data-x118="nd" data-v="'+b[0]+'" style="'+X117S.btn+'">'+b[1]+'</button>'});
+  h+='</div><label style="'+X117S.lab+'">次にすること（短く）</label>'+x117In("v118.form.todo","例：契約書の届いたかを確かめる");
+  var closing=F.stage==="成約（契約書回収）"||F.stage==="見送り";
+  if(!closing&&!F.nd&&F.nd!=="clear"&&!x.next)h+='<div style="font-size:11px;color:#b45309;margin-top:6px">⚠️ 次の確認の日時を入れると、その日にホームに出ます。</div>';
+  h+='<div style="display:flex;gap:6px;margin-top:10px"><button data-x118="save" style="flex:2;padding:12px;border:none;border-radius:10px;background:#7c3aed;color:#fff;font-weight:800;font-size:14px;font-family:inherit"'+(X118.saving?" disabled":"")+'>'+(X118.saving?"記録しています…":"✓ 記録する")+'</button><button data-x118="cancel" style="flex:1;padding:12px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;color:#475569;font-weight:700;font-size:13px;font-family:inherit">やめる</button></div>';
+  return h+'</div>';
+}
+function x118QuickDate(v){
+  var F=X118.form;if(!F)return;
+  if(v==="clear"){F.nd="clear";render();return}
+  var t=x118Today(),d;
+  if(v==="ny"){var y=+t.slice(0,4)+(+t.slice(5,7)===1?0:1);d=y+"-01-06";var w=x117Dow(d);if(w===0)d=y+"-01-07";if(w===6)d=y+"-01-08"}
+  else{d=x117AddDays(t,+v);var w2=x117Dow(d);if(w2===6)d=x117AddDays(d,2);if(w2===0)d=x117AddDays(d,1)}
+  F.nd=d;if(!F.nt)F.nt="10:00";render();
+}
+function x118Save(){
+  var F=X118.form;if(!F||X118.saving)return;
+  var x=x118Find(F.id);if(!x)return;
+  var next="";
+  if(F.nd==="clear")next="clear";
+  else if(F.nd){if(!/^\d{4}-\d{2}-\d{2}$/.test(F.nd)){flash("⚠️ 日付を選び直してください");return}next=F.nd+(F.nt?" "+F.nt:"")}
+  var text=String(F.text||"").trim();
+  if(!text&&!F.stage&&!next&&F.todo===(x.todo||"")){flash("⚠️ 話した内容か、次の確認の日時を入れてください");return}
+  if(F.kind==="不在"&&!text)text="不在";
+  X118.saving=true;render();
+  x118Post({type:"crm_log",pin:U.pin,ah:x117Ah(),id:F.id,kind:F.kind,text:text,stage:F.stage||"",next:next,todo:F.todo||""},60000).then(function(r){
+    X118.saving=false;var res=r&&r.result;
+    if(!res||!res.ok){flash("⚠️ "+htmlEsc(x118Msg(r,"記録できませんでした")));render();return}
+    var nd=res.deal;
+    if(X118.list)X118.list=X118.list.map(function(y){return y.id===nd.id?nd:y});
+    if(X118.crm){var it=(X118.crm.items||[]).filter(function(y){return y.id!==nd.id});if(nd.due==="overdue"||nd.due==="today")it.unshift(nd);X118.crm.items=it;X118.crm.due=it.length}
+    X118.form=null;vib([40,30,40]);flash(nd.eff==="成約（契約書回収）"?"🎉 成約を記録しました":"✅ 記録しました"+(nd.next?"（次の確認 "+x118Md(nd.next)+"）":""));
+    if(!X118.list)X118.view=false;
+    render();
+    if(X118.list)setTimeout(function(){X118.list&&x118Load()},300);
+  }).catch(function(e){X118.saving=false;flash("⚠️ 送れませんでした（"+htmlEsc(String(e&&e.message||e).slice(0,50))+"）");render()});
+}
+function x118Dial(id){
+  var x=x118Find(id);if(!x||!x.phone)return;
+  X118.form=null;
+  try{x115Go(x.phone)}catch(e){try{location.href="tel:"+String(x.phone).replace(/[^\d+]/g,"")}catch(e2){}}
+  /* 発信のあと、記録の入力を開いておく（電話から戻ったら、すぐ書ける）。録音の確認が出たときは、そちらを先に */
+  setTimeout(function(){try{if(X117.gate)return}catch(e3){}x118FormOpen(id,"電話")},400);
+}
+document.addEventListener("click",function(e){
+  var b=e.target&&e.target.closest?e.target.closest("[data-x118]"):null;
+  if(!b||!U||U==="admin")return;
+  var a=b.getAttribute("data-x118"),v=b.getAttribute("data-v")||"";
+  if(["open","close","reload","flt","hist","dial","log","kind","nd","save","cancel"].indexOf(a)<0)return;
+  e.preventDefault();
+  if(a==="open"){x118OpenView(v||"due");return}
+  if(a==="close"){X118.view=false;X118.form=null;render();return}
+  if(a==="reload"){x118Load();return}
+  if(a==="flt"){X118.flt=v;render();return}
+  if(a==="hist"){X118.open=X118.open===v?"":v;render();return}
+  if(a==="dial"){x118Dial(v);return}
+  if(a==="log"){x118FormOpen(v,"電話");return}
+  if(a==="kind"){if(X118.form){X118.form.kind=v;render()}return}
+  if(a==="nd"){x118QuickDate(v);return}
+  if(a==="save"){x117Blur();x118Save();return}
+  if(a==="cancel"){X118.form=null;if(!X118.list)X118.view=false;render();return}
+});
+
+/* ══════════ お断りの先：もう一巡に入れるまでの日数（管理者の設定。0 は日数なし＝これまでどおり） ══════════ */
+function x118RefuseDays(){var c=X118.cfg;return c&&c.refuseDays>0?c.refuseDays:0}
+/* その行の、いちばん新しい「お断り」の時刻（この端末の結果・元シートと全員の架電記録の前回の結果）。無ければ 0 */
+function x118RefuseAt(i){
+  var t=0,c=null;
+  try{c=calledInfo(i)}catch(e){}
+  if(c&&c.r==="refused"&&c.at)t=c.at;
+  try{var p=x114Prev(i);if(p&&p.k&&x114Tone(p.res||"").i==="✋"){var ms=Date.parse(String(p.k).replace(" ","T")+":00+09:00");if(ms&&ms>t)t=ms}}catch(e2){}
+  return t;
+}
+function x118RefuseHold(i){var d=x118RefuseDays();if(!d)return false;var t=x118RefuseAt(i);return !!(t&&x117Now()-t<d*86400000)}
+var x118Called0=called;
+called=function(i){
+  var v=x118Called0(i);if(v)return v;
+  try{if(x117RepassAll()&&x118RefuseHold(i))return true}catch(e){}
+  return v;
+};
+var x118AllCands0=x117AllCands;
+x117AllCands=function(){
+  if(!x118RefuseDays())return x118AllCands0();
+  var n=0;
+  for(var i=0;i<rows.length;i++){
+    var r=rows[i];if(!r||hasAppo(r)||skipped[i])continue;
+    var c=calledInfo(i);
+    if(c){if(c.r==="appo"||(repass&&repass.all&&c.at>=repass.at))continue;if(c.r==="absent"){try{if(x112RecallState(c)!=="ready")continue}catch(e){}}if(x118RefuseHold(i))continue;n++}
+    else if(isNG(gf(r,"ph")||"")){if(!x118RefuseHold(i))n++}
+  }
+  return n;
+};
+
+/* ══════════ 通話録音：パソコン・Zoom で発信する人には、スマホの録音の設定を出さない ══════════ */
+function x118RecUi(){
+  try{if(RA&&RA.handle)return true}catch(e0){}
+  try{if(!rwIsPhone())return false}catch(e1){}
+  try{if(pcDialMode)return false}catch(e2){}
+  try{if(X115.dial==="zoom"&&x115ZoomOn())return false}catch(e3){}
+  return true;
+}
+var x118RaCard0=raCard;
+raCard=function(){if(!x118RecUi())return "";return x118RaCard0.apply(this,arguments)};
+
+/* ══════════ アポの一覧：取り込んだアポ（登録日なし）は、商談日の位置に並べる ══════════ */
+var x118Merge0=x117ApoMerge;
+x117ApoMerge=function(staff,d){
+  x118Merge0(staff,d);
+  try{
+    if(!U||U==="admin"||U.id!==staff.id)return;
+    var key=function(a){if(!a.srv117)return "9999-99-99|9999999999";return (a.date||a.meetingDate||"0000-00-00")+"|"+String(1e9+(Number(a.row)||0))};
+    var hasImp=(appos||[]).some(function(a){return a&&a.srv117&&!a.date});
+    if(!hasImp)return;
+    appos.sort(function(a,b){var ka=key(a),kb=key(b);return ka<kb?1:(ka>kb?-1:0)});
+    sv("a-"+staff.id,appos);
+  }catch(e){}
+};
+
+/* ══════════════════════════ 管理者 ══════════════════════════ */
+function x118AdminCards(){
+  if(U!=="admin")return "";
+  var h="";
+  try{h+=x118AdmImp()}catch(e1){h+=x117Err("v118 アポの取り込み",e1)}
+  try{h+=x118AdmCrm()}catch(e2){h+=x117Err("v118 成果報酬の案件",e2)}
+  try{h+=x118AdmProj()}catch(e3){h+=x117Err("v118 案件の設定",e3)}
+  try{h+=x118AdmCfg()}catch(e4){h+=x117Err("v118 設定",e4)}
+  return h;
+}
+function x118AB(act,label,extra,v){return '<button data-x118a="'+act+'"'+(v!==undefined?' data-v="'+htmlEsc(v)+'"':'')+' style="'+X117S.btn+(extra||"")+'">'+label+'</button>'}
+var X118_PRI=';background:#4f46e5;color:#fff;border-color:#4f46e5';
+
+/* ── ⑴ 実際のアポの取り込み ── */
+function x118AdmImp(){
+  var I=X118.adm.imp,open=!!X117.adm.open.i118;
+  var h='<div id="x118ImpCard" style="'+X117S.card+'#a5b4fc">';
+  h+=x117Head("i118","📥 実際のアポの取り込み（v118）","#3730a3",open?"":"これまでのアポの表（案件名・〇・取得者・商談日・時間・会社名・電話・担当者・メール・住所・メモ の順）をそのまま貼り付けて、アポの一覧に入れます。案件名・会社名のゆれをそろえ、すでにあるアポは入れません",null);
+  if(!open)return h+'</div>';
+  h+='<div style="font-size:11px;color:#475569;line-height:1.7;margin-top:6px">① スプレッドシートで行を選んでコピー → 下に貼り付け（ファイル .txt/.tsv/.csv でも可）<br>② 「読み取って確かめる」で、入る行・重複・似ている行を確かめる<br>③ 「取り込む」。<b>報酬の計算には入れません</b>（いつ取ったアポかが表に無いため）。アポインターごとの一覧・成果報酬の案件には入ります</div>';
+  h+=x117Ta("v118.adm.imp.text","ここに貼り付け（タブ区切り。セルの中の改行もそのまま）",6);
+  var n=String(I.text||"").length;
+  h+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px"><label style="'+X117S.btn+';display:inline-block">📄 ファイルから<input id="x118ImpFile" type="file" accept=".txt,.tsv,.csv,text/plain,text/csv" style="display:none"></label>';
+  h+='<span style="font-size:11px;color:#475569">年：</span><select data-x117f="v118.adm.imp.year" style="'+X117S.inp+';width:auto;padding:5px">';
+  var y=+x118Today().slice(0,4);
+  [["","自動（直近の1年）"],[String(y-1),(y-1)+"年"],[String(y),y+"年"],[String(y+1),(y+1)+"年"]].forEach(function(o){h+='<option value="'+o[0]+'"'+(String(I.year||"")===o[0]?" selected":"")+'>'+o[1]+'</option>'});
+  h+='</select><span style="font-size:10.5px;color:#94a3b8">'+(n?n.toLocaleString()+"文字":"")+'</span></div>';
+  h+='<div style="display:flex;gap:6px;margin-top:8px">'+x118AB("impParse",I.busy&&!I.res?"読み取っています…":"🔎 読み取って確かめる",X118_PRI)+x118AB("impClear","クリア")+'</div>';
+  if(I.msg)h+='<div style="font-size:12px;color:'+(/^⚠/.test(I.msg)?"#b91c1c":"#047857")+';font-weight:700;margin-top:6px;line-height:1.6">'+htmlEsc(I.msg)+'</div>';
+  if(I.parsed&&I.parsed.warns&&I.parsed.warns.length)h+='<div style="font-size:11px;color:#b45309;margin-top:4px;line-height:1.6">'+I.parsed.warns.slice(0,6).map(htmlEsc).join("<br>")+'</div>';
+  var R=I.res;
+  if(R){
+    var c=R.cnt||{},nf=Object.keys(I.force||{}).filter(function(k){return I.force[k]}).length;
+    h+='<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:8px 10px;margin-top:8px;font-size:12px;line-height:1.8">';
+    h+='貼り付け <b>'+R.total+'行</b> → <b style="color:#047857">新しい '+c.add+'</b>・<span style="color:#64748b">重複 '+c.dup+'</span>・<span style="color:#b45309">似ている '+c.near+'</span>・<span style="color:#b91c1c">読めない '+c.bad+'</span>'+(c.unify?'・会社名をそろえた '+c.unify:'');
+    var pm={},rm={},dmin="",dmax="";
+    (R.items||[]).forEach(function(x){
+      if(x.projectRaw&&x.project){var k=x.projectRaw+" → "+x.project;pm[k]=(pm[k]||0)+1}
+      if(x.reporter){var k2=x.reporter+(x.pin?"（"+x.pin+"）":(x.former?"（以前の方）":"（名簿にない）"));rm[k2]=(rm[k2]||0)+1}
+      if(x.meetingDate){if(!dmin||x.meetingDate<dmin)dmin=x.meetingDate;if(!dmax||x.meetingDate>dmax)dmax=x.meetingDate}
+    });
+    h+='<br>商談日：'+htmlEsc(dmin)+' 〜 '+htmlEsc(dmax);
+    h+='<br>案件名：'+Object.keys(pm).map(function(k){var same=k.split(" → ")[0]===k.split(" → ")[1];return '<span style="'+(same?"":"color:#4f46e5;font-weight:700")+'">'+htmlEsc(same?k.split(" → ")[0]:k)+' '+pm[k]+'</span>'}).join("・");
+    h+='<br>取得者：'+Object.keys(rm).map(function(k){return htmlEsc(k)+' '+rm[k]}).join("・");
+    h+='</div>';
+    var list=(R.items||[]),show=I.showAll?list:list.filter(function(x){return x.st!=="add"}).concat(list.filter(function(x){return x.st==="add"})).slice(0,80);
+    h+='<div style="max-height:360px;overflow:auto;margin-top:6px;border:1px solid #e2e8f0;border-radius:9px"><table style="width:100%;border-collapse:collapse;font-size:10.5px"><tr style="background:#eef2ff;position:sticky;top:0"><th style="padding:3px">判定</th><th>商談日時</th><th>案件</th><th>取得者</th><th>会社名</th><th>電話</th><th>担当者</th></tr>';
+    var SC={add:["新しい","#047857"],dup:["重複","#64748b"],near:["似ている","#b45309"],bad:["読めない","#b91c1c"]};
+    show.forEach(function(x){
+      var s=SC[x.st]||["",""];
+      h+='<tr style="border-top:1px solid #f1f5f9"><td style="padding:3px;white-space:nowrap;color:'+s[1]+';font-weight:800">'+s[0]+(x.st==="near"?'<br><label style="font-weight:700;color:#334155"><input type="checkbox" data-x117f="v118.adm.imp.force.'+x.i+'"'+(I.force[x.i]?" checked":"")+'> 入れる</label>':'')+'</td>';
+      h+='<td style="white-space:nowrap">'+htmlEsc(x118Md(x.meetingDate)+" "+(x.meetingTime||""))+'</td><td>'+htmlEsc(x.project||"")+'</td><td>'+htmlEsc(x.reporter||"")+'</td><td>'+htmlEsc(x.company||"")+(x.unified?'<div style="color:#94a3b8">（元：'+htmlEsc(x.unified)+'）</div>':'')+(x.why&&x.st!=="add"?'<div style="color:'+s[1]+'">'+htmlEsc(x.why)+'</div>':'')+'</td><td style="white-space:nowrap">'+htmlEsc(x.phone||"")+'</td><td>'+htmlEsc(x.person||"")+'</td></tr>';
+    });
+    h+='</table></div>';
+    if(!I.showAll&&list.length>show.length)h+='<div style="font-size:10.5px;color:#64748b;margin-top:3px">（ほか '+(list.length-show.length)+'行）'+x118AB("impAll","すべて表示")+'</div>';
+    var nAdd=(c.add||0)+nf;
+    h+='<div style="margin-top:8px">'+(nAdd?x118AB("impGo",I.busy?"取り込んでいます…":"✓ 取り込む（"+nAdd+"件）",';background:#047857;color:#fff;border-color:#047857;padding:10px 16px;font-size:13px'):'<span style="font-size:12px;color:#64748b">入れる行はありません。</span>')+'</div>';
+  }
+  return h+'</div>';
+}
+function x118ImpParse(){
+  var I=X118.adm.imp;if(I.busy)return;
+  x117Blur();
+  var P=x118ParseAppos(I.text||"",{today:x118Today(),year:I.year?+I.year:0,projects:x118KnownProjects()});
+  I.parsed=P;I.res=null;I.force={};I.showAll=false;
+  if(!P.rows.length){I.msg="⚠️ アポの行が見つかりません（商談日「3/10」と時間「14:00」が並んだ行を探しています）";render();return}
+  I.busy=true;I.msg="";render();
+  x118Post({type:"apo_import",rows:P.rows,dry:true},120000).then(function(r){
+    I.busy=false;var res=r&&r.result;
+    if(!res||!res.ok){I.msg="⚠️ "+x118Msg(r,"確かめられませんでした");render();return}
+    I.res=res;render();
+  }).catch(function(e){I.busy=false;I.msg="⚠️ "+String(e&&e.message||e).slice(0,80);render()});
+}
+function x118ImpGo(){
+  var I=X118.adm.imp;if(I.busy||!I.parsed||!I.res)return;
+  var force=Object.keys(I.force||{}).filter(function(k){return I.force[k]}).map(Number);
+  I.busy=true;render();
+  x118Post({type:"apo_import",rows:I.parsed.rows,force:force},180000).then(function(r){
+    I.busy=false;var res=r&&r.result;
+    if(!res||!res.ok){I.msg="⚠️ "+x118Msg(r,"取り込めませんでした");render();return}
+    I.msg="✅ "+res.added+"件を取り込みました"+(res.crmCreated?"（成果報酬の案件 "+res.crmCreated+"件）":"")+"。アポの一覧で確かめられます";
+    I.res=null;I.parsed=null;I.text="";
+    try{X117.adm.apo=null;X117.adm.apoTry=0}catch(e1){}
+    X118.adm.crm=null;
+    vib([40,30,40]);render();
+  }).catch(function(e){I.busy=false;I.msg="⚠️ "+String(e&&e.message||e).slice(0,80);render()});
+}
+function x118KnownProjects(){
+  var out=[];
+  (X118.adm.proj&&X118.adm.proj.list||X118.proj||[]).forEach(function(p){out.push(p.name);(p.aliases||[]).forEach(function(a){out.push(a)})});
+  try{(plProjNames||[]).forEach(function(n){out.push(n)})}catch(e){}
+  return out;
+}
+document.addEventListener("change",function(e){
+  var t=e.target;if(!t||t.id!=="x118ImpFile"||!t.files||!t.files[0])return;
+  var f=t.files[0],rd=new FileReader();
+  rd.onload=function(){
+    var buf=rd.result,txt="";
+    try{txt=new TextDecoder("utf-8").decode(buf)}catch(e1){}
+    if(!txt||(txt.match(/�/g)||[]).length>3){try{txt=new TextDecoder("shift_jis").decode(buf)}catch(e2){}}
+    if(/\.csv$/i.test(f.name)&&txt.indexOf("\t")<0)txt=x118CsvToTsv(txt);
+    X118.adm.imp.text=txt;X118.adm.imp.res=null;X118.adm.imp.msg="📄 "+f.name+" を読み込みました";render();
+  };
+  rd.readAsArrayBuffer(f);
+  try{t.value=""}catch(e3){}
+},true);
+/* CSV（カンマ区切り）→ タブ区切り（引用符の中のカンマ・改行はそのまま） */
+function x118CsvToTsv(s){
+  var out="",q=false;
+  for(var i=0;i<s.length;i++){var ch=s.charAt(i);if(ch==='"'){q=!q;out+=ch;continue}if(ch===","&&!q){out+="\t";continue}out+=ch}
+  return out;
+}
+
+/* ── ⑾ 成果報酬の案件（管理者） ── */
+function x118AdmCrmLoad(force){
+  var A=X118.adm;if(A.crmBusy||!admTok)return;
+  if(!force&&(A.crm||Date.now()-A.crmTry<60000))return;
+  A.crmBusy=true;A.crmTry=Date.now();
+  x118Post({type:"crm_admin"},120000).then(function(r){
+    A.crmBusy=false;var res=r&&r.result;
+    if(!res||!res.ok){A.crmErr=x118Msg(r,"読み込めませんでした");render();return}
+    A.crm=res;A.crmErr="";render();
+  }).catch(function(e){A.crmBusy=false;A.crmErr=String(e&&e.message||e).slice(0,100);render()});
+}
+function x118AdmCrm(){
+  var A=X118.adm,open=!!X117.adm.open.c118;
+  var h='<div id="x118CrmCard" style="'+X117S.card+'#c4b5fd">';
+  h+=x117Head("c118","📇 成果報酬の案件（契約書の回収まで・v118）","#5b21b6",open?"":"NKT・グルメ杵屋・RIG など完全成果報酬の案件を、商談 → 検討中 → 契約書の送付 → 成約（回収）まで追います。担当のアポインターが、次の確認の電話をして記録します",null);
+  if(!open)return h+'</div>';
+  if(!A.crm&&!A.crmBusy)x118AdmCrmLoad(false);
+  var R=A.crm;
+  h+='<div style="margin-top:6px">'+x118AB("crmReload","🔄 読み直す")+'</div>';
+  if(!R)return h+'<div style="font-size:11px;color:#64748b;margin-top:6px">'+(A.crmBusy?"読み込んでいます…":"読み込めませんでした"+(A.crmErr?"："+htmlEsc(A.crmErr):""))+'</div></div>';
+  /* 歩留まり */
+  h+='<div style="overflow:auto;margin-top:8px"><table style="border-collapse:collapse;font-size:11px;width:100%"><tr style="background:#f5f3ff"><th style="padding:3px;text-align:left">案件</th><th>アポ</th><th>商談済み</th><th>契約書の送付</th><th>成約</th><th>時期待ち</th><th>見送り</th><th>アポ取消</th><th>要対応</th><th>未定</th><th>成約率</th></tr>';
+  (R.funnel||[]).forEach(function(f){
+    var base=f.met||0,rate=base?Math.round(f.won/base*100)+"%":"—";
+    h+='<tr style="border-top:1px solid #ede9fe;text-align:center"><td style="text-align:left;padding:3px;font-weight:800">'+htmlEsc(f.project)+'</td><td>'+f.total+'</td><td>'+f.met+'</td><td>'+f.sent+'</td><td style="color:#047857;font-weight:800">'+f.won+'</td><td>'+f.wait+'</td><td>'+f.lost+'</td><td>'+f.cancelled+'</td><td style="color:#b91c1c;font-weight:800">'+f.overdue+'</td><td style="color:#7c3aed">'+f.unset+'</td><td>'+rate+'</td></tr>';
+  });
+  if(!(R.funnel||[]).length)h+='<tr><td colspan="11" style="padding:8px;color:#64748b">まだ案件はありません（案件の設定で「成果報酬」にした案件のアポが入ると、ここに出ます）</td></tr>';
+  h+='</table><div style="font-size:10px;color:#94a3b8;margin-top:2px">成約率＝成約 ÷ 商談済み（アポ取消を除く）</div></div>';
+  /* 担当なし */
+  var none=(R.deals||[]).filter(function(x){return !x.owner&&x.due!=="closed"});
+  if(none.length){
+    h+='<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:9px;padding:7px 9px;margin-top:8px;font-size:11.5px;color:#78350f">担当のいない案件（以前の方のアポなど）<b>'+none.length+'件</b> を <select data-x117f="v118.adm.asg" style="'+X117S.inp+';width:auto;padding:4px"><option value="">選ぶ</option>';
+    (R.roster||[]).forEach(function(p){h+='<option value="'+p.pin+'"'+(A.asg===p.pin?" selected":"")+'>'+htmlEsc(p.name)+'</option>'});
+    h+='</select> '+x118AB("crmAssign","の担当にする")+'</div>';
+  }
+  /* 絞り込み */
+  var F=A.f;
+  h+='<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px;align-items:center">';
+  [["due","⏰ 要対応"],["unset","📌 未定"],["open","追っている"],["won","🎉 成約"],["lost","見送り・取消"],["all","すべて"]].forEach(function(b){h+=x118AB("crmSt",b[1],F.st===b[0]?';background:#5b21b6;color:#fff;border-color:#5b21b6':'',b[0])});
+  h+='</div><div style="display:flex;gap:6px;margin-top:5px"><select data-x117f="v118.adm.f.who" data-x117r style="'+X117S.inp+';flex:1;padding:5px"><option value="">担当：全員</option><option value="-"'+(F.who==="-"?" selected":"")+'>担当なし</option>';
+  (R.roster||[]).forEach(function(p){h+='<option value="'+p.pin+'"'+(F.who===p.pin?" selected":"")+'>'+htmlEsc(p.name)+'</option>'});
+  h+='</select><select data-x117f="v118.adm.f.proj" data-x117r style="'+X117S.inp+';flex:1;padding:5px"><option value="">案件：すべて</option>';
+  (R.funnel||[]).forEach(function(f){h+='<option'+(F.proj===f.project?" selected":"")+'>'+htmlEsc(f.project)+'</option>'});
+  h+='</select>'+x117In("v118.adm.f.q","会社名・担当者で探す","",";flex:1;padding:5px")+'</div>';
+  var q=x118Key(F.q||"");
+  var list=(R.deals||[]).filter(function(x){
+    var st=F.st;
+    if(st==="due"&&!(x.due==="overdue"||x.due==="today"))return false;
+    if(st==="unset"&&x.due!=="unset")return false;
+    if(st==="open"&&x.due==="closed")return false;
+    if(st==="won"&&x.eff!=="成約（契約書回収）")return false;
+    if(st==="lost"&&!(x.eff==="見送り"||x.eff==="アポ取消"))return false;
+    if(F.who==="-"&&x.owner)return false;
+    if(F.who&&F.who!=="-"&&x.owner!==F.who)return false;
+    if(F.proj&&x.project!==F.proj)return false;
+    if(q&&x118Key((x.company||"")+(x.person||"")+(x.phone||"")).indexOf(q)<0)return false;
+    return true;
+  });
+  h+='<div style="font-size:11px;color:#64748b;margin-top:6px">'+list.length+'件</div>';
+  list.slice(0,150).forEach(function(x){
+    var sel=A.sel===x.id;
+    h+='<div style="border:1px solid '+(sel?"#7c3aed":"#e2e8f0")+';border-radius:10px;padding:6px 9px;margin-top:5px;background:#fff">';
+    h+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:12.5px">'+htmlEsc(x.company||"")+'</b><span style="font-size:10.5px;color:#64748b">'+htmlEsc(x.project)+(x.person?"・"+htmlEsc(x.person):"")+'・担当 '+htmlEsc(x.ownerName||"なし")+'</span>'+x118Badge(x.eff)+'<span style="flex:1"></span>'+x118AB("crmSel",sel?"閉じる":"開く","",x.id)+'</div>';
+    h+='<div style="font-size:11px;margin-top:2px">'+x118DueTxt(x)+(x.todo?'　→ '+htmlEsc(x.todo):'')+(x.lastLog?'<span style="color:#64748b">　｜ '+htmlEsc(x.lastLog)+'</span>':'')+'</div>';
+    if(sel)h+=x118AdmDeal(x,R);
+    h+='</div>';
+  });
+  if(list.length>150)h+='<div style="font-size:10.5px;color:#64748b;margin-top:4px">（ほか '+(list.length-150)+'件。絞り込んでください）</div>';
+  /* これまでの履歴の取り込み */
+  h+=x118AdmHist(R);
+  return h+'</div>';
+}
+function x118AdmDeal(x,R){
+  var A=X118.adm,E=A.ed&&A.ed.id===x.id?A.ed:null;
+  if(!E){var nd="",nt="10:00";if(x.next){nd=x.next.slice(0,10);if(x.next.length>10)nt=x.next.slice(11,16)}E=A.ed={id:x.id,stage:"",nd:nd,nt:nt,todo:x.todo||"",owner:x.owner||"",memo:x.memo||"",text:""}}
+  var h='<div style="margin-top:6px;border-top:1px dashed #ddd6fe;padding-top:6px">';
+  h+='<div style="font-size:11px;color:#334155;line-height:1.6">📞 '+htmlEsc(x.phone||"—")+(x.email?'　✉️ '+htmlEsc(x.email):'')+'　商談 '+htmlEsc(x118Md((x.meetingDate||"")+(x.meetingTime?" "+x.meetingTime:"")))+(x.reporter?'（取得 '+htmlEsc(x.reporter)+'）':'')+'</div>';
+  if(x.handoff)h+='<div style="font-size:10.5px;color:#64748b;white-space:pre-wrap;margin-top:3px;max-height:90px;overflow:auto">'+htmlEsc(x.handoff)+'</div>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px"><div><label style="'+X117S.lab+'">段階</label><select data-x117f="v118.adm.ed.stage" style="'+X117S.inp+'"><option value="">変えない（'+htmlEsc(x.eff)+'）</option>';
+  X118_ST.forEach(function(s){h+='<option'+(E.stage===s?" selected":"")+'>'+htmlEsc(s)+'</option>'});
+  h+='</select></div><div><label style="'+X117S.lab+'">担当</label><select data-x117f="v118.adm.ed.owner" style="'+X117S.inp+'"><option value="">なし</option>';
+  (R.roster||[]).forEach(function(p){h+='<option value="'+p.pin+'"'+(E.owner===p.pin?" selected":"")+'>'+htmlEsc(p.name)+'</option>'});
+  h+='</select></div></div>';
+  h+='<label style="'+X117S.lab+'">次の確認の電話</label><div style="display:flex;gap:6px">'+x117In("v118.adm.ed.nd","","date",";flex:1")+x117In("v118.adm.ed.nt","","time",";width:110px")+x118AB("edClear","予定を消す")+'</div>';
+  h+='<label style="'+X117S.lab+'">次にすること</label>'+x117In("v118.adm.ed.todo","");
+  h+='<label style="'+X117S.lab+'">記録（管理者のメモとして履歴に残す）</label>'+x117Ta("v118.adm.ed.text","例：先方の社長と話し、12月に契約書を送ることに",2);
+  h+='<label style="'+X117S.lab+'">案件のメモ（担当のアポインターにも見える）</label>'+x117In("v118.adm.ed.memo","");
+  h+='<div style="margin-top:7px">'+x118AB("edSave",A.saving?"保存しています…":"✓ 保存",X118_PRI)+'</div>';
+  h+='<div style="margin-top:7px">'+x118HistHtml(x)+'</div>';
+  return h+'</div>';
+}
+function x118AdmSave(){
+  var A=X118.adm,E=A.ed;if(!E||A.saving)return;
+  var x=null;((A.crm&&A.crm.deals)||[]).forEach(function(d){if(d.id===E.id)x=d});if(!x)return;
+  var next="";
+  if(E.nd==="clear")next="clear";else if(E.nd){next=E.nd+(E.nt?" "+E.nt:"")}
+  var body={type:"crm_admin",action:"set",id:E.id,kind:"メモ",text:String(E.text||"").trim(),stage:E.stage||"",next:(next===((x.next||""))?"":next),todo:E.todo,memo:E.memo};
+  if(E.owner!==(x.owner||""))body.owner=E.owner;
+  A.saving=true;render();
+  x118Post(body,60000).then(function(r){
+    A.saving=false;var res=r&&r.result;
+    if(!res||!res.ok){flash("⚠️ "+htmlEsc(x118Msg(r,"保存できませんでした")));render();return}
+    A.crm.deals=A.crm.deals.map(function(d){return d.id===res.deal.id?res.deal:d});
+    A.ed=null;A.sel="";flash("✅ 保存しました");render();
+    setTimeout(function(){x118AdmCrmLoad(true)},300);   /* 歩留まりの表も新しくする */
+  }).catch(function(e){A.saving=false;flash("⚠️ "+htmlEsc(String(e&&e.message||e).slice(0,60)));render()});
+}
+function x118AdmAssign(){
+  var A=X118.adm,R=A.crm;if(!R||!A.asg)return flash("⚠️ 担当にする人を選んでください");
+  var ids=(R.deals||[]).filter(function(x){return !x.owner&&x.due!=="closed"}).map(function(x){return x.id});
+  if(!ids.length)return;
+  A.crmBusy=true;render();
+  x118Post({type:"crm_admin",action:"assign",owner:A.asg,ids:ids},180000).then(function(r){
+    A.crmBusy=false;var res=r&&r.result;
+    if(!res||!res.ok){flash("⚠️ "+htmlEsc(x118Msg(r,"割り当てられませんでした")));render();return}
+    flash("✅ "+res.assigned+"件を割り当てました（本人のアプリに知らせました）");x118AdmCrmLoad(true);
+  }).catch(function(e){A.crmBusy=false;flash("⚠️ "+htmlEsc(String(e&&e.message||e).slice(0,60)));render()});
+}
+/* これまでの履歴（メール・メモの文）を貼り付けて、案件ごとの履歴に入れる */
+function x118AdmHist(R){
+  var Hs=X118.adm.hist;
+  var h='<div style="border-top:2px solid #ede9fe;margin-top:10px;padding-top:8px"><b style="font-size:12.5px;color:#5b21b6">🗂 これまでの履歴を入れる</b>';
+  h+='<div style="font-size:10.5px;color:#64748b;line-height:1.6;margin:2px 0 5px">「11/24 契約書回収の件 RIGの○○様は、…」のような報告の文をそのまま貼り付けると、日付・案件・先方の名前で案件を探します。違うときは選び直してください。</div>';
+  h+=x117Ta("v118.adm.hist.text","例：11/24 契約書回収の件 RIGの○○様は、サポート代が高すぎる　グルメ杵屋の○○様は、年明けてから",4);
+  h+='<div style="margin-top:5px">'+x118AB("histParse","🔎 読み取る",X118_PRI)+'</div>';
+  if(Hs.msg)h+='<div style="font-size:11.5px;font-weight:700;margin-top:5px;color:'+(/^⚠/.test(Hs.msg)?"#b91c1c":"#047857")+'">'+htmlEsc(Hs.msg)+'</div>';
+  var items=Hs.items;
+  if(items&&items.length){
+    items.forEach(function(it,i){
+      var p="v118.adm.hist.items."+i+".";
+      h+='<div style="border:1px solid '+(it.on?"#a78bfa":"#e2e8f0")+';border-radius:9px;padding:6px 8px;margin-top:6px;background:'+(it.on?"#faf5ff":"#fff")+'">';
+      h+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:11px"><label><input type="checkbox" data-x117f="'+p+'on" data-x117r'+(it.on?" checked":"")+'> 入れる</label><input type="date" data-x117f="'+p+'date" value="'+htmlEsc(it.date||"")+'" style="'+X117S.inp+';width:auto;padding:4px"><b>'+htmlEsc(it.project||"案件？")+'</b>'+(it.person?'<span>'+htmlEsc(it.person)+'様</span>':'')+(it.auto?'<span style="color:#047857;font-weight:700">（自動で見つけました）</span>':'')+'</div>';
+      h+='<select data-x117f="'+p+'sel" data-x117r style="'+X117S.inp+';margin-top:4px;padding:5px"><option value="">— 案件を選ぶ —</option>';
+      var cands=it.cands||[],seen={};
+      cands.forEach(function(id){var x=x118AdmDealById(id);if(!x)return;seen[id]=1;h+='<option value="'+htmlEsc(id)+'"'+(it.sel===id?" selected":"")+'>★ '+htmlEsc(x.company+"（"+x.project+"・"+(x.person||"")+"・"+x118Md(x.meetingDate)+"）")+'</option>'});
+      ((R&&R.deals)||[]).filter(function(x){return !seen[x.id]&&(!it.project||x.project===it.project)}).forEach(function(x){h+='<option value="'+htmlEsc(x.id)+'"'+(it.sel===x.id?" selected":"")+'>'+htmlEsc(x.company+"（"+x.project+"・"+(x.person||"")+"・"+x118Md(x.meetingDate)+"）")+'</option>'});
+      h+='</select>'+x117Ta(p+"text","",2);
+      h+='<div style="display:flex;gap:6px;margin-top:4px"><select data-x117f="'+p+'stage" style="'+X117S.inp+';flex:1;padding:5px"><option value="">段階は変えない</option>';
+      X118_ST.forEach(function(s){h+='<option'+(it.stage===s?" selected":"")+'>'+htmlEsc(s)+'</option>'});
+      h+='</select><input type="date" data-x117f="'+p+'next" value="'+htmlEsc(it.next||"")+'" title="次の確認" style="'+X117S.inp+';flex:1;padding:4px"></div>';
+      h+='</div>';
+    });
+    var n=items.filter(function(it){return it.on&&it.sel}).length;
+    h+='<div style="margin-top:7px">'+x118AB("histGo",Hs.busy?"入れています…":"✓ 履歴を入れる（"+n+"件）",';background:#047857;color:#fff;border-color:#047857')+'</div>';
+  }
+  return h+'</div>';
+}
+function x118AdmDealById(id){var L=(X118.adm.crm&&X118.adm.crm.deals)||[];for(var i=0;i<L.length;i++)if(L[i].id===id)return L[i];return null}
+function x118HistParse(){
+  var Hs=X118.adm.hist,R=X118.adm.crm;x117Blur();
+  if(!R){Hs.msg="⚠️ 案件を読み込んでから、もう一度押してください";render();return}
+  var out=x118ParseHist(Hs.text||"",{today:x118Today(),projects:(R.projects||X118.proj||[]),deals:R.deals||[]});
+  Hs.items=out;Hs.msg=out.length?"":"⚠️ 日付（11/24 など）から始まる報告が見つかりません";
+  render();
+}
+function x118HistGo(){
+  var Hs=X118.adm.hist;if(Hs.busy||!Hs.items)return;
+  var entries=Hs.items.filter(function(it){return it.on&&it.sel}).map(function(it){return {id:it.sel,date:it.date,text:it.text,stage:it.stage||"",next:it.next?it.next+" 10:00":""}});
+  if(!entries.length){flash("⚠️ 入れる履歴（案件を選んだもの）がありません");return}
+  Hs.busy=true;render();
+  x118Post({type:"crm_admin",action:"import_logs",entries:entries},120000).then(function(r){
+    Hs.busy=false;var res=r&&r.result;
+    if(!res||!res.ok){Hs.msg="⚠️ "+x118Msg(r,"入れられませんでした");render();return}
+    Hs.msg="✅ "+res.added+"件の履歴を入れました"+(res.skipped?"（同じ内容 "+res.skipped+"件は飛ばしました）":"")+(res.errors&&res.errors.length?"／"+res.errors.join("・"):"");
+    Hs.items=null;Hs.text="";x118AdmCrmLoad(true);
+  }).catch(function(e){Hs.busy=false;Hs.msg="⚠️ "+String(e&&e.message||e).slice(0,80);render()});
+}
+
+/* ── ⑿ 案件の設定 ── */
+function x118AdmProjLoad(force){
+  var A=X118.adm;if(A.projBusy||!admTok)return;
+  if(!force&&A.proj)return;
+  A.projBusy=true;
+  x118Post({type:"proj_admin"},90000).then(function(r){
+    A.projBusy=false;var res=r&&r.result;
+    if(!res||!res.ok){A.projErr=x118Msg(r,"読み込めませんでした");render();return}
+    A.proj=res;A.projEd=(res.list||[]).map(function(p){return {name:p.name,aliases:(p.aliases||[]).join("、"),crm:!!p.crm,foreign:p.foreign!==false,hearingText:p.hearingText||"",memo:p.memo||""}});
+    A.projErr="";render();
+  }).catch(function(e){A.projBusy=false;A.projErr=String(e&&e.message||e).slice(0,100);render()});
+}
+function x118AdmProj(){
+  var A=X118.adm,open=!!X117.adm.open.p118;
+  var h='<div id="x118ProjCard" style="'+X117S.card+'#93c5fd">';
+  h+=x117Head("p118","🗂 案件の設定（別名・成果報酬・ヒアリング・v118）","#1d4ed8",open?"":"案件名の表記ゆれ（エヌケーティー・ＮＫＴ → NKT）、契約書の回収まで追う案件、外国人の採用の質問を出すか、アポ報告のヒアリング項目を、案件ごとに決めます",null);
+  if(!open)return h+'</div>';
+  if(!A.proj&&!A.projBusy)x118AdmProjLoad(false);
+  if(!A.projEd)return h+'<div style="font-size:11px;color:#64748b;margin-top:6px">'+(A.projBusy?"読み込んでいます…":"読み込めませんでした"+(A.projErr?"："+htmlEsc(A.projErr):""))+'</div></div>';
+  if(A.proj&&A.proj.seeded)h+='<div style="font-size:11px;color:#1d4ed8;margin-top:6px">はじめの内容です（保存すると「案件の設定」シートに書きます）。</div>';
+  h+='<div style="font-size:10.5px;color:#64748b;line-height:1.6;margin-top:4px">ヒアリング項目：1行に1つ。<b>※</b>で始めると必須。「：」のあとに選択肢を「／」で区切ると、ボタンで選べます（例：※導入の時期：すぐ／3か月以内／未定）</div>';
+  A.projEd.forEach(function(p,i){
+    var k="v118.adm.projEd."+i+".";
+    h+='<div style="border:1px solid #bfdbfe;border-radius:10px;padding:7px 9px;margin-top:7px;background:#f8fbff">';
+    h+='<div style="display:flex;gap:6px;align-items:center">'+x117In(k+"name","案件名（正式）","",";flex:1;font-weight:800")+x118AB("projDel","削除","",String(i))+'</div>';
+    h+='<label style="'+X117S.lab+'">別名（、で区切る）</label>'+x117In(k+"aliases","例：エヌケーティー、ＮＫＴ");
+    h+='<div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;font-size:12px"><label><input type="checkbox" data-x117f="'+k+'crm"'+(p.crm?" checked":"")+'> 📇 成果報酬（契約書の回収まで追う）</label><label><input type="checkbox" data-x117f="'+k+'foreign"'+(p.foreign?" checked":"")+'> 外国人の採用の質問を出す</label></div>';
+    h+='<label style="'+X117S.lab+'">ヒアリング項目</label>'+x117Ta(k+"hearingText","（なし）",2);
+    h+='<label style="'+X117S.lab+'">メモ</label>'+x117In(k+"memo","");
+    h+='</div>';
+  });
+  h+='<div style="display:flex;gap:6px;margin-top:8px">'+x118AB("projAdd","＋ 案件を足す")+x118AB("projSave",A.projSaving?"保存しています…":"✓ 保存",X118_PRI)+'</div>';
+  var names=(A.proj&&A.proj.names)||[];
+  if(names.length){
+    h+='<div style="font-size:11px;color:#334155;margin-top:9px;line-height:1.8"><b>いまのアポにある案件名</b>（→ そろえた名前）<br>';
+    h+=names.slice(0,60).map(function(n){return '<span style="display:inline-block;margin-right:8px;'+(n.setting?"":"color:#64748b")+'">'+htmlEsc(n.raw)+(n.raw!==n.canon?' → <b style="color:#1d4ed8">'+htmlEsc(n.canon)+'</b>':'')+' '+n.n+(n.setting?'':' '+x118AB("projAddName","＋設定","",n.raw))+'</span>'}).join("");
+    h+='</div>';
+  }
+  return h+'</div>';
+}
+function x118AdmProjSave(){
+  var A=X118.adm;if(A.projSaving||!A.projEd)return;x117Blur();
+  A.projSaving=true;render();
+  x118Post({type:"proj_admin",action:"save",rows:A.projEd},90000).then(function(r){
+    A.projSaving=false;var res=r&&r.result;
+    if(!res||!res.ok){flash("⚠️ "+htmlEsc(x118Msg(r,"保存できませんでした")));render();return}
+    flash("✅ 案件の設定を保存しました（アプリには次の同期で届きます）");A.proj=null;A.projEd=null;x118AdmProjLoad(true);
+  }).catch(function(e){A.projSaving=false;flash("⚠️ "+htmlEsc(String(e&&e.message||e).slice(0,60)));render()});
+}
+
+/* ── v118 の設定 ── */
+function x118AdmCfg(){
+  var A=X118.adm,open=!!X117.adm.open.s118;
+  var h='<div id="x118CfgCard" style="'+X117S.card+'#cbd5e1">';
+  h+=x117Head("s118","⚙️ v118 の設定（アポ報告メール・お断りの先・成果報酬）","#334155",open?"":"アポ報告メールをシステムから送る／お断りだった先を、もう一巡に入れるまでの日数／成果報酬の案件を使うか",null);
+  if(!open)return h+'</div>';
+  if(!A.cfg&&!A.cfgBusy){A.cfgBusy=true;x118Post({type:"v118_cfg"},60000).then(function(r){A.cfgBusy=false;var res=r&&r.result;if(res&&res.ok){A.cfg=res.cfg;A.cfgEd={apoMail:!!res.cfg.apoMail,crmOn:!!res.cfg.crmOn,refuseDays:String(res.cfg.refuseDays||0)}}else A.cfgMsg="⚠️ "+x118Msg(r,"読み込めませんでした");render()}).catch(function(e){A.cfgBusy=false;A.cfgMsg="⚠️ "+String(e&&e.message||e).slice(0,80);render()})}
+  var E=A.cfgEd;
+  if(!E)return h+'<div style="font-size:11px;color:#64748b;margin-top:6px">'+(A.cfgMsg?htmlEsc(A.cfgMsg):"読み込んでいます…")+'</div></div>';
+  h+='<div style="font-size:12px;line-height:1.9;margin-top:6px">';
+  h+='<label><input type="checkbox" data-x117f="v118.adm.cfgEd.apoMail"'+(E.apoMail?" checked":"")+'> ✉️ アポ報告メールを<b>システムから</b>送る（'+htmlEsc(typeof APPO_MAIL_TO!=="undefined"?APPO_MAIL_TO:"")+' へ。アポインターのメールアプリは開きません）</label><br>';
+  h+='<label><input type="checkbox" data-x117f="v118.adm.cfgEd.crmOn"'+(E.crmOn?" checked":"")+'> 📇 成果報酬の案件を使う</label><br>';
+  h+='🔁 「お断り・NG も含めてもう一度」で、お断りだった先は '+x117In("v118.adm.cfgEd.refuseDays","0","number",";width:80px;display:inline-block;padding:4px")+' 日たってから入れる（0＝日数なし。よく使われるのは 90〜180日）';
+  h+='</div><div style="margin-top:7px">'+x118AB("cfgSave","✓ 保存",X118_PRI)+(A.cfgMsg?'<span style="font-size:11px;margin-left:8px">'+htmlEsc(A.cfgMsg)+'</span>':'')+'</div>';
+  return h+'</div>';
+}
+function x118AdmCfgSave(){
+  var A=X118.adm,E=A.cfgEd;if(!E)return;x117Blur();
+  x118Post({type:"v118_cfg",action:"set",values:{apoMail:!!E.apoMail,crmOn:!!E.crmOn,refuseDays:+E.refuseDays||0}},60000).then(function(r){
+    var res=r&&r.result;
+    if(!res||!res.ok){A.cfgMsg="⚠️ "+x118Msg(r,"保存できませんでした");render();return}
+    A.cfg=res.cfg;A.cfgMsg="✅ 保存しました";render();
+  }).catch(function(e){A.cfgMsg="⚠️ "+String(e&&e.message||e).slice(0,80);render()});
+}
+
+document.addEventListener("click",function(e){
+  var b=e.target&&e.target.closest?e.target.closest("[data-x118a]"):null;
+  if(!b||U!=="admin")return;
+  var a=b.getAttribute("data-x118a"),v=b.getAttribute("data-v")||"",A=X118.adm;
+  e.preventDefault();
+  if(a==="impParse"){x118ImpParse();return}
+  if(a==="impGo"){x118ImpGo();return}
+  if(a==="impClear"){A.imp={text:"",year:A.imp.year||"",parsed:null,res:null,busy:false,msg:"",force:{},showAll:false};render();return}
+  if(a==="impAll"){A.imp.showAll=true;render();return}
+  if(a==="crmReload"){x118AdmCrmLoad(true);render();return}
+  if(a==="crmSt"){A.f.st=v;render();return}
+  if(a==="crmSel"){A.sel=A.sel===v?"":v;A.ed=null;render();return}
+  if(a==="crmAssign"){x118AdmAssign();return}
+  if(a==="edClear"){if(A.ed){A.ed.nd="clear";A.ed.nt=""}render();return}
+  if(a==="edSave"){x117Blur();x118AdmSave();return}
+  if(a==="histParse"){x118HistParse();return}
+  if(a==="histGo"){x117Blur();x118HistGo();return}
+  if(a==="projAdd"){x117Blur();(A.projEd=A.projEd||[]).push({name:"",aliases:"",crm:false,foreign:true,hearingText:"",memo:""});render();return}
+  if(a==="projAddName"){x117Blur();(A.projEd=A.projEd||[]).push({name:v,aliases:"",crm:false,foreign:true,hearingText:"",memo:""});render();return}
+  if(a==="projDel"){x117Blur();if(A.projEd){A.projEd.splice(+v,1);render()}return}
+  if(a==="projSave"){x118AdmProjSave();return}
+  if(a==="cfgSave"){x118AdmCfgSave();return}
+});
+
+/* ══════════ 読み取り：実際のアポの表（貼り付け） ══════════
+   列の並び：案件名｜〇｜〇｜（1 など）｜取得者｜商談日（3/10）｜時間（14:00）｜会社名｜電話｜担当者｜メール｜住所｜メモ｜（そのほか）
+   ・タブと改行でセルに分ける。引用符（"）で囲まれたセルの中の改行・タブは、セルの中身
+   ・「商談日」と「時間」が並んだところを、1件の目印にする（行がつながって改行が無くても、1件ずつ分けられる）
+   ・年は表に無いので、今日から見て「300日前〜65日後」に入る年にする（画面で年を選ぶこともできる） */
+function x118Cells(text){
+  var s=String(text==null?"":text).replace(/^﻿/,"").replace(/\r\n?/g,"\n");
+  var cells=[],cur="",q=false,quoted=false,glue=-1,n=s.length,i=0;
+  while(i<n){
+    var ch=s.charAt(i);
+    if(q){
+      if(ch==='"'){
+        if(s.charAt(i+1)==='"'){cur+='"';i+=2;continue}
+        var nx=s.charAt(i+1);
+        q=false;i++;
+        if(nx!==""&&nx!=="\t"&&nx!=="\n")glue=cur.length;   /* 閉じた引用符のすぐあとに文字：次の行の1つ目のセルが、つながっている */
+        continue;
+      }
+      cur+=ch;i++;continue;
+    }
+    if(ch==='"'&&cur===""&&!quoted){q=true;quoted=true;i++;continue}
+    if(ch==="\t"||ch==="\n"){cells.push({v:cur,nl:ch==="\n",glue:glue});cur="";quoted=false;glue=-1;i++;continue}
+    cur+=ch;i++;
+  }
+  if(cur!==""||quoted)cells.push({v:cur,nl:true,glue:glue});
+  return cells;
+}
+function x118P2(n){return (n<10?"0":"")+n}
+function x118MD(v){
+  var t=x118Z2h(v).replace(/[\s　]/g,"");
+  var m=t.match(/^(\d{4})[\/\-年.](\d{1,2})[\/\-月.](\d{1,2})日?(?:[（(][^）)]{1,3}[）)])?$/);
+  if(m&&+m[2]>=1&&+m[2]<=12&&+m[3]>=1&&+m[3]<=31)return {y:+m[1],m:+m[2],d:+m[3]};
+  m=t.match(/^(\d{1,2})[\/月](\d{1,2})日?(?:[（(][^）)]{1,3}[）)])?$/);
+  if(m&&+m[1]>=1&&+m[1]<=12&&+m[2]>=1&&+m[2]<=31)return {y:0,m:+m[1],d:+m[2]};
+  return null;
+}
+function x118HM(v){
+  var t=x118Z2h(v).replace(/[\s　]/g,"").replace(/[〜~～\-].*$/,""),m,h=-1,mi=0;
+  if((m=t.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/))){h=+m[1];mi=+m[2]}
+  else if((m=t.match(/^(\d{1,2})時(\d{1,2})分?$/))){h=+m[1];mi=+m[2]}
+  else if((m=t.match(/^(\d{1,2})時(半)?$/))){h=+m[1];mi=m[2]?30:0}
+  else if((m=t.match(/^(\d{3,4})$/))){var s=m[1];h=+s.slice(0,s.length-2);mi=+s.slice(-2)}
+  if(h<0||h>23||mi>59)return "";
+  return x118P2(h)+":"+x118P2(mi);
+}
+function x118Year(m,d,today,forced){
+  if(forced)return forced;
+  var ty=+String(today).slice(0,4),t0=Date.parse(String(today).slice(0,10)+"T00:00:00Z"),best=ty,bd=1e15;
+  [ty-1,ty,ty+1].forEach(function(y){var t=Date.parse(y+"-"+x118P2(m)+"-"+x118P2(d)+"T00:00:00Z"),diff=(t-t0)/86400000;if(diff>=-300&&diff<=65&&Math.abs(diff)<bd){bd=Math.abs(diff);best=y}});
+  return best;
+}
+/* つながったセルの「前の行の続き」と「案件名」を分ける */
+function x118SplitGlue(cell,known){
+  var v=cell.v;
+  if(cell.glue>0)return {prev:v.slice(0,cell.glue),proj:v.slice(cell.glue)};
+  var t=v.trim();
+  if(t.length<=20&&t.indexOf("\n")<0&&!/https?:/.test(t))return {prev:"",proj:t};
+  var ks=(known||[]).filter(function(k){return k}).slice().sort(function(a,b){return b.length-a.length});
+  for(var i=0;i<ks.length;i++){var k=String(ks[i]).trim();if(k&&t.length>k.length&&t.slice(-k.length)===k)return {prev:t.slice(0,t.length-k.length),proj:k}}
+  var lines=t.split("\n");
+  if(lines.length>1)return {prev:lines.slice(0,-1).join("\n"),proj:lines[lines.length-1].trim()};
+  var u=t.match(/^(.*https?:\/\/[\x21-\x7e]+)(.+)$/);
+  if(u)return {prev:u[1],proj:u[2].trim()};
+  return {prev:"",proj:t};
+}
+function x118ParseAppos(text,opts){
+  opts=opts||{};
+  var today=opts.today||new Date().toISOString().slice(0,10),cells=x118Cells(text),A=[],warns=[];
+  for(var k=1;k<cells.length-1;k++){
+    var md=x118MD(cells[k].v);if(!md)continue;
+    var hm=x118HM(cells[k+1].v),rep=String(cells[k-1].v||"").trim();
+    var repOk=rep.length>0&&rep.length<=12&&!/[\d\/:]/.test(x118Z2h(rep));
+    if(!hm&&!(String(cells[k+1].v).trim()===""&&repOk&&cells[k+2]&&String(cells[k+2].v).trim()))continue;
+    if(A.length&&k-A[A.length-1]<7)continue;
+    A.push(k);
+  }
+  var recs=[];
+  for(var j=0;j<A.length;j++){
+    var k2=A[j],start=Math.max(0,k2-5),end=j+1<A.length?Math.max(k2+2,A[j+1]-5):cells.length;
+    var g=function(ix){return ix>=start&&ix<end&&cells[ix]?String(cells[ix].v):""};
+    var proj="",prevTail="";
+    if(k2-5>=0){var sp=x118SplitGlue(cells[k2-5],opts.projects);proj=sp.proj;prevTail=sp.prev}
+    if(prevTail&&recs.length)recs[recs.length-1].extras=(recs[recs.length-1].extras?recs[recs.length-1].extras+"\n":"")+prevTail.trim();
+    var md2=x118MD(cells[k2].v),y=md2.y||x118Year(md2.m,md2.d,today,opts.year||0);
+    var ex=[];for(var e=k2+8;e<end;e++){var ev=String(cells[e].v||"").trim();if(ev)ex.push(ev)}
+    var marks=[g(start+1),g(start+2),g(start+3)].map(function(x){return x.trim()}).filter(function(x){return x}).join(" ");
+    if(k2-5<0)marks="";
+    var r={i:recs.length+1,project:proj.replace(/[\s　]+/g," ").trim(),marks:marks,reporter:g(k2-1).trim(),meetingDate:y+"-"+x118P2(md2.m)+"-"+x118P2(md2.d),meetingTime:x118HM(g(k2+1)),
+      company:g(k2+2).trim(),phone:g(k2+3).trim(),person:g(k2+4).trim(),email:g(k2+5).trim(),address:g(k2+6).trim(),memo:g(k2+7).trim(),extras:ex.join("\n")};
+    if(!r.project)warns.push((r.i)+"件目（"+r.meetingDate.slice(5).replace("-","/")+" "+r.company.slice(0,12)+"）：案件名が読めません");
+    recs.push(r);
+  }
+  return {rows:recs,warns:warns,cells:cells.length};
+}
+
+/* ══════════ 読み取り：これまでの履歴（報告の文） ══════════
+   「11/24 契約書回収の件 RIGの○○様は、…　グルメ杵屋の○○様は、…」→ 日付ごと・案件ごとに分けて、案件（会社）を探す */
+function x118HintNext(text,dk){
+  var y=+dk.slice(0,4),mo=+dk.slice(5,7),d=+dk.slice(8,10),t=x118Z2h(text),m;
+  function ymd(Y,M,D){return Y+"-"+x118P2(M)+"-"+x118P2(D)}
+  if((m=t.match(/(\d{1,2})日(?:以降|過ぎ|すぎ|以後|頃|ごろ|に)/))){var dd=+m[1],yy=y,mm=mo;if(dd<=d){mm++;if(mm>12){mm=1;yy++}}if(dd>=1&&dd<=31)return {next:ymd(yy,mm,dd),stage:""}}
+  if(/年明け|年始|来年/.test(t))return {next:ymd(mo===1?y:y+1,1,6),stage:"時期待ち"};
+  if((m=t.match(/(\d{1,2})月(?:いっぱい|末)?まで/))){var M=+m[1],Y2=y+(M<mo?1:0),M2=M+1;if(M2>12){M2=1;Y2++}return {next:ymd(Y2,M2,5),stage:"時期待ち"}}
+  if((m=t.match(/(\d{1,2})月(?:なら|以降|に入|に|から|頃|ごろ|中)/))){var M3=+m[1];if(M3===mo)return {next:"",stage:""};return {next:ymd(y+(M3<mo?1:0),M3,1),stage:"時期待ち"}}
+  return {next:"",stage:""};
+}
+function x118ParseHist(text,opts){
+  opts=opts||{};
+  var today=opts.today||new Date().toISOString().slice(0,10),s=String(text||"").replace(/\r\n?/g,"\n"),z=x118Z2h(s);
+  var re=/(^|[\s　])(\d{1,2})(?:\/|月)(\d{1,2})日?(?=[\s　])/g,marks=[],m;
+  while((m=re.exec(z))){var mo=+m[2],d=+m[3];if(mo>=1&&mo<=12&&d>=1&&d<=31)marks.push({pos:m.index+m[1].length,end:re.lastIndex,mo:mo,d:d})}
+  if(!marks.length)return [];
+  /* 案件名・別名（長いものから） */
+  var al=[];
+  (opts.projects||[]).forEach(function(p){[p.name].concat(p.aliases||[]).forEach(function(a){a=String(a||"").trim();if(a)al.push({a:x118Z2h(a).toLowerCase(),name:p.name})})});
+  al.sort(function(a,b){return b.a.length-a.a.length});
+  var low=z.toLowerCase(),out=[];
+  marks.forEach(function(mk,bi){
+    var bEnd=bi+1<marks.length?marks[bi+1].pos:z.length,body0=mk.end,y=x118Year(mk.mo,mk.d,today,0),dk=y+"-"+x118P2(mk.mo)+"-"+x118P2(mk.d);
+    /* 案件名の出てくる所（あとに「様・さま・さん」が続くものだけ） */
+    var hits=[];
+    al.forEach(function(x){
+      var from=body0;
+      while(true){
+        var at=low.indexOf(x.a,from);if(at<0||at>=bEnd)break;
+        var tail=z.slice(at+x.a.length,Math.min(bEnd,at+x.a.length+16));
+        var overlap=hits.some(function(h){return at<h.pos+h.len&&h.pos<at+x.a.length});
+        if(!overlap&&/(様|さま|さん)/.test(tail))hits.push({pos:at,len:x.a.length,name:x.name});
+        from=at+x.a.length;
+      }
+    });
+    hits.sort(function(a,b){return a.pos-b.pos});
+    var topic=s.slice(body0,hits.length?hits[0].pos:bEnd).replace(/^[\s　…・:：]+|[\s　…・]+$/g,"");
+    var parts=hits.length?hits.map(function(h,i){return {pos:h.pos,len:h.len,name:h.name,end:i+1<hits.length?hits[i+1].pos:bEnd}}):[{pos:body0,len:0,name:"",end:bEnd}];
+    parts.forEach(function(p){
+      var raw=s.slice(p.pos,p.end).replace(/[\s　]+$/,"").trim();
+      if(!raw)return;
+      var after=s.slice(p.pos+p.len,p.end).replace(/^[\s　の]+/,""),pm=after.match(/^([^\s　、。,，の()（）]{1,8}?)(?:様|さま|さん)/),person=pm?pm[1]:"";
+      var txt=(hits.length&&topic?topic+"："+raw:raw);
+      var hint=x118HintNext(raw,dk);
+      var it={date:dk,project:p.name,person:person,text:txt.slice(0,1500),stage:hint.stage,next:hint.next,cands:[],sel:"",auto:false,on:false};
+      /* 案件（会社）を探す */
+      var np=x118Key(person),sc=[];
+      (opts.deals||[]).forEach(function(x){
+        if(p.name&&x.project!==p.name)return;
+        var score=0,kp=x118Key(x.person||"").replace(/^[^様]*?(長|代表|担当者?|管理者|支配人|理事|部長|課長|係長|次長|主任|社長|取締役)/,"");
+        if(np&&kp.indexOf(np)===0)score=3;                                   /* 名前の頭が同じ */
+        else if(np&&x118Key(x.person||"").indexOf(np)>=0)score=2.5;          /* 名前に含まれる */
+        else if(np&&np.length>=2&&x118Key(x.company||"").indexOf(np)>=0)score=2;
+        if(score)sc.push({id:x.id,s:score,md:x.meetingDate||""});
+      });
+      sc.sort(function(a,b){return b.s-a.s||(b.md>a.md?1:(b.md<a.md?-1:0))});
+      it.cands=sc.slice(0,6).map(function(c){return c.id});
+      var top=sc.length?sc[0].s:0,tops=sc.filter(function(c){return c.s===top});
+      if(top>=2.5&&tops.length===1){it.sel=tops[0].id;it.auto=true;it.on=true}
+      out.push(it);
+    });
+  });
+  return out;
+}
 var X111={apl:null,aplBusy:false,aplSyncBusy:false,rep:null,repBusy:false,opt:{preset:"month",from:"",to:"",project:"",showMemo:true,showCaller:false,detail:"all"},res:null,resBusy:false,pdf:null,pdfBusy:false,board:null,boardBusy:false,open:{},edit:{}};
 var X111_CARD='background:#fff;border-radius:14px;padding:12px;margin-bottom:12px;border:1.5px solid ';
 /* 知らせ（flash）は HTML として表示される。サーバー・台帳・入力欄から来た文字は、文字として出す */
@@ -11477,6 +12376,7 @@ if(lastSaved&&!isA&&(Date.now()-lastSaved.at<UNDO_MS)){
 if(isA&&X110.imp){try{h+=x110Modal()}catch(eXm){}}
 if(!isA&&RW.open&&U){try{h+=rwView()}catch(eRw){}}   /* v111: 通話録音のはじめの設定 */
 if(!isA){try{h+=x117Overlay()}catch(eX17o){}}   /* v117: 録音なしの発信・退勤、NG の番号への発信の確認 */
+if(!isA){try{h+=x118Overlay()}catch(eX18o){}}   /* v118: 成果報酬の案件の一覧・記録 */
 
 /* 確認ダイアログ */
 if(showConfirm){
@@ -13606,6 +14506,7 @@ else if(V==="home"&&!isA){
   h+=raCard();   /* v109: 通話録音の自動送信 */
   h+=syncBanner();   /* v110: サーバーと同期できていないときの警告（リストが古い可能性） */
   try{h+=x117HomeTop()}catch(eX17t){}   /* v117: 録音の警告・お知らせ・おいでん・本日の架電指示 */
+  try{h+=x118HomeTop()}catch(eX18t){}   /* v118: 成果報酬の案件（確認の電話の予定） */
 
   /* v62: 本日の稼働予定（士気を高める表示）*/
   (function(){
@@ -14185,6 +15086,7 @@ else if(V==="appo"){
   h+='<div style="background:#fff;border-radius:14px;padding:12px;border:1px solid #e2e8f0;margin-bottom:10px">';
   h+=fld("project","案件名",false,"text","例: NKT",true);
   h+=plProjectChips();   /* v105: 案件名は候補から選ぶ（表記ゆれ防止） */
+  try{h+=x118HearHtml()}catch(eX18h){}   /* v118: 案件の設定のヒアリング項目 */
   /* 商談日付・時間（横並び） */
   h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">';
   h+='<div><div style="font-size:11px;font-weight:700;color:#64748b;margin-bottom:3px">商談日付 <span style="color:#ef4444">*</span></div><input id="af_meetingDate" type="date" style="width:100%;padding:11px;border:1.5px solid #e2e8f0;border-radius:8px;box-sizing:border-box;font-size:15px" value="'+(af.meetingDate||"")+'"></div>';

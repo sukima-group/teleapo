@@ -1,5 +1,9 @@
 // ==========================================
-// 川嶋メソッド テレアポ管理 — GAS完全版 v117
+// 川嶋メソッド テレアポ管理 — GAS完全版 v118
+// v118: ⑴ 実際のアポの取り込み（管理者が貼り付けた表 → 案件名・会社名のゆれをそろえ、重複を除いて「アポイント」シートへ。台帳＝取込。報酬の集計には入れない）
+//       ⑾ 成果報酬の案件（NKT・グルメ杵屋・RIG など）を契約書の回収まで追う：「成果報酬の案件」「成果報酬の履歴」シート。段階・次の確認・履歴（crm_me・crm_log・crm_admin）
+//       ⑿ 案件の設定（「案件の設定」シート：別名・成果報酬・外国人の採用の質問・ヒアリング項目）・アポ報告メールをサーバーから送る・お断りの先の日数（proj_admin・v118_cfg）
+//       自動修正：外国人の採用の質問は「出さない」案件では聞かない・数えない／通話時間の集計（通話秒の列を優先・新しい行は文字で保存）
 // v117: ⑶ アポの一覧と状態（予定・予定日を過ぎた・キャンセル・ノーショー・無効）。キャンセルなどは件数・報酬に入れない。
 //          管理者がキャンセル・日時の変更をしたら、本人のアプリ（「個人のお知らせ」シート）とメールで知らせる（apo_admin・apo_update・notice_read）。
 //       ⑷ アポの日時の変更（管理者・本人）。「日時の変更」列に記録。アポイント台帳の行も、人が直していなければ直す。
@@ -254,7 +258,7 @@ var CONFIG = {
 var SHEET_ID = CONFIG.SHEET_ID;
 var ADMIN_SHEET_ID = CONFIG.ADMIN_SHEET_ID;
 // v95: この GAS がどの版で、どの機能に対応しているか
-var GAS_VERSION = "v117";
+var GAS_VERSION = "v118";
 var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_setup",
   "ext_run_everyone","rec_upload_session","rec_collect","kanri_wb_install","nightly_run",
   "ext_prepare","pl_dashboard","pl_ledger","pl_projects","pl_bank","pl_quality","pl_bank_drive","jp_holidays",   // v105-107: 収支・損益・銀行明細
@@ -267,7 +271,8 @@ var GAS_FEATURES = ["ping","ext_bulk_configure","ext_config_audit","ext_spread_s
   "prev_get", "order_strict", "filled_pick",   // v114
   "roster_v115", "skip_reason", "call_hours", "hours_stats", "zoom_phone",   // v115
   "roster_v116", "cb_v116",   // v116
-  "apo_v117", "oiden_v117", "brief_v117", "pay_v117", "rec_v117", "recall_v117"];   // v117
+  "apo_v117", "oiden_v117", "brief_v117", "pay_v117", "rec_v117", "recall_v117",   // v117
+  "import_v118", "crm_v118", "proj_v118", "mail_v118"];   // v118
 // 名簿（稼働中）→ PIN・氏名・姓・メール。起動時に「アポインター名簿」シートの内容で置き換わる（rosterApply_）
 var PIN_MAP = {}, FULL_NAME_MAP = {}, STAFF_EMAILS = {};
 (function () {
@@ -536,6 +541,9 @@ function doPostRoute_(d) {
     // v114: 前回の結果（prev_get）
     // v115: スキップの理由・時間帯の接続率・Zoom Phone
     // v116: 再架電の約束（callback・cb_done・cb_admin。架電の結果が届いたら前の予定を完了に）
+    // v118: 実際のアポの取り込み・成果報酬の案件（契約書の回収まで）・案件の設定・アポ報告メール
+    var v118Res = v118Handle_(d);
+    if (v118Res) return v118Res;
     // v117: アポの一覧・変更・おいでん・お知らせ・架電指示・報酬と目標・録音の必須化・NG/お断りの設定
     var v117Res = v117Handle_(d);
     if (v117Res) return v117Res;
@@ -694,6 +702,8 @@ function doPostRoute_(d) {
       try { result.cb = cbForClient116_(d.pin); result.cbV = 116; } catch (e) { result.cb = []; result.cbError = String(e); }
       // v117: 本人へのお知らせ（アポのキャンセル・日時の変更）・きょうの架電指示・v117 の設定（録音の必須化・おいでん・NG/お断り）
       try { result.v117 = v117FetchExtras_(d.pin); } catch (e117) { result.v117 = { v: 117, error: String(e117) }; }
+      // v118: 案件の設定（別名・ヒアリング項目・外国人の採用の質問）・成果報酬の案件の要対応・設定（アポ報告メール・お断りの日数）
+      try { result.v118 = v118FetchExtras_(d.pin); } catch (e118) { result.v118 = { v: 118, error: String(e118) }; }
 
       // v28: NGリスト (全アポインター共有) - 最新2000件
       try {
@@ -838,7 +848,7 @@ function doPostRoute_(d) {
             var cdk = normalizeYMD(crow[1]); // "yyyy-MM-dd"
             if (cdk.slice(0, 7) !== csMonth) continue; // 当月のみ
             var cres = mapResultLabelToId(crow[6]);
-            var ctalk = parseDurToSec(crow[7]);
+            var ctalk = Number(crow[14]) || parseDurToSec(crow[7]);   // v118: 通話秒の列を優先
             if (!csByName[cnm]) {
               csByName[cnm] = {
                 name: cnm, pin: pinForName(cnm),
@@ -2092,7 +2102,7 @@ function doPostRoute_(d) {
       var crRow = [
         crName, crEv.dateJP, crEv.hm,
         d.company, asText_(d.phone), d.person,   // v108: 電話番号は文字列で保存（先頭の0が消えないように）
-        d.result, d.duration, d.checkedCount,
+        d.result, asText_(d.duration), d.checkedCount,   // v118: 「1:23」が時刻に変わらないように、文字で書く
         d.bousou, d.outText, d.memo,
         d.endStep || "", d.cid || "", Number(d.talkSec) || 0,
         Number(d.srcRow) || ""
@@ -2606,6 +2616,12 @@ function normalizeYMD(v) {
 function parseDurToSec(v) {
   if (!v) return 0;
   if (typeof v === "number") return Math.round(v);
+  // v118: 「1:23」（1分23秒）は、スプレッドシートに書くと時刻の 1:23:00 になる。秒が 0 の時刻は「分:秒」として読む
+  if (isDate_(v)) {
+    var tzD = "Asia/Tokyo"; try { tzD = mainTz_(); } catch (eTz) {}
+    var hh = Number(Utilities.formatDate(v, tzD, "H")) || 0, mm = Number(Utilities.formatDate(v, tzD, "m")) || 0, ss = Number(Utilities.formatDate(v, tzD, "s")) || 0;
+    return ss ? hh * 3600 + mm * 60 + ss : hh * 60 + mm;
+  }
   var parts = String(v).trim().split(":");
   if (parts.length === 2) {
     return (parseInt(parts[0], 10) || 0) * 60 + (parseInt(parts[1], 10) || 0);
@@ -11330,7 +11346,9 @@ var ADMIN_ONLY_TYPES = (function () {
    // v116
    "cb_admin " +
    // v117
-   "apo_admin brief_admin pay_admin v117_cfg ").split(" ").forEach(function (t) { if (t) o[t] = true; });
+   "apo_admin brief_admin pay_admin v117_cfg " +
+   // v118
+   "apo_import crm_admin proj_admin v118_cfg ").split(" ").forEach(function (t) { if (t) o[t] = true; });
   return o;
 })();
 
@@ -14463,11 +14481,12 @@ function appoSave_(d) {
     if (info.row && !(info.duplicate && !(led && led.ok))) info.sheet.getRange(info.row, info.ledgerCol).setValue(mark);
   } catch (eM) {}
   // 確認項目が YES でない報告は、管理者が気づけるように監査ログへ残す
-  var notYes = apoChecks_().filter(function (c) { return c.must && rec.checks[c.key] !== c.must; });
+  var notYes = v118ChecksFor_(rec.project).filter(function (c) { return c.must && rec.checks[c.key] !== c.must; });   // v118: 外国人の採用の質問を出さない案件では数えない
+  var x118 = {}; try { x118 = v118AfterAppo_(rec, info, d); } catch (e118) { x118 = { error: String(e118 && e118.message || e118).slice(0, 200) }; }   // v118
   if (notYes.length && !info.duplicate) { try { logAudit("アポ報告の確認項目", rec.reporter, rec.company, notYes.map(function (c) { return c.label + "＝" + (rec.checks[c.key] || "未回答"); }).join("／")); } catch (eA) {} }
   return { status: "ok", handled: true, type: "appointment", saved: true, apoId: rec.apoId, duplicate: !!info.duplicate, date: rec.date,
     ledger: led ? { ok: !!led.ok, off: !!led.off, held: !!led.held, busy: !!led.busy, action: led.action || "", message: led.message || "" } : null,
-    checks: rec.checks, notYes: notYes.map(function (c) { return c.key; }), gasVersion: GAS_VERSION };
+    checks: rec.checks, notYes: notYes.map(function (c) { return c.key; }), gasVersion: GAS_VERSION, v118: x118 };
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -14849,6 +14868,7 @@ function apoAttachRec_(recs, maxDays) {
 // 「アポイント」シートの記録を、台帳に入れる対象かどうかで分ける
 //   auto＝自動で入れる（v111 で届いた報告）／legacy＝v110 までの報告（アポID が無い）／hold＝名簿にない PIN からの報告（「台帳」列が「保留」）
 function aplClass_(rec) {
+  if (String(rec.ledger || "").indexOf("取込") === 0) return "import";   // v118: 取り込んだ実績（台帳から来た表）は、台帳へ書かない
   if (rec.legacy) return "legacy";
   if (String(rec.ledger || "").indexOf(APO_MARK.hold) === 0) return "hold";
   return "auto";
@@ -14872,7 +14892,7 @@ function aplSync_(opts) {
   all.recs.forEach(function (r) {
     if (!r.apoId) { r.apoId = apoLegacyId_(r); r.legacy = true; }
     r.cls = aplClass_(r);
-    if (r.cls === "auto" || withLegacy) cands.push(r);
+    if (r.cls === "auto" || (withLegacy && r.cls !== "import")) cands.push(r);   // v118
   });
   var linked = 0;
   try {
@@ -14897,6 +14917,7 @@ function aplSync_(opts) {
       if (seen[rec.apoId]) return;          // 同じ報告が2行あるとき（v110 までの再送）は、最初の1行だけ
       seen[rec.apoId] = true;
       var at = aplFind_(ix, rec), done = aplIsDone_(rec);
+      if (rec.cls === "import") return;   // v118: 取り込んだ実績は、台帳へ入れない・数えない
       if (rec.cls !== "auto" && !withLegacy) {          // 自動では入れないもの：台帳に無ければ、件数だけ数える
         if (at < 0 && !rec.cancelled && !done) left[rec.cls]++;
         return;
@@ -15057,10 +15078,11 @@ function aplStatus_(deep) {
       all.recs.forEach(function (r) {
         var isLegacy = !r.apoId, id = r.apoId || apoLegacyId_(r);
         // 確認項目：答えのある報告（NO・未確認）だけを数える。v110 までの報告（答えの欄が無かった）は数えない
-        if (!r.cancelled && r.date.slice(0, 7) === monthKey && chkCols.some(function (c) { return c.must && r.checks[c.key] && r.checks[c.key] !== c.must; })) notYes++;
+        if (!r.cancelled && r.date.slice(0, 7) === monthKey && v118ChecksFor_(r.project).length && chkCols.some(function (c) { return c.must && r.checks[c.key] && r.checks[c.key] !== c.must; })) notYes++;
         if (seenId[id]) return;               // 同じ報告が2行あるとき（v110 までの再送）は、1件として数える
         seenId[id] = true;
         if (r.cancelled) return;
+        if (String(r.ledger || "").indexOf("取込") === 0) return;   // v118: 取り込んだ実績は、台帳と比べない
         var inLedger = ix ? (ix.byId[id] !== undefined || ix.byKey[aplRowKey_(r.company, r.meetingDate, r.meetingTime)] !== undefined) : false;
         if (inLedger) return;
         if (aplIsDone_(r)) removed++;
@@ -16726,6 +16748,10 @@ function v112SetupCheck() {
   Logger.log("⑬ v117 の自己点検（アポ・架電指示・報酬・設定）: " + (t117.pass === t117.total ? "すべて合格" : "不合格 " + t117.failed.join("・")));
   try { var s117 = v117Summary_(); Logger.log("⑭ アポ " + s117.apos + "件（キャンセルなど " + s117.cancelled + "件）・架電指示 " + s117.briefs + "件（予約 " + s117.scheduled + "件）・予約送信のトリガー " + (s117.trigger ? "あり" : "なし（はじめて予約したときに作ります）")); } catch (eS) {}
   try { var a117 = recAutosaveCheck_(true); Logger.log("⑮ 録音の自動保存先（v117：ご指定のフォルダ）: " + (a117.ok ? "「" + a117.name + "」 " + a117.url : "開けません（" + CONFIG.GAS_OWNER_EMAIL + " に編集者で共有してください）") + " ／ " + (a117.message || "")); } catch (eRa) { Logger.log("⑮ 録音の自動保存先: ⚠ " + String(eRa && eRa.message || eRa)); }
+  try { if (proj118Ensure_()) Logger.log("⑯ 「案件の設定」シートを作りました（NKT・グルメ杵屋・RIG を成果報酬、CTF は外国人の採用の質問なし）"); } catch (eP) { Logger.log("⑯ 案件の設定: ⚠ " + String(eP && eP.message || eP)); }
+  var t118 = v118SelfTest();
+  Logger.log("⑰ v118 の自己点検（取り込み・成果報酬の案件・案件の設定）: " + (t118.pass === t118.total ? "すべて合格" : "不合格 " + t118.failed.join("・")));
+  try { var s118 = v118Summary_(); Logger.log("⑱ 案件の設定 " + s118.proj + "件（成果報酬：" + (s118.crmProj.join("・") || "なし") + "）・成果報酬の案件 " + s118.deals + "件（追っている " + s118.open + "件）・取り込んだアポ " + s118.imported + "件"); } catch (eS8) {}
 }
 
 
@@ -18679,7 +18705,7 @@ function v117SelfTest() {
   ok("取消の文字を読める（収支の画面の書き方）", (function () { var c = apo117ParseCancel_("取消 2026-11-20：重複"); return c && c.kind === "キャンセル" && c.reason === "重複"; })());
   ok("「なし」は取消ではない", apo117ParseCancel_("なし") === null && apo117ParseCancel_("") === null);
   ok("架電指示の文（件名・案件名・おいでん）", (function () {
-    var t = brief117Text_(brief117Norm_({ project: "グルメ杵屋", kind: "WEB", targets: ["代表", "事務局長", "施設長", "4つ目"], oiden: [{ project: "グルメ杵屋", at: "11/17 14:00", company: "社会福祉法人福田会", person: "大江", phone: "03-6427-6020" }] }), "2026-11-26");
+    var t = brief117Text_(brief117Norm_({ project: "グルメ杵屋", kind: "WEB", targets: ["代表", "事務局長", "施設長", "4つ目"], oiden: [{ project: "グルメ杵屋", at: "11/17 14:00", company: "社会福祉法人サンプル会", person: "山田", phone: "03-0000-0000" }] }), "2026-11-26");
     return t.subject.indexOf("グルメ杵屋") >= 0 && t.body.indexOf("■ おいでん") >= 0 && t.body.indexOf("③ 施設長") >= 0 && t.body.indexOf("4つ目") < 0;
   })());
   ok("報告事項は30件まで", brief117Norm_({ reports: new Array(40).join("x,").split(",") }).reports.length <= 30);
@@ -18694,5 +18720,806 @@ function v117Summary_() {
   var out = { apos: 0, cancelled: 0, briefs: 0, scheduled: 0, trigger: brief117TriggerOn_() };
   try { var R = apo117Read_(); out.apos = R.recs.length; out.cancelled = R.recs.filter(function (r) { return r.cx; }).length; } catch (e) {}
   try { var B = brief117Rows_(); out.briefs = B.length; out.scheduled = B.filter(function (b) { return b.status === "予約"; }).length; } catch (e2) {}
+  return out;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// v118（2026-11-26）
+//   ⑴ 実際のアポの取り込み（管理者・apo_import）：管理者の画面に貼り付けた表を、案件名・会社名のゆれをそろえ、
+//      いまある「アポイント」シートの行と重複しないものだけ足す。「台帳」列は「取込」（アポイント台帳・経営管理システムへは送らない）。
+//      登録日（取得日）は空のまま＝報酬・収支の集計には入れない（いつ取ったかが分からないため）。アポインターごとの一覧には出る
+//   ⑾ 成果報酬の案件（契約書回収まで追う CRM）：「成果報酬の案件」「成果報酬の履歴」シート。案件の設定で「成果報酬」にした案件
+//      （はじめは NKT・グルメ杵屋・RIG）のアポを、段階（商談前→検討中→契約書の送付→成約／時期待ち／見送り）と次の確認の日時で追う。
+//      アポインター本人が記録（crm_me・crm_log。暗証番号の確認つき）、管理者は全体・担当の割り当て・履歴の貼り付け取り込み（crm_admin）
+//   ⑿ 案件の設定（proj_admin・「案件の設定」シート）：案件名の別名（表記ゆれの統一）・成果報酬・外国人の採用の質問を出すか・ヒアリング項目。
+//      アポ報告メールをサーバーから送る（端末のメールアプリに頼らない。v118_cfg）。お断りの先を、もう一巡に入れるまでの日数
+//   自動修正：外国人の採用の質問は、案件の設定で「出さない」にした案件では聞かない・数えない／「通話時間」の文字が時刻に変わって
+//      架電の集計の通話時間がずれるのを直す（通話秒の列を優先・新しい行は文字で保存）
+// ═══════════════════════════════════════════════════════════════════════
+var V118 = {
+  CFG_KEY: "V118_CFG",
+  PROJ_SHEET: "案件の設定",
+  PROJ_HEAD: ["案件名", "別名（、で区切る）", "成果報酬（契約書回収まで追う）", "外国人の採用の質問", "ヒアリング項目（1行に1つ。※で必須。「：」のあとに選択肢を／で区切る）", "メモ", "更新日時"],
+  DEAL_SHEET: "成果報酬の案件",
+  DEAL_HEAD: ["案件ID", "アポID", "案件名", "法人名", "担当者", "電話番号", "メール", "商談日", "商談時間", "担当PIN", "担当（アポインター）", "段階", "次の確認", "次にすること", "最後の連絡", "最後の記録", "作成日時", "更新日時", "更新者", "メモ"],
+  LOG_SHEET: "成果報酬の履歴",
+  LOG_HEAD: ["記録ID", "日時", "案件ID", "アポID", "案件名", "法人名", "記録者PIN", "記録者", "種類", "内容", "段階", "次の確認", "取込"],
+  STAGES: ["商談前", "検討中", "契約書の送付", "成約（契約書回収）", "時期待ち", "見送り"],
+  CLOSED: ["成約（契約書回収）", "見送り"],
+  KINDS: ["電話", "不在", "メール", "先方から", "メモ", "段階の変更", "割り当て", "取込"],
+  IMPORT_MARK: "取込",
+  HEAR_COL: "ヒアリング",
+  LIMITS: { importRows: 1500, logText: 1500, histEntries: 200, hearItems: 15 },
+  // はじめの「案件の設定」（シートが無いときだけ、この内容で作る）。[案件名, 別名, 成果報酬, 外国人の採用の質問, ヒアリング項目, メモ]
+  SEED_PROJ: [
+    ["NKT", "エヌケーティー、ＮＫＴ、株式会社エヌケーティー、(株)エヌケーティー", "はい", "", "", "完全成果報酬（契約書の回収まで追う）"],
+    ["グルメ杵屋", "株式会社グルメ杵屋、(株)グルメ杵屋", "はい", "", "", "完全成果報酬（契約書の回収まで追う）"],
+    ["RIG", "RIG協同組合、ＲＩＧ協同組合、ＲＩＧ", "はい", "", "", "完全成果報酬（契約書の回収まで追う）"],
+    ["CTF", "CTF GROUP、CTFグループ、ZERO SALES、ゼロセールス", "", "出さない", "", "営業代行の案件（外国人の採用の質問は出さない）"]
+  ]
+};
+var V118_CFG_DEFAULT = { apoMail: true, refuseDays: 0, crmOn: true };
+
+function v118Cfg_() {
+  var o = {};
+  try { o = JSON.parse(PropertiesService.getScriptProperties().getProperty(V118.CFG_KEY) || "{}") || {}; } catch (e) { o = {}; }
+  var out = {};
+  Object.keys(V118_CFG_DEFAULT).forEach(function (k) { out[k] = (o[k] === undefined || o[k] === null) ? V118_CFG_DEFAULT[k] : o[k]; });
+  out.apoMail = out.apoMail === true || out.apoMail === "true";
+  out.crmOn = out.crmOn === true || out.crmOn === "true";
+  out.refuseDays = Math.max(0, Math.min(730, Math.round(Number(out.refuseDays) || 0)));
+  return out;
+}
+function v118CfgSet_(vals) {
+  var cur = v118Cfg_(), changed = [];
+  vals = vals || {};
+  ["apoMail", "crmOn"].forEach(function (k) {
+    if (vals[k] === undefined || vals[k] === null) return;
+    var v = vals[k] === true || vals[k] === "true";
+    if (cur[k] !== v) { cur[k] = v; changed.push(k + "=" + v); }
+  });
+  if (vals.refuseDays !== undefined && vals.refuseDays !== null && vals.refuseDays !== "") {
+    var n = Math.round(Number(vals.refuseDays));
+    if (isNaN(n) || n < 0 || n > 730) throw new Error("お断りの先の日数は 0〜730 で入れてください");
+    if (cur.refuseDays !== n) { cur.refuseDays = n; changed.push("refuseDays=" + n); }
+  }
+  PropertiesService.getScriptProperties().setProperty(V118.CFG_KEY, JSON.stringify(cur));
+  if (changed.length) { try { logAudit("v118 の設定", "管理者", "アポ報告メール・お断りの日数・成果報酬", changed.join("／")); } catch (e) {} }
+  return { ok: true, cfg: cur, changed: changed };
+}
+function v118Now_() { return new Date().getTime(); }
+function v118S_(v, n) { return String(v === null || v === undefined ? "" : v).replace(/\r\n?/g, "\n").trim().slice(0, n || 500); }
+// 表示用の名前をそろえる：全角英数・空白・（株）など
+function v118Tidy_(s) {
+  var t = String(s === null || s === undefined ? "" : s);
+  t = t.replace(/[Ａ-Ｚａ-ｚ０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); });
+  t = t.replace(/[\s　]+/g, " ").trim();
+  t = t.replace(/㈱|[（(]\s*株\s*[）)]/g, "株式会社").replace(/㈲|[（(]\s*有\s*[）)]/g, "有限会社");
+  t = t.replace(/[（(]\s*医\s*[）)]/g, "医療法人").replace(/[（(]\s*福\s*[）)]/g, "社会福祉法人");
+  t = t.replace(/(株式会社|有限会社|合同会社|医療法人社団|医療法人|社会福祉法人|一般社団法人|公益社団法人|一般財団法人|公益財団法人|特定非営利活動法人|NPO法人|学校法人) +/g, "$1").replace(/ +(株式会社|有限会社|合同会社)$/g, "$1");
+  return t;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ⑿ 案件の設定
+// ═══════════════════════════════════════════════════════════════════════
+var P118_MEMO_ = null;
+function proj118Key_(s) { return normCompany_(String(s === null || s === undefined ? "" : s)); }
+// ヒアリング項目の書き方（1行に1つ）："※導入の時期：すぐ／3か月以内／未定" → { label, req, opts }
+function proj118ParseHear_(text) {
+  var out = [];
+  String(text === null || text === undefined ? "" : text).replace(/\r\n?/g, "\n").split("\n").forEach(function (line) {
+    var t = line.trim();
+    if (!t || out.length >= V118.LIMITS.hearItems) return;
+    var req = /^[※*＊]/.test(t);
+    t = t.replace(/^[※*＊]\s*/, "");
+    var m = t.match(/^(.+?)[：:]\s*(.+)$/), label = (m ? m[1] : t).trim().slice(0, 60), opts = [];
+    if (m) opts = m[2].split(/[／\/|｜]/).map(function (x) { return x.trim().slice(0, 30); }).filter(function (x) { return x; }).slice(0, 12);
+    if (label) out.push({ label: label, req: req, opts: opts });
+  });
+  return out;
+}
+function proj118Row_(r) {
+  var name = v118Tidy_(r[0]);
+  if (!name) return null;
+  var al = String(r[1] === null || r[1] === undefined ? "" : r[1]).split(/[、,，\n]/).map(function (x) { return x.trim(); }).filter(function (x) { return x; });
+  var crm = /^(はい|yes|true|〇|○|1|対象)$/i.test(String(r[2] === null || r[2] === undefined ? "" : r[2]).trim());
+  var fq = String(r[3] === null || r[3] === undefined ? "" : r[3]).trim();
+  var foreign = !/^(出さない|なし|いいえ|no|false|0|×)$/i.test(fq);
+  return { name: name, aliases: al, crm: crm, foreign: foreign, hearingText: String(r[4] === null || r[4] === undefined ? "" : r[4]), hearing: proj118ParseHear_(r[4]), memo: v118S_(r[5], 300) };
+}
+function proj118Load_(fresh) {
+  if (P118_MEMO_ && !fresh) return P118_MEMO_;
+  var list = [], seeded = false;
+  var sh = SpreadsheetApp.openById(SHEET_ID).getSheetByName(V118.PROJ_SHEET);
+  if (sh && sh.getLastRow() >= 2) {
+    var vals = sh.getRange(2, 1, sh.getLastRow() - 1, Math.max(6, Math.min(sh.getLastColumn(), V118.PROJ_HEAD.length))).getValues();
+    vals.forEach(function (r) { var p = proj118Row_(r); if (p) list.push(p); });
+  } else if (!sh) {
+    V118.SEED_PROJ.forEach(function (r) { var p = proj118Row_(r); if (p) list.push(p); });
+    seeded = true;
+  }
+  P118_MEMO_ = { list: list, seeded: seeded, exists: !!sh };
+  return P118_MEMO_;
+}
+// 案件名 → 設定（無ければ null）。完全一致（案件名・別名）→ 含む（3文字以上）の順。いちばん長く合うもの
+function proj118Find_(name, P) {
+  P = P || proj118Load_();
+  var n = proj118Key_(name);
+  if (!n) return null;
+  var best = null, bestLen = 0;
+  for (var i = 0; i < P.list.length; i++) {
+    var p = P.list[i], keys = [p.name].concat(p.aliases).map(proj118Key_).filter(function (k) { return k; });
+    for (var j = 0; j < keys.length; j++) if (keys[j] === n) return p;
+  }
+  for (var i2 = 0; i2 < P.list.length; i2++) {
+    var p2 = P.list[i2], keys2 = [p2.name].concat(p2.aliases).map(proj118Key_);
+    keys2.forEach(function (k) {
+      if (!k || k.length < 3 || n.length < 2) return;
+      if ((n.indexOf(k) >= 0 || (n.length >= 3 && k.indexOf(n) >= 0)) && k.length > bestLen) { best = p2; bestLen = k.length; }
+    });
+  }
+  return best;
+}
+function proj118Canon_(name, P) { var p = proj118Find_(name, P); return p ? p.name : v118Tidy_(name); }
+function proj118IsCrm_(name, P) { var p = proj118Find_(name, P); return !!(p && p.crm); }
+// 案件ごとの確認項目（外国人の採用の質問を「出さない」案件では、聞かない・数えない）
+function v118ChecksFor_(project) {
+  var cs = apoChecks_();
+  try { var p = proj118Find_(project); if (p && !p.foreign) return []; } catch (e) {}
+  return cs;
+}
+function proj118Client_(P) {
+  return (P || proj118Load_()).list.map(function (p) { return { name: p.name, aliases: p.aliases, crm: p.crm, foreign: p.foreign, hearing: p.hearing, hearingText: p.hearingText, memo: p.memo }; });
+}
+function proj118Save_(rows) {
+  if (!rows || !rows.length) throw new Error("案件がありません");
+  if (rows.length > 60) throw new Error("案件は60件までです");
+  var seen = {}, out = [];
+  rows.forEach(function (r, i) {
+    var name = v118Tidy_(r && r.name);
+    if (!name) return;
+    var k = proj118Key_(name);
+    if (seen[k]) throw new Error("案件名「" + name + "」が2つあります");
+    seen[k] = 1;
+    var al = (Array.isArray(r.aliases) ? r.aliases : String(r.aliases || "").split(/[、,，\n]/)).map(function (x) { return String(x).trim().slice(0, 60); }).filter(function (x) { return x; }).slice(0, 20);
+    var hear = String(r.hearingText === undefined ? "" : r.hearingText).replace(/\r\n?/g, "\n").split("\n").filter(function (x) { return x.trim(); }).slice(0, V118.LIMITS.hearItems).join("\n").slice(0, 3000);
+    out.push([v111Txt_(name).slice(0, 80), v111Txt_(al.join("、")), r.crm ? "はい" : "", r.foreign === false ? "出さない" : "出す", v111Txt_(hear), v111Txt_(v118S_(r.memo, 300)), new Date()]);
+  });
+  if (!out.length) throw new Error("案件名がありません");
+  var res = v111Lock_(function () {
+    var ss = SpreadsheetApp.openById(SHEET_ID), sh = ensureSheet(ss, V118.PROJ_SHEET, V118.PROJ_HEAD);
+    gridEnsure_(sh, out.length + 1, V118.PROJ_HEAD.length);
+    if (sh.getLastRow() >= 2) sh.getRange(2, 1, sh.getLastRow() - 1, Math.max(sh.getLastColumn(), V118.PROJ_HEAD.length)).clearContent();
+    sh.getRange(2, 1, out.length, V118.PROJ_HEAD.length).setValues(out);
+    return { ok: true };
+  }, 20000);
+  P118_MEMO_ = null;
+  try { logAudit("案件の設定", "管理者", out.length + "件", out.map(function (r) { return String(r[0]) + (r[2] ? "（成果報酬）" : "") + (r[3] === "出さない" ? "（外国人の質問なし）" : ""); }).join("／").slice(0, 400)); } catch (e) {}
+  return { ok: !!(res && res.ok), list: proj118Client_(proj118Load_(true)) };
+}
+// 「案件の設定」シートを作る（無いときだけ。はじめの内容を書く）
+function proj118Ensure_() {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  if (ss.getSheetByName(V118.PROJ_SHEET)) return false;
+  var sh = ensureSheet(ss, V118.PROJ_SHEET, V118.PROJ_HEAD);
+  var now = new Date();
+  var rows = V118.SEED_PROJ.map(function (r) { return [r[0], r[1], r[2], r[3] || "出す", r[4], r[5], now]; });
+  gridEnsure_(sh, rows.length + 1, V118.PROJ_HEAD.length);
+  sh.getRange(2, 1, rows.length, V118.PROJ_HEAD.length).setValues(rows);
+  P118_MEMO_ = null;
+  return true;
+}
+// いまある案件名（アポ・設定）と、そろえた名前（管理者の画面で、ゆれを見つけるため）
+function proj118Names_(R) {
+  var P = proj118Load_(), m = {};
+  (R || apo117Read_()).recs.forEach(function (rec) {
+    var raw = v118Tidy_(rec.project);
+    if (!raw) return;
+    var c = proj118Canon_(raw, P), k = raw + "→" + c;
+    if (!m[k]) m[k] = { raw: raw, canon: c, n: 0, setting: !!proj118Find_(raw, P) };
+    m[k].n++;
+  });
+  return Object.keys(m).map(function (k) { return m[k]; }).sort(function (a, b) { return b.n - a.n; });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ⑴ 実際のアポの取り込み
+// ═══════════════════════════════════════════════════════════════════════
+// 名前（「柏木」「柏木幸代」など）→ { name: 正式な名前, pin: 名簿の PIN（以前の方・不明は ""）, former: 以前の方か }
+function imp118Who_(raw, resolve) {
+  var t = String(raw === null || raw === undefined ? "" : raw).replace(/[\s　]/g, "").replace(/(さん|様)$/, "");
+  if (!t) return { name: "", pin: "", former: false };
+  var p = resolve(t, "");
+  if (p) return { name: FULL_NAME_MAP[p] || t, pin: p, former: false };
+  var fm = (CONFIG.FORMER_MEMBERS || []).filter(function (f) { var n = normName_(f.name), s = normName_(f.sh || ""); return n === t || s === t || (t.length >= 2 && n.indexOf(t) === 0); });
+  if (fm.length === 1) return { name: fm[0].name, pin: "", former: true };
+  return { name: t, pin: "", former: false };
+}
+function imp118Phone_(s) {
+  var t = zen2han_(String(s === null || s === undefined ? "" : s)).replace(/[−ー－‐―]/g, "-").replace(/[\s　']/g, "");
+  var d = t.replace(/\D/g, "");
+  if (d.length < 9 || d.length > 11) return { text: t.slice(0, 30), digits: d.length >= 9 ? d : "" };
+  return { text: t.replace(/[^\d\-()（）]/g, "").slice(0, 30), digits: d };
+}
+function imp118Email_(s) {
+  var m = String(s === null || s === undefined ? "" : s).match(/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g) || [];
+  var seen = {}, out = [];
+  m.forEach(function (x) { var k = x.toLowerCase(); if (!seen[k]) { seen[k] = 1; out.push(x); } });
+  return out.slice(0, 3).join(", ");
+}
+// 担当者の欄 「施設長　坂上様（男）」→ { person, role, gender }
+function imp118Person_(s) {
+  var t = v118Tidy_(s), gender = "";
+  var g = t.match(/[（(]\s*(男性?|女性?)\s*[)）]/);
+  if (g) { gender = g[1].charAt(0) === "男" ? "男" : "女"; t = t.replace(g[0], "").trim(); }
+  var role = "", parts = t.split(" ");
+  if (parts.length >= 2 && /(長|代表|代表取締役|取締役|社長|管理者|担当|担当者|マネージャー|支配人|理事|局長|主任|部長|課長|係長|次長|会長|事務長|施設長|院長|園長|所長|専務|常務|責任者|リーダー|副施設長|本部長)$/.test(parts[0])) {
+    role = parts[0]; t = parts.slice(1).join(" ");
+  }
+  return { person: t.slice(0, 80), role: role.slice(0, 40), gender: gender };
+}
+function imp118Key_(o) {
+  var c = normCompany_(o.company), ph = o.phoneDigits || "";
+  return { byPhone: ph ? o.meetingDate + "|" + ph : "", byCo: c ? o.meetingDate + "|" + c : "", co: c, ph: ph };
+}
+function imp118Id_(o) { return "I" + v111Hash_([o.meetingDate, normCompany_(o.company), o.phoneDigits || "", o.meetingTime].join("|")); }
+// 1行 → そろえた形（足りない・おかしいものは why）
+function imp118Norm_(x, P, resolve) {
+  x = x || {};
+  var md = v111DateKey_(x.meetingDate), mt = v111Hm_(x.meetingTime);
+  var ph = imp118Phone_(x.phone), who = imp118Who_(x.reporter, resolve), pp = imp118Person_(x.person);
+  var projRaw = v118Tidy_(x.project), proj = projRaw ? proj118Canon_(projRaw, P) : "";
+  var o = {
+    i: Number(x.i) || 0, projectRaw: projRaw, project: proj, reporterRaw: v118S_(x.reporter, 40), reporter: who.name, pin: who.pin, former: who.former,
+    meetingDate: md, meetingTime: mt, company: v118Tidy_(x.company).slice(0, 120), phone: ph.text, phoneDigits: ph.digits,
+    person: pp.person, role: v118S_(x.role, 40) || pp.role, gender: v118S_(x.gender, 4) || pp.gender, email: imp118Email_(x.email),
+    address: v118Tidy_(x.address).slice(0, 200), memo: v118S_(x.memo, 1500), marks: v118S_(x.marks, 60), extras: v118S_(x.extras, 1500), why: ""
+  };
+  if (!o.meetingDate) o.why = "商談日が読めません";
+  else if (!o.company && !o.person) o.why = "法人名・担当者がありません";
+  return o;
+}
+function imp118Handoff_(o) {
+  var a = ["【実績の取り込み " + fmtJst_(new Date(), "yyyy-MM-dd") + "】"];
+  if (o.marks) a.push("印：" + o.marks);
+  if (o.memo) a.push(o.memo);
+  if (o.extras) a.push(o.extras);
+  return a.join("\n").slice(0, 2000);
+}
+// rows：画面で読み取った行 [{i, project, reporter, meetingDate, meetingTime, company, phone, person, email, address, memo, marks, extras}]
+//   dry=true：書かずに結果だけ（新しい・重複・似ている・読めない）。force：似ている行も入れる行番号（i）の一覧
+function apo118Import_(d) {
+  var rows = (d && d.rows) || [];
+  if (!rows.length) return { ok: false, message: "行がありません" };
+  if (rows.length > V118.LIMITS.importRows) return { ok: false, message: "一度に取り込めるのは " + V118.LIMITS.importRows + " 行までです（分けて取り込んでください）" };
+  var P = proj118Load_(true), resolve = liveResolver_(), R = apo117Read_();
+  // いまある行の索引（取消の行も含める：同じアポをもう一度入れない）
+  var exPhone = {}, exCo = {}, exId = {}, exNear = {}, coName = {};
+  R.recs.forEach(function (rec) {
+    var ph = normPhone_(rec.phone), c = normCompany_(rec.company), md = rec.meetingDate;
+    if (rec.apoId) exId[rec.apoId] = rec.row;
+    if (md && ph.length >= 9) exPhone[md + "|" + ph] = rec.row;
+    if (md && c) exCo[md + "|" + c] = rec.row;
+    [c, ph.length >= 9 ? "#" + ph : ""].forEach(function (k) { if (k) (exNear[k] = exNear[k] || []).push({ md: md, row: rec.row, co: rec.company }); });
+    if (c && !coName[c]) coName[c] = v118Tidy_(rec.company);
+  });
+  var force = {};
+  (d.force || []).forEach(function (i) { force[Number(i)] = 1; });
+  var seenPhone = {}, seenCo = {}, items = [], add = [], cnt = { add: 0, dup: 0, near: 0, bad: 0, unify: 0 };
+  rows.forEach(function (x, idx) {
+    var o = imp118Norm_(x, P, resolve);
+    if (!o.i) o.i = idx + 1;
+    var it = { i: o.i, st: "", why: o.why, project: o.project, projectRaw: o.projectRaw, reporter: o.reporter, pin: o.pin, former: o.former,
+      meetingDate: o.meetingDate, meetingTime: o.meetingTime, company: o.company, phone: o.phone, person: o.person, row: 0 };
+    if (o.why) { it.st = "bad"; cnt.bad++; items.push(it); return; }
+    // 会社名：同じ会社（法人格・空白・全角などを除いて同じ）は、先に入っている書き方にそろえる
+    var ck = normCompany_(o.company);
+    if (ck && coName[ck] && coName[ck] !== o.company) { it.unified = o.company; o.company = coName[ck]; it.company = o.company; cnt.unify++; }
+    else if (ck && !coName[ck]) coName[ck] = o.company;
+    var k = imp118Key_(o), id = imp118Id_(o);
+    var dupRow = exId[id] || (k.byPhone && exPhone[k.byPhone]) || (k.byCo && exCo[k.byCo]) || 0;
+    if (dupRow) { it.st = "dup"; it.row = dupRow; it.why = "すでにあります（アポイント " + dupRow + "行目）"; cnt.dup++; items.push(it); return; }
+    if ((k.byPhone && seenPhone[k.byPhone]) || (k.byCo && seenCo[k.byCo])) { it.st = "dup"; it.why = "貼り付けの中で重複（" + (seenPhone[k.byPhone] || seenCo[k.byCo]) + "行目と同じ）"; cnt.dup++; items.push(it); return; }
+    // 似ている：同じ会社（または電話番号）のアポが、商談日の前後45日にある（日時の変更などで、別の日になっているかもしれない）
+    var near = [];
+    [k.co, k.ph ? "#" + k.ph : ""].forEach(function (key) {
+      (exNear[key] || []).forEach(function (e) {
+        if (!e.md) return;
+        var dd = Math.abs(Date.parse(e.md + "T00:00:00+09:00") - Date.parse(o.meetingDate + "T00:00:00+09:00")) / 86400000;
+        if (dd <= 45 && near.indexOf(e.row) < 0) near.push(e.row);
+      });
+    });
+    if (near.length && !force[o.i]) { it.st = "near"; it.row = near[0]; it.why = "同じ会社のアポが近い日にあります（" + near.slice(0, 3).map(function (r) { return r + "行目"; }).join("・") + "）"; cnt.near++; items.push(it); return; }
+    if (k.byPhone) seenPhone[k.byPhone] = o.i;
+    if (k.byCo) seenCo[k.byCo] = o.i;
+    it.st = "add"; cnt.add++; items.push(it);
+    o.id = id;
+    add.push(o);
+  });
+  var out = { ok: true, dry: !!d.dry, total: rows.length, cnt: cnt, items: items, projects: proj118Client_(P).map(function (p) { return p.name; }) };
+  if (d.dry || !add.length) { out.added = 0; return out; }
+  var now = new Date(), mark = V118.IMPORT_MARK + " " + fmtJst_(now, "yyyy-MM-dd");
+  var res = v111Lock_(function () {
+    var ss = SpreadsheetApp.openById(SHEET_ID), sh = ensureSheet(ss, APO_SHEET, APO_BASE_HEADER);
+    var cols = ensureCols_(sh, apoExtraNames_());
+    var width = Math.max(sh.getLastColumn(), APO_BASE_HEADER.length);
+    Object.keys(cols).forEach(function (kk) { if (cols[kk] > width) width = cols[kk]; });
+    // 書く直前に、もう一度 ID で確かめる（同時に2回押されても、2行にしない）
+    var have = {};
+    if (sh.getLastRow() >= 2) sh.getRange(2, cols[APO_X.id], sh.getLastRow() - 1, 1).getValues().forEach(function (r) { var v = String(r[0] === null || r[0] === undefined ? "" : r[0]).replace(/^'/, "").trim(); if (v) have[v] = 1; });
+    var vals = [];
+    add.forEach(function (o) {
+      if (have[o.id]) return;
+      have[o.id] = 1;
+      var rec = { dateJP: "", reporter: o.reporter, project: o.project, meetingDate: o.meetingDate, meetingTime: o.meetingTime, company: o.company, phone: o.phone,
+        person: o.person, gender: o.gender, role: o.role, email: o.email, address: o.address, datetime: o.meetingDate + (o.meetingTime ? "T" + o.meetingTime : ""),
+        personality: "", isTokutei: "", gaikokujin: "", tokutei: "", gijinkoku: "", decider: "", recSent: "" };
+      var row = apoRowValues_(rec);
+      while (row.length < width) row.push("");
+      row[cols[APO_X.id] - 1] = asText_(o.id);
+      row[cols[APO_X.pin] - 1] = o.pin ? asText_(o.pin) : "";
+      row[cols[APO_X.recv] - 1] = now;
+      row[cols[APO_X.handoff] - 1] = v111Txt_(imp118Handoff_(o));
+      row[cols[APO_X.ledger] - 1] = mark;
+      vals.push(row);
+    });
+    if (!vals.length) return { added: 0 };
+    var start = sh.getLastRow() + 1;
+    gridEnsure_(sh, start + vals.length, width);
+    sh.getRange(start, 1, vals.length, width).setValues(vals);
+    return { added: vals.length, from: start };
+  }, 30000);
+  out.added = (res && res.added) || 0;
+  out.fromRow = (res && res.from) || 0;
+  try { logAudit("実際のアポの取り込み", "管理者", out.added + "件", "貼り付け " + rows.length + "行：追加 " + out.added + "・重複 " + cnt.dup + "・似ている " + cnt.near + "・読めない " + cnt.bad + "・会社名をそろえた " + cnt.unify); } catch (e) {}
+  // 成果報酬の案件にも入れる
+  try { var S = crm118Sync_(apo117Read_(), v118Now_()); out.crmCreated = S.created; } catch (eC) { out.crmError = String(eC && eC.message || eC).slice(0, 200); }
+  return out;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ⑾ 成果報酬の案件（契約書の回収まで）
+// ═══════════════════════════════════════════════════════════════════════
+function crm118When_(v) {
+  if (v === null || v === undefined || v === "") return "";
+  if (isDate_(v)) {
+    var hm = Utilities.formatDate(v, "Asia/Tokyo", "HH:mm");
+    return Utilities.formatDate(v, "Asia/Tokyo", "yyyy-MM-dd") + (hm !== "00:00" ? " " + hm : "");
+  }
+  var s = zen2han_(String(v)).replace(/^'/, "").trim();
+  var dk = v111DateKey_(s);
+  if (!dk) return "";
+  var m = s.match(/(\d{1,2})\s*[:：時]\s*(\d{1,2})?\s*$/);
+  var hm2 = m && s.length > 10 ? v111Hm_(m[0]) : "";
+  return dk + (hm2 ? " " + hm2 : "");
+}
+function crm118WhenMs_(s) {
+  if (!s) return 0;
+  var t = Date.parse(s.slice(0, 10) + "T" + (s.length > 10 ? s.slice(11, 16) : "00:00") + ":00+09:00");
+  return isNaN(t) ? 0 : t;
+}
+function crm118Cols_(hdr) {
+  var h = (hdr || []).map(function (x) { return String(x === null || x === undefined ? "" : x).trim(); }), m = {};
+  V118.DEAL_HEAD.forEach(function (n) { m[n] = h.indexOf(n); });
+  return m;
+}
+function crm118Open_(write) {
+  var ss = SpreadsheetApp.openById(SHEET_ID);
+  var sh = ss.getSheetByName(V118.DEAL_SHEET), lg = ss.getSheetByName(V118.LOG_SHEET);
+  if (write) {
+    if (!sh) sh = ensureSheet(ss, V118.DEAL_SHEET, V118.DEAL_HEAD);
+    if (!lg) lg = ensureSheet(ss, V118.LOG_SHEET, V118.LOG_HEAD);
+  }
+  return { ss: ss, sh: sh, lg: lg };
+}
+function crm118ReadDeals_(sh) {
+  var out = { list: [], byId: {}, byApo: {}, byKey: {}, cols: {}, width: V118.DEAL_HEAD.length };
+  if (!sh || sh.getLastRow() < 1) return out;
+  var w = Math.max(sh.getLastColumn(), V118.DEAL_HEAD.length), vals = sh.getRange(1, 1, sh.getLastRow(), w).getValues();
+  var c = crm118Cols_(vals[0]);
+  out.cols = c; out.width = w;
+  function g(r, n) { var i = c[n]; return i >= 0 ? r[i] : ""; }
+  for (var i = 1; i < vals.length; i++) {
+    var r = vals[i], id = String(g(r, "案件ID") || "").replace(/^'/, "").trim();
+    if (!id) continue;
+    var dl = {
+      row: i + 1, id: id, apoId: String(g(r, "アポID") === null || g(r, "アポID") === undefined ? "" : g(r, "アポID")).replace(/^'/, "").trim(),
+      project: String(g(r, "案件名") || "").trim(), company: String(g(r, "法人名") || "").trim(), person: String(g(r, "担当者") || "").trim(),
+      phone: String(g(r, "電話番号") === null || g(r, "電話番号") === undefined ? "" : g(r, "電話番号")).replace(/^'/, "").trim(), email: String(g(r, "メール") || "").trim(),
+      meetingDate: v111DateKey_(g(r, "商談日"), "Asia/Tokyo"), meetingTime: v111Hm_(g(r, "商談時間"), "Asia/Tokyo"),
+      owner: rosterNormPin_(g(r, "担当PIN")), ownerName: String(g(r, "担当（アポインター）") || "").trim(),
+      stage: String(g(r, "段階") || "").trim(), next: crm118When_(g(r, "次の確認")), todo: String(g(r, "次にすること") || "").trim(),
+      lastContact: crm118When_(g(r, "最後の連絡")).slice(0, 10), lastLog: String(g(r, "最後の記録") || "").trim(),
+      updated: isDate_(g(r, "更新日時")) ? g(r, "更新日時").getTime() : 0, by: String(g(r, "更新者") || "").trim(), memo: String(g(r, "メモ") || "").trim()
+    };
+    if (V118.STAGES.indexOf(dl.stage) < 0) dl.stage = dl.stage ? dl.stage : "検討中";
+    out.list.push(dl);
+    out.byId[id] = dl;
+    if (dl.apoId) out.byApo[dl.apoId] = dl;
+    var key = normCompany_(dl.company) + "|" + proj118Key_(dl.project);
+    if (dl.company && !out.byKey[key]) out.byKey[key] = dl;
+  }
+  return out;
+}
+function crm118RowVals_(dl, width, cols) {
+  var row = new Array(width);
+  for (var i = 0; i < width; i++) row[i] = "";
+  function put(n, v) { var i2 = cols[n]; if (i2 >= 0) row[i2] = v; }
+  put("案件ID", asText_(dl.id)); put("アポID", asText_(dl.apoId)); put("案件名", v111Txt_(dl.project)); put("法人名", v111Txt_(dl.company));
+  put("担当者", v111Txt_(dl.person)); put("電話番号", asText_(dl.phone)); put("メール", v111Txt_(dl.email));
+  put("商談日", dl.meetingDate ? asText_(dl.meetingDate) : ""); put("商談時間", dl.meetingTime ? asText_(dl.meetingTime) : "");
+  put("担当PIN", dl.owner ? asText_(dl.owner) : ""); put("担当（アポインター）", v111Txt_(dl.ownerName)); put("段階", dl.stage);
+  put("次の確認", dl.next ? asText_(dl.next) : ""); put("次にすること", v111Txt_(dl.todo)); put("最後の連絡", dl.lastContact ? asText_(dl.lastContact) : "");
+  put("最後の記録", v111Txt_(String(dl.lastLog || "").slice(0, 300))); put("作成日時", dl.created || new Date()); put("更新日時", new Date()); put("更新者", v111Txt_(dl.by || "")); put("メモ", v111Txt_(dl.memo || ""));
+  return row;
+}
+// アポ（apo117Read_ の1件）→ 新しい案件
+function crm118FromApo_(rec, P, nowMs) {
+  var at = rec.meetingDate ? Date.parse(rec.meetingDate + "T" + (rec.meetingTime || "23:59") + ":00+09:00") : 0, future = at && at >= nowMs;
+  return {
+    id: "D" + rec.id, apoId: rec.id, project: proj118Canon_(rec.project, P), company: v118Tidy_(rec.company), person: rec.person, phone: rec.phone, email: rec.email,
+    meetingDate: rec.meetingDate, meetingTime: rec.meetingTime, owner: rec.owner || "", ownerName: rec.owner ? (FULL_NAME_MAP[rec.owner] || rec.reporter) : rec.reporter,
+    stage: future ? "商談前" : "検討中", next: future ? v111AddDays_(rec.meetingDate, 3) + " 10:00" : "", todo: future ? "商談の結果を確かめる（契約書の送付・回収）" : "",
+    lastContact: "", lastLog: "", created: new Date(nowMs), by: "自動", memo: ""
+  };
+}
+// 成果報酬の案件のアポで、まだ案件になっていないものを足す（取消のアポは足さない）
+function crm118Sync_(R, nowMs) {
+  var P = proj118Load_();
+  var cfg = v118Cfg_();
+  var targets = cfg.crmOn ? R.recs.filter(function (rec) { return !rec.cx && proj118IsCrm_(rec.project, P); }) : [];
+  var O = crm118Open_(false);
+  var D = crm118ReadDeals_(O.sh);
+  function missing(list, Dx) {
+    return list.filter(function (rec) {
+      if (Dx.byApo[rec.id] || Dx.byId["D" + rec.id]) return false;
+      var key = normCompany_(rec.company) + "|" + proj118Key_(proj118Canon_(rec.project, P));
+      return !(rec.company && Dx.byKey[key]);
+    });
+  }
+  var need = missing(targets, D), created = 0;
+  if (need.length) {
+    var res = v111Lock_(function () {
+      O = crm118Open_(true);
+      var cols0 = ensureCols_(O.sh, V118.DEAL_HEAD);
+      var D2 = crm118ReadDeals_(O.sh), need2 = missing(targets, D2), seen = {}, vals = [];
+      need2.forEach(function (rec) {
+        var dl = crm118FromApo_(rec, P, nowMs), key = normCompany_(dl.company) + "|" + proj118Key_(dl.project);
+        if (seen[dl.id] || (dl.company && seen[key])) return;
+        seen[dl.id] = 1; if (dl.company) seen[key] = 1;
+        vals.push(crm118RowVals_(dl, D2.width, D2.cols));
+      });
+      if (vals.length) {
+        var start = O.sh.getLastRow() + 1;
+        gridEnsure_(O.sh, start + vals.length, D2.width);
+        O.sh.getRange(start, 1, vals.length, D2.width).setValues(vals);
+      }
+      return vals.length;
+    }, 20000);
+    created = Number(res) || 0;
+    if (created) D = crm118ReadDeals_(O.sh);
+  }
+  return { D: D, O: O, created: created, P: P };
+}
+function crm118ReadLogs_(lg, per) {
+  var by = {};
+  if (!lg || lg.getLastRow() < 2) return by;
+  var vals = lg.getRange(2, 1, lg.getLastRow() - 1, V118.LOG_HEAD.length).getValues();
+  for (var i = vals.length - 1; i >= 0; i--) {
+    var r = vals[i], did = String(r[2] || "").replace(/^'/, "").trim();
+    if (!did) continue;
+    var a = by[did] || (by[did] = []);
+    if (per && a.length >= per) continue;
+    a.push({ id: String(r[0] || ""), at: isDate_(r[1]) ? r[1].getTime() : (Date.parse(r[1]) || 0), pin: rosterNormPin_(r[6]), by: String(r[7] || ""), kind: String(r[8] || ""),
+      text: String(r[9] || ""), stage: String(r[10] || ""), next: crm118When_(r[11]), imported: !!String(r[12] || "").trim() });
+  }
+  return by;
+}
+function crm118Eff_(dl, apo, nowMs) {
+  var st = dl.stage || "商談前";
+  if (apo && apo.cx && (st === "商談前" || st === "検討中") && !dl.lastContact) return "アポ取消";
+  if (st === "商談前") {
+    var md = (apo && apo.meetingDate) || dl.meetingDate, mt = (apo && apo.meetingTime) || dl.meetingTime;
+    var t = md ? Date.parse(md + "T" + (mt || "23:59") + ":00+09:00") : 0;
+    if (t && t < nowMs) return "検討中";
+  }
+  return st;
+}
+// 要対応：overdue（予定を過ぎた）／today（きょう）／unset（次の確認が決まっていない）／later／closed
+function crm118Due_(dl, eff, nowMs) {
+  if (V118.CLOSED.indexOf(eff) >= 0 || eff === "アポ取消") return "closed";
+  var today = jstKey_(nowMs);
+  if (dl.next) { var dk = dl.next.slice(0, 10); return dk < today ? "overdue" : (dk === today ? "today" : "later"); }
+  return eff === "商談前" ? "later" : "unset";
+}
+function crm118Client_(dl, apo, logs, nowMs) {
+  var eff = crm118Eff_(dl, apo, nowMs);
+  var o = {
+    id: dl.id, apoId: dl.apoId, project: dl.project, company: (apo && apo.company) || dl.company, person: (apo && apo.person) || dl.person,
+    phone: (apo && apo.phone) || dl.phone, email: (apo && apo.email) || dl.email, role: apo ? apo.role : "",
+    meetingDate: (apo && apo.meetingDate) || dl.meetingDate, meetingTime: (apo && apo.meetingTime) || dl.meetingTime,
+    owner: dl.owner, ownerName: dl.owner ? (FULL_NAME_MAP[dl.owner] || dl.ownerName) : dl.ownerName, reporter: apo ? apo.reporter : "",
+    stage: dl.stage, eff: eff, next: dl.next, todo: dl.todo, lastContact: dl.lastContact, lastLog: dl.lastLog, memo: dl.memo,
+    due: crm118Due_(dl, eff, nowMs), apoCancelled: !!(apo && apo.cx), handoff: apo ? String(apo.handoff || "").slice(0, 600) : "", updated: dl.updated
+  };
+  if (logs) o.logs = logs;
+  return o;
+}
+var CRM118_DUE_ORDER = { overdue: 0, today: 1, unset: 2, later: 3, closed: 4 };
+function crm118Sort_(a, b) {
+  var x = CRM118_DUE_ORDER[a.due] - CRM118_DUE_ORDER[b.due];
+  if (x) return x;
+  if (a.next && b.next && a.next !== b.next) return a.next < b.next ? -1 : 1;
+  return String(b.meetingDate || "").localeCompare(String(a.meetingDate || ""));
+}
+function crm118ApoMap_(R) { var m = {}; R.recs.forEach(function (rec) { m[rec.id] = rec; if (rec.apoId) m[rec.apoId] = rec; }); return m; }
+
+// アポインター本人：担当の案件（すべて）と履歴
+function crm118Me_(d) {
+  var pin = rosterNormPin_(d.pin);
+  if (!v117AuthOk_(pin, d.ah)) return { ok: false, code: "auth", message: "暗証番号の確認ができませんでした。いったんログアウトして、もう一度ログインしてください" };
+  var now = v118Now_(), R = apo117Read_(), S = crm118Sync_(R, now), am = crm118ApoMap_(R);
+  var mine = S.D.list.filter(function (dl) { return dl.owner === pin; });
+  var logs = crm118ReadLogs_(S.O.lg, 30);
+  var deals = mine.map(function (dl) { return crm118Client_(dl, am[dl.apoId], logs[dl.id] || [], now); }).sort(crm118Sort_);
+  return { ok: true, deals: deals, stages: V118.STAGES, kinds: V118.KINDS.slice(0, 5), today: jstKey_(now) };
+}
+// 記録する（本人・管理者）。changes：{ kind, text, stage, next（"" は変えない・"clear" は消す）, todo, owner（管理者だけ）, memo（管理者だけ） }
+function crm118Log_(d, who) {
+  var id = String(d.id || "").trim();
+  if (!id) return { ok: false, message: "案件がありません" };
+  var kind = V118.KINDS.indexOf(String(d.kind || "")) >= 0 ? String(d.kind) : "メモ";
+  var text = v118S_(d.text, V118.LIMITS.logText);
+  var stage = String(d.stage || "").trim();
+  if (stage && V118.STAGES.indexOf(stage) < 0) return { ok: false, message: "段階の名前が正しくありません" };
+  var nextIn = String(d.next === null || d.next === undefined ? "" : d.next).trim(), next = "";
+  if (nextIn && nextIn !== "clear") { next = crm118When_(nextIn); if (!next) return { ok: false, message: "次の確認の日時が読めません" }; }
+  var todo = d.todo === undefined || d.todo === null ? null : v118S_(d.todo, 200);
+  var owner = null;
+  if (who.admin && d.owner !== undefined && d.owner !== null) {
+    owner = rosterNormPin_(d.owner);
+    if (d.owner !== "" && (!owner || !FULL_NAME_MAP[owner])) return { ok: false, message: "名簿にない PIN です" };
+  }
+  if (!text && !stage && !nextIn && todo === null && owner === null && !(who.admin && d.memo !== undefined)) return { ok: false, message: "記録する内容がありません" };
+  var now = v118Now_();
+  var res = v111Lock_(function () {
+    var O = crm118Open_(true), D = crm118ReadDeals_(O.sh), dl = D.byId[id];
+    if (!dl) return { ok: false, message: "案件が見つかりません（一覧を読み直してください）" };
+    if (!who.admin && dl.owner !== who.pin) return { ok: false, message: "この案件の担当ではありません" };
+    var byName = who.admin ? "管理者" : (FULL_NAME_MAP[who.pin] || who.pin);
+    var before = dl.stage, changed = [];
+    if (stage && stage !== dl.stage) { changed.push("段階：" + (dl.stage || "—") + " → " + stage); dl.stage = stage; }
+    else if (!stage && dl.stage === "商談前" && crm118Eff_(dl, null, now) === "検討中") dl.stage = "検討中";
+    if (nextIn === "clear") { if (dl.next) changed.push("次の確認を消した"); dl.next = ""; }
+    else if (next && next !== dl.next) { changed.push("次の確認：" + next); dl.next = next; }
+    if (todo !== null && todo !== dl.todo) { dl.todo = todo; }
+    if (owner !== null && owner !== dl.owner) { changed.push("担当：" + (dl.ownerName || "なし") + " → " + (owner ? FULL_NAME_MAP[owner] : "なし")); dl.owner = owner; dl.ownerName = owner ? FULL_NAME_MAP[owner] : ""; }
+    if (who.admin && d.memo !== undefined && d.memo !== null) dl.memo = v118S_(d.memo, 500);
+    if (["電話", "メール", "先方から"].indexOf(kind) >= 0) dl.lastContact = jstKey_(now);
+    var logKind = (!text && changed.length && kind === "メモ") ? (owner !== null && stage === "" ? "割り当て" : "段階の変更") : kind;
+    var line = text || changed.join("／"), logIt = !!(text || changed.length);
+    if (logIt) dl.lastLog = fmtJst_(new Date(now), "M/d") + " " + logKind + "：" + line;
+    dl.by = byName;
+    var vals = crm118RowVals_(dl, D.width, D.cols);
+    // 作成日時は残す（作り直さない）
+    var ci = D.cols["作成日時"];
+    if (ci >= 0) { try { vals[ci] = O.sh.getRange(dl.row, ci + 1).getValue() || vals[ci]; } catch (eC) {} }
+    O.sh.getRange(dl.row, 1, 1, D.width).setValues([vals]);
+    if (logIt) O.lg.appendRow([asText_("G" + now + Math.floor(Math.random() * 1000)), new Date(now), asText_(dl.id), asText_(dl.apoId), v111Txt_(dl.project), v111Txt_(dl.company),
+      who.pin ? asText_(who.pin) : "", byName, logKind, v111Txt_(line + (text && changed.length ? "（" + changed.join("／") + "）" : "")), dl.stage, dl.next ? asText_(dl.next) : "", ""]);
+    return { ok: true, dl: dl, before: before, changed: changed, ownerChanged: owner !== null };
+  }, 20000);
+  if (!res || !res.ok) return res || { ok: false, message: "記録できませんでした（混み合っています）。もう一度押してください" };
+  // 管理者が担当を割り当てたら、本人のアプリに知らせる
+  if (res.ownerChanged && res.dl.owner) {
+    try { notice117Add_(res.dl.owner, "成果報酬の案件", "担当の案件：" + res.dl.company + "（" + res.dl.project + "）", "管理者が、成果報酬の案件「" + res.dl.company + "」（" + res.dl.project + "）をあなたの担当にしました。ホームの「📇 成果報酬の案件」から、次の確認の電話の予定を入れてください。", res.dl.id, "管理者", false); } catch (eN) {}
+  }
+  var R = apo117Read_(), am = crm118ApoMap_(R), logs = crm118ReadLogs_(crm118Open_(false).lg, 30);
+  return { ok: true, deal: crm118Client_(res.dl, am[res.dl.apoId], logs[res.dl.id] || [], v118Now_()) };
+}
+// 管理者：全体（段階ごとの数・歩留まり・案件・履歴）
+function crm118Admin_(d) {
+  var now = v118Now_(), R = apo117Read_(), S = crm118Sync_(R, now), am = crm118ApoMap_(R), logs = crm118ReadLogs_(S.O.lg, 12);
+  var deals = S.D.list.map(function (dl) { return crm118Client_(dl, am[dl.apoId], logs[dl.id] || [], now); }).sort(crm118Sort_);
+  var fun = {};
+  deals.forEach(function (x) {
+    var f = fun[x.project] || (fun[x.project] = { project: x.project, total: 0, met: 0, sent: 0, won: 0, wait: 0, lost: 0, cancelled: 0, open: 0, overdue: 0, unset: 0 });
+    f.total++;
+    if (x.eff === "アポ取消") { f.cancelled++; return; }
+    if (x.eff !== "商談前") f.met++;
+    if (x.eff === "契約書の送付" || x.eff === "成約（契約書回収）") f.sent++;
+    if (x.eff === "成約（契約書回収）") f.won++;
+    if (x.eff === "時期待ち") f.wait++;
+    if (x.eff === "見送り") f.lost++;
+    if (x.due !== "closed") f.open++;
+    if (x.due === "overdue" || x.due === "today") f.overdue++;
+    if (x.due === "unset") f.unset++;
+  });
+  var roster = Object.keys(FULL_NAME_MAP).map(function (p) { return { pin: p, name: FULL_NAME_MAP[p] }; });
+  return { ok: true, deals: deals, funnel: Object.keys(fun).map(function (k) { return fun[k]; }), stages: V118.STAGES, kinds: V118.KINDS, roster: roster,
+    created: S.created, projects: proj118Client_(S.P), cfg: v118Cfg_(), today: jstKey_(now) };
+}
+// 管理者：まとめて担当を割り当てる（担当なしの案件など）
+function crm118Assign_(d) {
+  var pin = rosterNormPin_(d.owner), ids = (d.ids || []).map(String);
+  if (!pin || !FULL_NAME_MAP[pin]) return { ok: false, message: "名簿にない PIN です" };
+  if (!ids.length) return { ok: false, message: "案件を選んでください" };
+  var n = 0;
+  ids.slice(0, 200).forEach(function (id) { var r = crm118Log_({ id: id, owner: pin, kind: "メモ", text: "" }, { admin: true }); if (r && r.ok) n++; });
+  return { ok: true, assigned: n };
+}
+// 管理者：これまでの履歴をまとめて入れる（貼り付けて、画面で案件を選んだもの）。entries：[{ id, date, text, stage, next, todo }]
+function crm118ImportLogs_(d) {
+  var entries = (d.entries || []).slice(0, V118.LIMITS.histEntries);
+  if (!entries.length) return { ok: false, message: "入れる履歴がありません" };
+  var now = v118Now_(), done = 0, skip = 0, errs = [];
+  var res = v111Lock_(function () {
+    var O = crm118Open_(true), D = crm118ReadDeals_(O.sh), old = crm118ReadLogs_(O.lg, 0), rows = [], touched = {};
+    entries.forEach(function (e, i) {
+      var dl = D.byId[String(e.id || "")];
+      var text = v118S_(e.text, V118.LIMITS.logText), dk = v111DateKey_(e.date) || jstKey_(now);
+      if (!dl) { errs.push((i + 1) + "件目：案件が見つかりません"); return; }
+      if (!text) { errs.push((i + 1) + "件目：内容がありません"); return; }
+      var dup = (old[dl.id] || []).some(function (l) { return l.imported && jstKey_(l.at) === dk && l.text === text; });
+      if (dup) { skip++; return; }
+      var stage = V118.STAGES.indexOf(String(e.stage || "")) >= 0 ? String(e.stage) : "";
+      var next = e.next ? crm118When_(e.next) : "";
+      if (stage) dl.stage = stage;
+      if (next) dl.next = next;
+      if (e.todo) dl.todo = v118S_(e.todo, 200);
+      if (!dl.lastContact || dk > dl.lastContact) { dl.lastContact = dk; dl.lastLog = Number(dk.slice(5, 7)) + "/" + Number(dk.slice(8, 10)) + " 取込：" + text.slice(0, 200); }
+      dl.by = "管理者（取込）";
+      touched[dl.id] = dl;
+      rows.push([asText_("G" + now + "-" + i), new Date(Date.parse(dk + "T12:00:00+09:00")), asText_(dl.id), asText_(dl.apoId), v111Txt_(dl.project), v111Txt_(dl.company),
+        "", "管理者（取込）", "取込", v111Txt_(text), dl.stage, dl.next ? asText_(dl.next) : "", V118.IMPORT_MARK]);
+      done++;
+    });
+    if (rows.length) {
+      var start = O.lg.getLastRow() + 1;
+      gridEnsure_(O.lg, start + rows.length, V118.LOG_HEAD.length);
+      O.lg.getRange(start, 1, rows.length, V118.LOG_HEAD.length).setValues(rows);
+      Object.keys(touched).forEach(function (k) {
+        var dl2 = touched[k], vals = crm118RowVals_(dl2, D.width, D.cols), ci = D.cols["作成日時"];
+        if (ci >= 0) { try { vals[ci] = O.sh.getRange(dl2.row, ci + 1).getValue() || vals[ci]; } catch (eC) {} }
+        O.sh.getRange(dl2.row, 1, 1, D.width).setValues([vals]);
+      });
+    }
+    return { ok: true };
+  }, 30000);
+  if (!res || !res.ok) return { ok: false, message: "混み合っています。もう一度押してください" };
+  try { logAudit("成果報酬の履歴の取り込み", "管理者", done + "件", "入れた " + done + "・同じ内容で飛ばした " + skip + (errs.length ? "・入れられない " + errs.length : "")); } catch (e) {}
+  return { ok: true, added: done, skipped: skip, errors: errs.slice(0, 20) };
+}
+// 同期（fetch_state）に付ける、本人の要対応（シートだけを読む。軽く）
+function crm118ForPin_(pin, nowMs) {
+  var O = crm118Open_(false);
+  if (!O.sh) return { n: 0, open: 0, due: 0, unset: 0, items: [] };
+  var D = crm118ReadDeals_(O.sh), out = { n: 0, open: 0, due: 0, unset: 0, items: [] }, list = [];
+  D.list.forEach(function (dl) {
+    if (dl.owner !== pin) return;
+    out.n++;
+    var x = crm118Client_(dl, null, null, nowMs);
+    if (x.due === "closed") return;
+    out.open++;
+    if (x.due === "overdue" || x.due === "today") { out.due++; list.push(x); }
+    if (x.due === "unset") out.unset++;
+  });
+  out.items = list.sort(crm118Sort_).slice(0, 8);
+  return out;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// アポ取得報告のあと（appoSave_ から）：ヒアリングの答え・成果報酬の案件・アポ報告メール（サーバーから）
+// ═══════════════════════════════════════════════════════════════════════
+function v118ApoMailText_(rec, d) {
+  var cs = v118ChecksFor_(rec.project), L = [];
+  L.push("アポイント報告（テレアポ業務管理アプリから自動送信）", "");
+  L.push("案件名: " + rec.project, "商談日付: " + rec.meetingDate, "商談時間: " + rec.meetingTime, "法人名: " + rec.company, "電話番号: " + rec.phone,
+    "担当者: " + rec.person + (rec.gender ? "（" + rec.gender + "）" : ""), "役職: " + rec.role, "メール: " + rec.email, "住所: " + rec.address, "人柄: " + rec.personality);
+  if (cs.length) { L.push("", "【確認項目】"); cs.forEach(function (c) { L.push(c.label + " " + (rec.checks[c.key] || "未回答")); }); }
+  var hear = v118S_(d && d.hearing, 3000);
+  if (hear) L.push("", "【ヒアリング（" + (proj118Canon_(rec.project) || "案件") + "）】", hear);
+  if (String(rec.handoff || "").trim()) L.push("", "【商談への引き継ぎ】", rec.handoff);
+  if (rec.isTokutei === "YES") L.push("", "【ヒアリング項目（特定技能外国人）】", "外国人雇用: " + (rec.gaikokujin || "—"), "特定技能: " + (rec.tokutei || "—"), "技人国: " + (rec.gijinkoku || "—"), "面接・採用決定者: " + (rec.decider || "—"));
+  L.push("", "録音音声の送付: " + (rec.recSent === "送付済" ? "送付済み" : "未送付（要対応）"), "", "報告者: " + rec.reporter);
+  if (proj118IsCrm_(rec.project)) L.push("", "※ 成果報酬の案件です。アプリの「📇 成果報酬の案件」で、契約書の回収まで追います。");
+  return { subject: "【アポ報告】" + rec.company + " " + rec.person + "様 - " + rec.reporter, body: L.join("\n") };
+}
+function v118AfterAppo_(rec, info, d) {
+  var out = {};
+  if (!info || info.duplicate) return out;
+  // ヒアリングの答え（案件の設定の項目）
+  var hear = v118S_(d && d.hearing, 3000);
+  if (hear && info.row && info.sheet) {
+    try { var hc = ensureCols_(info.sheet, [V118.HEAR_COL])[V118.HEAR_COL]; info.sheet.getRange(info.row, hc).setValue(v111Txt_(hear)); out.hearing = true; } catch (eH) { out.hearingError = String(eH).slice(0, 100); }
+  }
+  // 成果報酬の案件
+  try {
+    if (v118Cfg_().crmOn && proj118IsCrm_(rec.project)) { var S = crm118Sync_(apo117Read_(), v118Now_()); out.crm = S.created; }
+  } catch (eC) { out.crmError = String(eC).slice(0, 100); }
+  // アポ報告メール：アプリが「サーバーから送る」と言ってきたときだけ（古いアプリはメールアプリで送るので、2通にしない）
+  if (d && d.srvMail === true && v118Cfg_().apoMail) {
+    try {
+      var m = v118ApoMailText_(rec, d), r = admMail_(m.subject, m.body, APPO_MAIL_TO);
+      out.mail = r && r.ok ? "sent" : "failed";
+      if (!(r && r.ok)) { try { logAudit("アポ報告メール（失敗）", rec.reporter, rec.company, String(r && r.why || "").slice(0, 200)); } catch (eA) {} }
+    } catch (eM) { out.mail = "failed"; }
+  }
+  return out;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 同期・要求の入口・自己点検
+// ═══════════════════════════════════════════════════════════════════════
+function v118FetchExtras_(pin) {
+  var out = { v: 118, cfg: v118Cfg_() };
+  try { out.proj = proj118Client_(); } catch (e1) { out.proj = []; out.projError = String(e1); }
+  try { if (out.cfg.crmOn) out.crm = crm118ForPin_(pin, v118Now_()); } catch (e2) { out.crm = null; out.crmError = String(e2); }
+  return out;
+}
+function v118Handle_(d) {
+  var t = String((d && d.type) || "");
+  function J(o) { return jsonOut_(o); }
+  try {
+    switch (t) {
+      case "apo_import": return J({ status: "ok", handled: true, result: apo118Import_(d) });
+      case "crm_me": return J({ status: "ok", handled: true, result: crm118Me_(d) });
+      case "crm_log": {
+        if (ADM_REQ_OK_ && d.asAdmin) return J({ status: "ok", handled: true, result: crm118Log_(d, { admin: true }) });
+        var pin = rosterNormPin_(d.pin);
+        if (!v117AuthOk_(pin, d.ah)) return J({ status: "ok", handled: true, result: { ok: false, code: "auth", message: "暗証番号の確認ができませんでした。いったんログアウトして、もう一度ログインしてください" } });
+        return J({ status: "ok", handled: true, result: crm118Log_(d, { pin: pin }) });
+      }
+      case "crm_admin": {
+        if (d.action === "set") return J({ status: "ok", handled: true, result: crm118Log_(d, { admin: true }) });
+        if (d.action === "assign") return J({ status: "ok", handled: true, result: crm118Assign_(d) });
+        if (d.action === "import_logs") return J({ status: "ok", handled: true, result: crm118ImportLogs_(d) });
+        return J({ status: "ok", handled: true, result: crm118Admin_(d) });
+      }
+      case "proj_admin": {
+        if (d.action === "save") return J({ status: "ok", handled: true, result: proj118Save_(d.rows || []) });
+        return J({ status: "ok", handled: true, result: { ok: true, list: proj118Client_(proj118Load_(true)), seeded: proj118Load_().seeded, names: proj118Names_() } });
+      }
+      case "v118_cfg": {
+        if (d.action === "set") return J({ status: "ok", handled: true, result: v118CfgSet_(d.values || {}) });
+        return J({ status: "ok", handled: true, result: { ok: true, cfg: v118Cfg_() } });
+      }
+      default: return null;
+    }
+  } catch (e) {
+    return J({ status: "error", handled: true, type: t, message: String(e && e.message || e) });
+  }
+}
+function v118SelfTest() {
+  var fails = [], n = 0;
+  function ok(name, cond) { n++; if (!cond) { fails.push(name); Logger.log("  NG " + name); } }
+  ok("版は v118 以降", Number(String(GAS_VERSION).replace(/\D/g, "")) >= 118);
+  var P = { list: V118.SEED_PROJ.map(proj118Row_).filter(function (p) { return p; }) };
+  ok("案件名のゆれ：エヌケーティー・ＮＫＴ・(株)エヌケーティー → NKT", ["エヌケーティー", "ＮＫＴ", "(株)エヌケーティー", "nkt"].every(function (x) { return proj118Canon_(x, P) === "NKT"; }));
+  ok("案件名のゆれ：RIG協同組合 → RIG・株式会社グルメ杵屋 → グルメ杵屋", proj118Canon_("RIG協同組合", P) === "RIG" && proj118Canon_("株式会社グルメ杵屋", P) === "グルメ杵屋");
+  ok("設定にない案件名は、空白などだけそろえる", proj118Canon_("　小田急　", P) === "小田急");
+  ok("成果報酬：NKT・グルメ杵屋・RIG はい／CTF いいえ", proj118IsCrm_("NKT", P) && proj118IsCrm_("グルメ杵屋", P) && proj118IsCrm_("RIG", P) && !proj118IsCrm_("CTF", P));
+  ok("CTF は外国人の採用の質問を出さない", proj118Find_("CTF GROUP", P) && proj118Find_("CTF GROUP", P).foreign === false && proj118Find_("NKT", P).foreign === true);
+  ok("ヒアリング項目の書き方を読む", (function () { var h = proj118ParseHear_("※導入の時期：すぐ／3か月以内／未定\n決裁者"); return h.length === 2 && h[0].req && h[0].opts.length === 3 && !h[1].req && h[1].opts.length === 0; })());
+  ok("担当者の欄から、役職・性別を分ける", (function () { var p = imp118Person_("施設長　　坂上様（男）"); return p.role === "施設長" && p.person === "坂上様" && p.gender === "男"; })());
+  ok("電話番号・メールをそろえる", imp118Phone_("０４２２－４３－３３１９").digits === "0422433319" && imp118Email_("a@ex.jp\n\nb@ex.jp 無し") === "a@ex.jp, b@ex.jp");
+  ok("会社名をそろえる（（株）・全角英数・空白）", v118Tidy_("（株）ＡＢＣ　") === "株式会社ABC" && v118Tidy_("株式会社　サンプル") === "株式会社サンプル");
+  ok("次の確認：期限を過ぎた・きょう・未設定・終わった", (function () {
+    var now = Date.parse("2026-11-26T12:00:00+09:00");
+    return crm118Due_({ next: "2026-11-25 10:00" }, "検討中", now) === "overdue" && crm118Due_({ next: "2026-11-26" }, "検討中", now) === "today" &&
+      crm118Due_({ next: "" }, "検討中", now) === "unset" && crm118Due_({ next: "" }, "商談前", now) === "later" && crm118Due_({ next: "2026-11-20" }, "見送り", now) === "closed";
+  })());
+  ok("商談の時刻を過ぎた「商談前」は「検討中」として扱う", crm118Eff_({ stage: "商談前", meetingDate: "2026-11-20", meetingTime: "10:00" }, null, Date.parse("2026-11-26T12:00:00+09:00")) === "検討中");
+  ok("管理者だけが使える要求に v118 の管理者の要求が入っている", ["apo_import", "crm_admin", "proj_admin", "v118_cfg"].every(function (x) { return ADMIN_ONLY_TYPES[x]; }));
+  ok("アポインターの要求（成果報酬の案件・記録）は、管理者専用に入っていない", ["crm_me", "crm_log"].every(function (x) { return !ADMIN_ONLY_TYPES[x]; }));
+  Logger.log("v118 自己点検: " + (n - fails.length) + " / " + n);
+  return { pass: n - fails.length, total: n, failed: fails };
+}
+function v118Summary_() {
+  var out = { proj: 0, crmProj: [], deals: 0, open: 0, imported: 0 };
+  try { var P = proj118Load_(true); out.proj = P.list.length; out.crmProj = P.list.filter(function (p) { return p.crm; }).map(function (p) { return p.name; }); out.seeded = P.seeded; } catch (e) {}
+  try { var O = crm118Open_(false), D = crm118ReadDeals_(O.sh), now = v118Now_(); out.deals = D.list.length; out.open = D.list.filter(function (x) { return crm118Due_(x, crm118Eff_(x, null, now), now) !== "closed"; }).length; } catch (e2) {}
+  try { out.imported = apo117Read_().recs.filter(function (r) { return String(r.ledger || "").indexOf(V118.IMPORT_MARK) === 0; }).length; } catch (e3) {}
   return out;
 }
